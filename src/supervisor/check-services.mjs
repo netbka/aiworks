@@ -2,13 +2,18 @@
 // The managed gate helper always runs its required local contained command; it no longer submits service jobs or
 // substitutes a service result for local evidence. Separate authorized callers can still use this bounded client.
 // Service configuration comes only from SERVICES_ENV, populated from the installation config by serve, never from
-// the shared gate registry. It contains addresses, certificate paths and project mappings, never secret values.
+// the shared gate registry. It contains addresses, certificate paths and project mappings, never secret values and
+// never an authentication contract: workers inherit and can rewrite it. A service that requires authentication is
+// offered a credential only when the authorized caller read it from the controller's own config.json
+// (checkServiceSettings) and passes a credential broker (token-store.mjs) built from that same config. The value never
+// reaches gate.log, an error message or the returned result.
 // Each offer has one bounded budget. An unsuitable or unavailable additional service never blocks local work.
 import https from 'node:https';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { setTimeout as sleepFor } from 'node:timers/promises';
+import { readToken, validTokenRef } from './token-store.mjs';
 
 export const SERVICES_ENV = 'AIWORKS_CHECK_SERVICES';
 export const MAX_TIMEOUT_MINUTES = 75;
@@ -23,6 +28,22 @@ const JOB_ID = /^[0-9a-f-]{36}$/;
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
 const IDENTIFIER = /^[\w.-]{1,64}$/;
 const DEFAULT_GATE = ['run', 'check'];
+// Authentication contracts a service may declare. `bearer` sends `Authorization: Bearer <value>`; `header` sends the
+// value alone in the one header the contract names. Nothing else is ever inferred: a service without `auth` gets no
+// credential, and a malformed `auth` leaves the service out rather than sending it unauthenticated or guessing.
+export const AUTH_SCHEMES = Object.freeze(['bearer', 'header']);
+/** Every check-service credential reference lives under this prefix, so one can never name another operator secret. */
+export const CHECK_SERVICE_TOKEN_PREFIX = 'aiworks-check-service';
+const HEADER_NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/;
+// Headers the transport owns, or that would change routing, framing or another credential: never a credential header.
+const RESERVED_HEADERS = new Set(['authorization', 'host', 'content-type', 'content-length', 'transfer-encoding', 'connection', 'te',
+  'upgrade', 'cookie', 'proxy-authorization', 'expect', 'keep-alive', 'trailer']);
+// A credential value fit for one header line: printable ASCII without `"` or `\` (so its JSON-escaped form is itself and
+// redaction finds it in JSON text too), no space at either end, bounded.
+const CREDENTIAL_VALUE = /^[\x21\x23-\x5b\x5d-\x7e](?:[\x20\x21\x23-\x5b\x5d-\x7e]{0,4094}[\x21\x23-\x5b\x5d-\x7e])?$/;
+const validStoreSpec = (store) => store === undefined || (store && typeof store === 'object' && !Array.isArray(store) &&
+  (store.kind === 'windows' || (store.kind === 'command' && Array.isArray(store.command) && store.command.length > 0 &&
+    store.command.every((part) => typeof part === 'string' && part))));
 const bounded = (value, low, high, fallback) => (Number.isSafeInteger(value) && value >= low && value <= high ? value : fallback);
 
 /** Why a configured service cannot be used, or null. */
@@ -44,7 +65,43 @@ function serviceProblem(entry) {
     if (!REPOSITORY.test(repository)) return `has projects key ${JSON.stringify(repository)}, which is not <owner>/<repository>`;
     if (!IDENTIFIER.test(project?.projectId ?? '') || !IDENTIFIER.test(project?.profile ?? '')) return `needs projectId and profile for ${repository}`;
   }
+  return entry.auth === undefined ? null : authProblem(entry.auth);
+}
+
+/** Why a declared authentication contract cannot be used, or null. Never names a value: configuration holds none. */
+function authProblem(auth) {
+  if (!auth || typeof auth !== 'object' || Array.isArray(auth)) return 'has auth that is not an object';
+  if (Object.keys(auth).some((key) => !['scheme', 'header', 'tokenRef', 'credentialStore'].includes(key))) {
+    return 'has auth with a key other than scheme, header, tokenRef or credentialStore';
+  }
+  if (!AUTH_SCHEMES.includes(auth.scheme)) return `needs auth.scheme, the scheme the service contract documents (known: ${AUTH_SCHEMES.join(', ')})`;
+  if (auth.scheme === 'bearer' && auth.header !== undefined) return 'has auth.header with scheme bearer, which is sent only as Authorization';
+  if (auth.scheme === 'header' && (typeof auth.header !== 'string' || !HEADER_NAME.test(auth.header) || RESERVED_HEADERS.has(auth.header.toLowerCase()))) {
+    return 'needs auth.header, the one header name the service contract documents (not Authorization or a transport header)';
+  }
+  if (!validTokenRef(auth.tokenRef) || !auth.tokenRef.startsWith(`${CHECK_SERVICE_TOKEN_PREFIX}:`) || auth.tokenRef.length <= CHECK_SERVICE_TOKEN_PREFIX.length + 1) {
+    return `needs auth.tokenRef, a credential reference ${CHECK_SERVICE_TOKEN_PREFIX}:<name>`;
+  }
+  if (!validStoreSpec(auth.credentialStore)) return 'has auth.credentialStore that is neither { "kind": "windows" } nor { "kind": "command", "command": [...] }';
   return null;
+}
+
+/**
+ * The request headers carrying a service's credential, resolved fresh through `broker` (a token-store.mjs store that
+ * the authorized caller passes in): `{ headers }`, or `{ problem }` naming why no request may be sent. A service with no
+ * declared `auth` gets `{ headers: {} }`. A missing broker, an unresolved reference, a store that cannot tell or a value
+ * unfit for one header line all fail closed. No problem text contains the value.
+ */
+export function serviceCredentialHeaders(service, broker) {
+  const auth = service?.auth;
+  if (auth === undefined) return { headers: {} };
+  if (authProblem(auth)) return { problem: 'its declared authentication contract is invalid' };
+  if (!broker || typeof broker.get !== 'function') return { problem: `it requires credential reference ${auth.tokenRef}, and no credential broker was provided` };
+  let value;
+  try { value = readToken(broker, auth.tokenRef); } catch { return { problem: `the credential store cannot tell whether ${auth.tokenRef} resolves` }; }
+  if (!value) return { problem: `credential reference ${auth.tokenRef} does not resolve` };
+  if (!CREDENTIAL_VALUE.test(value)) return { problem: `the value of ${auth.tokenRef} is not fit for one header line` };
+  return { headers: auth.scheme === 'bearer' ? { Authorization: `Bearer ${value}` } : { [auth.header]: value } };
 }
 
 /**
@@ -63,25 +120,43 @@ export function checkServiceSettings(config) {
     services.push({ name: entry.name, kind: entry.kind, baseUrl: new URL(entry.baseUrl).origin, caFile: entry.caFile,
       projects: Object.fromEntries(Object.entries(entry.projects).map(([repository, p]) => [repository.toLowerCase(),
         { projectId: p.projectId, profile: p.profile }])),
+      ...(entry.auth === undefined ? {} : { auth: { scheme: entry.auth.scheme, ...(entry.auth.scheme === 'header' ? { header: entry.auth.header } : {}),
+        tokenRef: entry.auth.tokenRef } }),
       queueSeconds: bounded(entry.queueSeconds, 10, 3600, 120), timeoutMinutes: bounded(entry.timeoutMinutes, 5, MAX_TIMEOUT_MINUTES, 60) });
   });
   return { services, problems };
 }
 
+// A service as the shared environment may carry it: never its authentication contract. Every worker inherits and can
+// rewrite SERVICES_ENV, so a credential is offered only to a service the authorized caller read from the controller's
+// own config.json (checkServiceSettings), with a broker built from that same config.
+const withoutAuth = (entry) => {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+  const { auth, ...rest } = entry;
+  return rest;
+};
+
 /**
  * The value of SERVICES_ENV for the accepted services of `config` (null when there are none), with a relative caFile
- * read from `base` (the supervisor data folder).
+ * read from `base` (the supervisor data folder). No `auth` is exported.
  */
 export function checkServicesEnvironment(config, base = process.cwd()) {
-  const { services, problems } = checkServiceSettings(config);
+  const { services: accepted, problems } = checkServiceSettings(config);
+  const services = accepted.map(withoutAuth);
   for (const service of services) if (!isAbsolute(service.caFile)) service.caFile = resolve(base, service.caFile);
   return { value: services.length ? JSON.stringify(services) : null, services, problems };
 }
 
-/** The services a gate helper may offer a commit to: those serve put in its environment, else none. */
+/**
+ * The services a gate helper may offer a commit to: those serve put in its environment, else none. Any `auth` found
+ * there is dropped, so a service from the environment can never produce credential headers.
+ */
 export function readCheckServices(env = process.env) {
   if (!env[SERVICES_ENV]) return [];
-  try { return checkServiceSettings({ checkServices: JSON.parse(env[SERVICES_ENV]) }).services; } catch { return []; }
+  try {
+    const listed = JSON.parse(env[SERVICES_ENV]);
+    return checkServiceSettings({ checkServices: Array.isArray(listed) ? listed.map(withoutAuth) : [] }).services;
+  } catch { return []; }
 }
 
 /** `<owner>/<repository>` of a checkout's origin (https or ssh form), lower case, or null. */
@@ -106,11 +181,19 @@ export function onOrigin(sha, cwd = process.cwd()) {
   return listed.status === 0 && listed.stdout.split('\n').some((line) => line.split('\t')[0] === sha);
 }
 
+/** A transport failure that keeps the HTTP status, so a refused credential is told apart from an outage. */
+class ServiceHttpError extends Error {
+  constructor(status) { super(`HTTP ${status}`); this.status = status; }
+}
+
 /**
- * HTTPS requests to one service: only its fixed routes, its own certificate trusted, at most 64 MiB, and each request
- * ended after `limitMs` in all (a total bound, not an idle one: a trickling answer cannot hold the gate).
+ * HTTPS requests to one service: only its fixed routes, its own certificate trusted (verification never disabled), at
+ * most 64 MiB, and each request ended after `limitMs` in all (a total bound, not an idle one: a trickling answer cannot
+ * hold the gate). `credentialHeaders` (from serviceCredentialHeaders) go with each request to that fixed origin only;
+ * Node's https client follows no redirect. An error answer is reduced to its status: its body, which might echo a
+ * request header, is never read into a message.
  */
-function httpsTransport(service) {
+function httpsTransport(service, credentialHeaders = {}) {
   let ca = null;
   return (method, path, payload, limitMs = 30_000) => new Promise((resolve, reject) => {
     if (path !== '/health' && !/^\/v1\/jobs(?:\/[0-9a-f-]{36}(?:\/(?:result|cancel|artifacts\/stdout\.log))?)?$/.test(path)) {
@@ -119,7 +202,8 @@ function httpsTransport(service) {
     try { ca ??= readFileSync(service.caFile); } catch (error) { reject(new Error(`certificate ${service.caFile} unreadable (${error.code ?? error.message})`)); return; }
     const body = payload === undefined ? null : Buffer.from(JSON.stringify(payload));
     const request = https.request(new URL(path, service.baseUrl), { method, ca, rejectUnauthorized: true,
-      headers: body ? { 'Content-Type': 'application/json', 'Content-Length': body.length } : {} }, (response) => {
+      headers: { ...credentialHeaders, ...(body ? { 'Content-Type': 'application/json', 'Content-Length': body.length } : {}) } }, (response) => {
+      if (response.statusCode >= 300) { clearTimeout(timer); response.resume(); reject(new ServiceHttpError(response.statusCode)); return; }
       const chunks = [];
       let size = 0;
       response.on('data', (chunk) => { size += chunk.length; if (size > 64 * 1024 * 1024) response.destroy(new Error('response over 64 MiB')); else chunks.push(chunk); });
@@ -127,7 +211,6 @@ function httpsTransport(service) {
       response.on('end', () => {
         clearTimeout(timer);
         const data = Buffer.concat(chunks);
-        if (response.statusCode >= 300) { reject(new Error(`HTTP ${response.statusCode}`)); return; }
         try { resolve(String(response.headers['content-type'] ?? '').includes('application/json') ? JSON.parse(data) : data.toString('utf8')); }
         catch { reject(new Error('invalid JSON response')); }
       });
@@ -138,8 +221,11 @@ function httpsTransport(service) {
   });
 }
 
-/** The service-contract client of kind remote-gate-http; `transport` is injectable for tests. */
-export function remoteGateHttp(service, { transport = httpsTransport(service) } = {}) {
+/**
+ * The service-contract client of kind remote-gate-http. `headers` are the credential headers serviceCredentialHeaders
+ * resolved for it; `transport` is injectable for tests.
+ */
+export function remoteGateHttp(service, { headers = {}, transport = httpsTransport(service, headers) } = {}) {
   return {
     health: () => transport('GET', '/health'),
     submit: (spec) => transport('POST', '/v1/jobs', spec),
@@ -180,14 +266,20 @@ export function acceptRemoteResult(result, { jobId, sha, projectId, profile }) {
  * service's gate output), or null when the gate is to run on this computer. A pass counts only with its output, and with
  * a run-tests summary ("# all test files") when `summaryRequired`. `say` gets one line per decision, for gate.log; the
  * service's own words in it are reduced to plain text.
+ * A service that declares `auth` is offered the commit only through a credential `broker` (a token-store.mjs store that
+ * the authorized caller passes in): without one, or when its reference does not resolve, the service is recorded as
+ * unavailable and no request is sent. A refused request (HTTP 401 or 403) is recorded as unavailable, never as a result.
  */
 export async function runOnService({ services, repository, sha, available = () => true, say: sayLine = () => {}, reference = 'gate',
-  summaryRequired = false, client = remoteGateHttp, sleep = sleepFor, now = Date.now, pollMs = 10_000 }) {
+  summaryRequired = false, client = remoteGateHttp, broker = null, sleep = sleepFor, now = Date.now, pollMs = 10_000 }) {
   if (!SHA.test(sha ?? '') || !repository) return null;
   const listed = services.filter((service) => service.projects[repository.toLowerCase()]);
   if (!listed.length) return null;
   if (!available(sha)) { sayLine(`# check services skipped: ${sha} is on no origin branch, and a service can fetch only from origin`); return null; }
-  const say = (line) => sayLine(plain(line));
+  // The credential in use, if any, is cut from every line: a service's own words may echo a request header back.
+  let secrets = [];
+  const redact = (text) => secrets.reduce((cut, secret) => cut.split(secret).join('[credential]'), String(text));
+  const say = (line) => sayLine(plain(redact(line)));
   const budgetEnd = now() + Math.min(MAX_TIMEOUT_MINUTES, Math.max(...listed.map((service) => service.timeoutMinutes))) * 60_000;
   for (const service of listed) {
     const project = service.projects[repository.toLowerCase()];
@@ -196,7 +288,11 @@ export async function runOnService({ services, repository, sha, available = () =
     // The service is told to stop a little before AIWorks stops waiting, so its answer can still arrive.
     const timeoutSeconds = Math.floor((deadline - now()) / 1000) - 60;
     if (timeoutSeconds < 300) { say(`# ${name} skipped: under five minutes of the check service budget left`); continue; }
-    const api = client(service);
+    const credential = serviceCredentialHeaders(service, broker);
+    secrets = [];
+    if (credential.problem) { say(`# ${name} unavailable: ${credential.problem}; next service or this computer`); continue; }
+    secrets = Object.values(credential.headers).flatMap((header) => [header, header.replace(/^Bearer /, '')]);
+    const api = client(service, { headers: credential.headers });
     let jobId = null;
     try {
       const health = await api.health();
@@ -227,7 +323,7 @@ export async function runOnService({ services, repository, sha, available = () =
       let text = '';
       try {
         const log = await api.log(jobId);
-        text = typeof log === 'string' ? log : JSON.stringify(log);
+        text = redact(typeof log === 'string' ? log : JSON.stringify(log));
       } catch (error) { say(`# ${name} output of job ${jobId} unavailable (${error.message})`); }
       if (verdict.passed && (!text.trim() || (summaryRequired && !/^# all test files/m.test(text)))) {
         say(`# ${name} job ${jobId} passed, but does not count without its ${text.trim() ? 'test summary' : 'output'}; next service or this computer`);
@@ -236,7 +332,10 @@ export async function runOnService({ services, repository, sha, available = () =
       return { exit: verdict.passed ? 0 : 1, text, service: service.name, jobId };
     } catch (error) {
       if (jobId) await api.cancel(jobId).catch(() => {});
-      say(`# ${name} unavailable (${error.message}); next service or this computer`);
+      const refused = error?.status === 401 || error?.status === 403;
+      const why = !refused ? error?.message : service.auth ? `HTTP ${error.status}: the service refused the configured credential`
+        : `HTTP ${error.status}: the service requires authentication, and no authentication contract is configured for it`;
+      say(`# ${name} unavailable (${why}); next service or this computer`);
     }
   }
   return null;
