@@ -55,10 +55,12 @@ export function repairSources({ tree, present = [], texts = [], diff = '', files
   return out;
 }
 
-/** The complete model input of a brokered run, apart from its run identity: snapshot, findings and controller note. */
-export function inputKey({ snapshotDigest, findings = [], note = null }) {
-  return createHash('sha256').update(JSON.stringify([snapshotDigest, findings, note ?? null])).digest('hex');
+/** The complete model input of a run apart from its run identity: executor, model and the whole prompt. */
+export function inputKey({ executor, model = null, prompt }) {
+  return createHash('sha256').update(JSON.stringify([executor, model, prompt])).digest('hex');
 }
+
+const BROKER_PROTOCOL = /edit broker refused|before text must be|duplicate edit path|no longer has active authority/i;
 
 /** An attempt that ended without a usable step forward: the worker lacked evidence, or the run ended in an error. */
 export function noProgress(outcome) {
@@ -68,17 +70,28 @@ export function noProgress(outcome) {
 }
 
 /**
- * The earlier attempt whose complete input equals `key` and that ended without progress, or null. Running the same input
- * again predicts the same answer, so the caller stops instead of paying for it.
+ * A no-progress end that the same input reproduces: the worker said it lacks evidence, or broke the brokered edit format.
+ * Stream cuts, timeouts and other errors are transient and keep their retry, backoff and limits.
+ */
+export function deterministicNoProgress(outcome) {
+  if (!outcome) return false;
+  if (outcome.class === 'evidence-unavailable') return true;
+  if (outcome.class === 'result') return outcome.value?.result === 'evidence-unavailable';
+  return outcome.class === 'error' && BROKER_PROTOCOL.test(outcome.detail ?? '');
+}
+
+/**
+ * The earlier attempt whose complete input equals `key` and that ended in a deterministic no-progress end, or null.
+ * The same input on the same executor and model predicts the same end, so the caller stops instead of paying again.
  */
 export function sameFailedInput(key, previous) {
-  return previous.find((attempt) => attempt.inputKey === key && noProgress(attempt.outcome)) ?? null;
+  return previous.find((attempt) => attempt.inputKey === key && deterministicNoProgress(attempt.outcome)) ?? null;
 }
 
 const CATALOG = [
   { code: 'admission-budget', test: (o) => o.class === 'admission-blocked',
     prevention: 'The packet did not fit the executor before it started. Choose an executor whose context fits, or split the task, before registering it again.' },
-  { code: 'broker-edit-protocol', test: (o) => /edit broker refused|before text must be|duplicate edit path|no longer has active authority/i.test(o.detail ?? ''),
+  { code: 'broker-edit-protocol', test: (o) => BROKER_PROTOCOL.test(o.detail ?? ''),
     prevention: 'The model broke the brokered edit format, a known limit of the tool-free code broker. Give the step a declared executor that edits files directly, or a stronger model, instead of the same one again.' },
   { code: 'executor-tooling', test: (o) => /unexpected tool|not configured on this PC|executor-unavailable/i.test(o.detail ?? ''),
     prevention: 'The executor could not run as configured. Fix the host configuration or route the step to another declared executor.' },
@@ -108,8 +121,8 @@ export function reviewStoppedStep(attempts) {
     const missing = attempt.snapshot ? namedTreePaths(`${o.value?.summary ?? ''} ${o.value?.tried ?? ''}`, attempt.snapshot.tree ?? []).filter((p) => !files.has(p)) : [];
     const matched = CATALOG.filter((c) => c.test(o, { missing }));
     for (const c of matched) cause(c.code, c.prevention, attempt.id, c.code === 'context-gap' ? `absent from the snapshot: ${missing.join(', ')}` : o.detail ?? o.value?.summary);
-    const earlier = attempts.slice(0, index).find((a) => a.kind === attempt.kind && a.inputKey && a.inputKey === attempt.inputKey && noProgress(a.outcome));
-    if (earlier && noProgress(o)) cause('same-input-repeat', 'An attempt repeated the complete input of an attempt that had already failed, so its result was predictable. Change the input (sources, executor or task) before trying again.', attempt.id, `same input as ${earlier.id}`);
+    const earlier = attempts.slice(0, index).find((a) => a.kind === attempt.kind && a.inputKey && a.inputKey === attempt.inputKey && deterministicNoProgress(a.outcome));
+    if (earlier && deterministicNoProgress(o)) cause('same-input-repeat', 'An attempt repeated the complete input of an attempt that had already failed, so its result was predictable. Change the input (sources, executor or task) before trying again.', attempt.id, `same input as ${earlier.id}`);
     else if (!matched.length && noProgress(o)) unexplained.push(attempt.id);
   });
   const list = [...causes.values()];

@@ -13,7 +13,7 @@ import { GateSlotStore, gateHost, gateCheckoutKey } from './gate-slot.mjs';
 import { repairSources } from './failure-review.mjs';
 
 const SNAPSHOT_BOUND = 580_000;
-export const snapshotDigest =(value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+export const snapshotDigest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const prefix = (entry, path) => path.toLowerCase() === entry.replace(/\/$/, '').toLowerCase()
   || path.toLowerCase().startsWith(entry.replace(/\/$/, '').toLowerCase() + '/');
 const boundedStrings = (value, max = 64) => Array.isArray(value) && value.length > 0 && value.length <= max
@@ -134,7 +134,9 @@ export function settleCodeProposal({ git, op, outcome, task, deniedPaths }) {
   if (!proposal || Object.keys(proposal).sort().join(',') !== 'edits,report,snapshotDigest'
       || proposal.snapshotDigest !== saved.snapshot.digest || typeof proposal.report !== 'string' || !proposal.report.trim()
       || proposal.report.length > 52000 || containsSecret(proposal.report) || !Array.isArray(proposal.edits)) throw Error('Invalid code proposal');
-  const paths = [...new Set(saved.snapshot.value.files.filter((f) => !f.anchor && !f.missing).map((f) => f.path))];
+  // A file the self-review added as evidence is editable only inside the task's planned writes.
+  const paths = [...new Set(saved.snapshot.value.files.filter((f) => !f.anchor && !f.missing
+    && (!f.added || !task.writes || task.writes.some((p) => prefix(p, f.path)))).map((f) => f.path))];
   for (const edit of proposal.edits) {
     if (!safeCodePath(edit.path)) throw Error('Forbidden code proposal path');
     if (edit.before === '' && !saved.snapshot.value.tree.includes(edit.path)
