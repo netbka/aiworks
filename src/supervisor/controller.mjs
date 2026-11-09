@@ -2951,7 +2951,10 @@ export class Controller {
   routedChoice(decl, task, now, { facts, waits, session, history, hostUnavailable }) {
     const stage = task.state === 'implemented' ? 'verify' : 'implement';
     const spec = specOf(this.store, decl.campaignId, task.task_id, decl);
-    const providers = executorOrder(decl.executor);
+    // The operator's code broker grant applies here as on the static path: per declared provider and this stage's role.
+    const role = stage === 'verify' ? 'verification' : 'implementer';
+    const providers = executorOrder(decl.executor).map((provider) => ({ ...provider,
+      ...(codeBrokerPolicy(this.config, decl, provider, role, this.cmd.cursor) ? { brokeredCode: true } : {}) }));
     const ops = this.taskOperations(decl, task);
     const inputs = policyInputs({ stage, spec, routing: decl.routing, providers, platform: process.platform,
       facts: (kind) => ({ ...facts(kind), ...(hostUnavailable?.has(kind) ? { hostUnavailable: hostUnavailable.get(kind) } : {}) }),
