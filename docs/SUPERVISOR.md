@@ -312,8 +312,10 @@ campaign and a higher authorization version. Target, tasks and acceptance remain
 The amendment preserves operations, results and spent runs. `status` and the dashboard
 show the selected executor and durable `executorWaits`; `recheck` clears those waits.
 Cursor research reports require an explicit model and a CLI supporting `--disable-project-configs`.
-Every Cursor model call, in every route, also needs the owner's included-only attestation for that exact
-model (below); without it the provider is unavailable before any model call. Each run uses fresh configuration and data directories, denies shell/file/fetch/MCP tools, and records
+Every Cursor worker model call also needs the owner's included-only attestation for that exact model
+(below); without it the provider is unavailable before any model call. The Cursor coordinator is gated by
+its own configuration instead: its model must be in `allowedModels` (never Auto or a Fast tier) and carry the
+same `includedOnly` attestation (section 9). Each run uses fresh configuration and data directories, denies shell/file/fetch/MCP tools, and records
 streamed events; tool use, non-login authentication or an unbound terminal result is refused. Existing
 user and project configuration is preserved. This report-only route disables web-search auto-accept
 and Explore subagents and keeps the native filesystem sandbox enabled with workspace read access.

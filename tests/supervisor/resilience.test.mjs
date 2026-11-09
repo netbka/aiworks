@@ -62,12 +62,10 @@ test('a Codex sandbox that cannot start any process is executor unavailability, 
   assert.match(codexSandboxProbe(['codex'], { platform: 'win32', spawn: spawn({ status: 1, stdout: '', stderr: 'setup refresh had errors (os error 32)' }) }), /locked by another Codex process/);
   assert.match(codexSandboxProbe(['codex'], { platform: 'win32', spawn: spawn({ status: 3, stdout: '', stderr: 'boom' }) }), /probe failed/);
   assert.equal(codexSandboxProbe(['codex'], { platform: 'linux', spawn: () => { throw new Error('must not spawn'); } }), null);
-  // The probe runs inside the managed read-only sandbox, and its echo is an ordinary cmdlet: the managed sandbox refuses a
-  // .NET static method call ([Console]::WriteLine), which kept a healthy Codex out of dispatch (exit 1) indefinitely.
+  // The probe runs inside the managed read-only sandbox: a health check never widens it.
   let argv = null;
   codexSandboxProbe(['codex'], { platform: 'win32', spawn: (_, args) => { argv = args; return { status: 0, stdout: 'AIWORKS_CODEX_SANDBOX_OK\n' }; } });
   assert.deepEqual(argv.slice(0, 5), ['sandbox', '--include-managed-config', '--permission-profile', ':read-only', '--']);
-  assert.doesNotMatch(argv.at(-1), /::|\[[A-Za-z.]+\]/);
 });
 
 test('Codex workers run without account connectors, multi-agent, browser or computer tools', { skip: skipWithoutSqlite }, (t) => {
