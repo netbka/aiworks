@@ -19,6 +19,13 @@ const run = (cwd, ...args) => {
 };
 const serving = (host) => `import { createServer } from 'node:http';
 createServer((req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<h1>Synthetic shop</h1>'); }).listen(Number(process.env.PORT), ${host});\n`;
+// A server that answers whether it could read a file or import a package from beside its own folder.
+const escaping = `import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
+const tried = [];
+try { readFileSync(new URL('../../outside.txt', import.meta.url)); tried.push('read ESCAPED'); } catch (error) { tried.push('read ' + error.code); }
+try { await import('example-outside'); tried.push('import ESCAPED'); } catch (error) { tried.push('import ' + error.code); }
+createServer((req, res) => { res.writeHead(200, { 'content-type': 'text/plain' }); res.end(tried.join(' ')); }).listen(Number(process.env.PORT), process.env.HOST);\n`;
 
 /** A disposable repository with one commit of synthetic servers. */
 function repository(t) {
@@ -29,7 +36,10 @@ function repository(t) {
   run(repo, 'config', 'user.name', 'Preview Test');
   run(repo, 'config', 'user.email', 'preview-test@example.invalid');
   const files = { 'ok.mjs': serving('process.env.HOST'), 'wide.mjs': serving("'0.0.0.0'"), 'silent.mjs': 'setInterval(() => {}, 1000);\n',
-    'withdeps/server.mjs': serving('process.env.HOST'), 'withdeps/package.json': '{"dependencies":{"example-server":"1.0.0"}}\n', 'install.sh': 'echo synthetic\n' };
+    'withdeps/server.mjs': serving('process.env.HOST'), 'withdeps/package.json': '{"dependencies":{"example-server":"1.0.0"}}\n', 'install.sh': 'echo synthetic\n',
+    'second.mjs': `${serving('process.env.HOST')}createServer(() => {}).listen(0, '127.0.0.1');\n`, 'escape.mjs': escaping,
+    'vendor/server.mjs': serving('process.env.HOST'), 'vendor/Node_Modules/example-outside/index.mjs': 'export const x = 1;\n' };
+  mkdirSync(join(repo, 'vendor', 'Node_Modules', 'example-outside'), { recursive: true });
   for (const [path, text] of Object.entries(files)) writeFileSync(join(repo, path), text);
   run(repo, 'add', '-A');
   run(repo, 'commit', '-q', '-m', 'Synthetic servers');
@@ -49,30 +59,44 @@ test('only an operator-declared plain Node script of the checked commit that nee
   assert.equal(serverPreviewDeclaration({}, project), null, 'no declaration, no server preview');
   assert.equal(serverPreviewDeclaration(config({ script: 'ok.mjs' }), 'example-org/otherapp'), null, 'a declaration is for its project only');
   for (const entry of [{ script: '../ok.mjs' }, { script: 'C:/ok.mjs' }, { script: '/ok.mjs' }, { script: 'install.sh' }, { script: '.hidden/ok.mjs' },
-    { script: 'ok.mjs', command: 'node ok.mjs' }, { script: 'ok.mjs', args: ['--inspect'] }, { script: 'ok.mjs', ready: 'http://example.invalid/' }, 'node ok.mjs']) {
+    { script: 'ok.mjs', command: 'node ok.mjs' }, { script: 'ok.mjs', args: ['--inspect'] }, { script: 'ok.mjs', ready: 'http://example.invalid/' }, 'node ok.mjs',
+    // Unbuilt extension points fail closed: another server runtime, or a requirement that outgoing network be contained.
+    { script: 'ok.mjs', runtime: 'python' }, { script: 'ok.mjs', runtime: 'command' }, { script: 'ok.mjs', outgoingNetwork: 'contained' }, { script: 'ok.mjs', outgoingNetwork: 'loopback' }]) {
     assert.ok(serverPreviewDeclaration(config(entry), project)?.error, JSON.stringify(entry));
   }
   assert.deepEqual(serverPreviewDeclaration(config({ script: 'ok.mjs' }), 'Example-Org/SampleApp'), { script: 'ok.mjs', ready: '/' });
   const { repo, sha } = repository(t);
   assert.throws(() => serverPreviewPlan({ repoPath: repo, sha, declaration: { script: 'missing.mjs', ready: '/' } }), { code: 'PREVIEW_SERVER_SCRIPT_MISSING' });
   assert.throws(() => serverPreviewPlan({ repoPath: repo, sha, declaration: { script: 'withdeps/server.mjs', ready: '/' } }), { code: 'PREVIEW_SERVER_NEEDS_INSTALL' });
+  assert.throws(() => serverPreviewPlan({ repoPath: repo, sha, declaration: { script: 'vendor/server.mjs', ready: '/' } }), { code: 'PREVIEW_DEPENDENCY_UNSUPPORTED' },
+    'a node_modules folder the commit carries on the script’s path, pinned by no lockfile, is never run');
   assert.throws(() => serverPreviewPlan({ repoPath: repo, sha: 'f'.repeat(40), declaration: { script: 'ok.mjs', ready: '/' } }), { code: 'PREVIEW_COMMIT_MISSING' });
   assert.equal(serverPreviewPlan({ repoPath: repo, sha, declaration: { script: 'ok.mjs', ready: '/' } }).sha, sha);
 });
 
-test('a server that never answers, listens beyond loopback or outlives its deadline is stopped with its process tree; a restart starts clean', { skip, timeout: 300_000 }, async (t) => {
+test('a server that never answers, listens anywhere but its own loopback port, reaches outside its folder or outlives its deadline is stopped with its process tree; a restart starts clean', { skip, timeout: 300_000 }, async (t) => {
   const { tmp, repo, sha } = repository(t);
   const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { windowsHide: true, stdio: 'ignore' });
   t.after(() => unrelated.kill());
   const plan = (script) => serverPreviewPlan({ repoPath: repo, sha, declaration: { script, ready: '/' } });
   const folder = () => mkdtempSync(join(tmp, 'work-'));
   for (const [label, script, code, options] of [['never answers', 'silent.mjs', 'PREVIEW_SERVER_TIMEOUT', { readyMs: 8000 }],
-    ['listens beyond loopback', 'wide.mjs', 'PREVIEW_SERVER_EXPOSED', {}]]) {
+    ['listens beyond loopback', 'wide.mjs', 'PREVIEW_SERVER_EXPOSED', {}], ['listens on another loopback port', 'second.mjs', 'PREVIEW_SERVER_EXPOSED', {}]]) {
     const workDir = folder();
     await assert.rejects(startServerPreview({ repoPath: repo, plan: plan(script), workDir, ...options }), { code }, label);
     assert.equal(processesIn(workDir), 0, `${label}: no process of the preview is left`);
     assert.equal(existsSync(workDir), false, `${label}: its folder is removed`);
   }
+
+  // Its file reads and package imports stay in its own folder: a file and a package beside that folder are refused.
+  writeFileSync(join(tmp, 'outside.txt'), 'synthetic\n');
+  mkdirSync(join(tmp, 'node_modules', 'example-outside'), { recursive: true });
+  writeFileSync(join(tmp, 'node_modules', 'example-outside', 'package.json'), '{"name":"example-outside","version":"1.0.0","type":"module","exports":"./index.mjs"}');
+  writeFileSync(join(tmp, 'node_modules', 'example-outside', 'index.mjs'), 'export const x = 1;\n');
+  const contained = await startServerPreview({ repoPath: repo, plan: plan('escape.mjs'), workDir: folder() });
+  const tried = (await contained.request('')).body.toString('utf8');
+  assert.equal(await contained.stop(), 'stopped');
+  assert.equal(tried, 'read ERR_ACCESS_DENIED import ERR_ACCESS_DENIED');
 
   // The job kills a server at its deadline even when nobody stops it.
   const workDir = folder();

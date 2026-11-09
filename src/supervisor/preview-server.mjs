@@ -15,14 +15,20 @@
 //   and HOST and PORT; Node's permission model limits its file reads and writes to its own folder and refuses child
 //   processes, worker threads and native addons;
 // - network: AIWorks gives it a free loopback port of its own, separate from the dashboard's and the capture's; it is
-//   ready once that port answers, and while it runs every port it or a descendant listens on must be a loopback address,
-//   or it is stopped. The owner's browser never reaches it: the dashboard (or the capture's own server) relays GET
-//   requests to it, keeps each answer in the preview's opaque-origin sandbox (PREVIEW_POLICY), and serves only known
-//   types, bounded in size, without credential-looking text;
+//   ready once that port answers, and while it runs the only endpoint it or a descendant may hold is a TCP listener on
+//   that port at a loopback address: any other listener (another port, beyond loopback, or UDP) stops it. The owner's
+//   browser never reaches it: the dashboard (or the capture's own server) relays GET requests to it, keeps each answer
+//   in the preview's opaque-origin sandbox (PREVIEW_POLICY), and serves only known types, bounded in size, without
+//   credential-looking text;
 // - what is not contained: its outgoing connections. Nothing on this platform keeps a program's own requests to loopback
 //   without a firewall rule or an AppContainer, which AIWorks does not create; that is why each project needs the
 //   operator's declaration, and why the script it runs is the one the independent check already ran under the same
 //   containment.
+// Extension points (serverPreviewCapabilities): the runtimes a declaration may name and whether outgoing network
+// containment exists. Only the Node runtime above is built, and outgoing containment is not; a declaration naming another
+// runtime, or requiring contained outgoing network, is refused before anything is read or started. Adding either is a
+// reviewed change to SERVER_RUNTIMES or outgoingNetworkContainment with its own containment and verification at its real
+// boundary, never a setting.
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -71,8 +77,28 @@ export function serverPreviewSupport() {
 }
 
 /**
+ * The server runtimes a declaration may name, each with its own capability detection. Only `node` is built; a runtime
+ * missing here (Python, Ruby, Go, PHP, a container, an arbitrary command) is unsupported and refused.
+ */
+const SERVER_RUNTIMES = Object.freeze({ node: serverPreviewSupport });
+
+/**
+ * Whether a preview server's own outgoing connections can be kept to loopback on this computer. Not built: it would
+ * need a per-preview firewall rule or AppContainer, which AIWorks does not create and never creates globally.
+ */
+function outgoingNetworkContainment() {
+  return { available: false, reason: 'AIWorks cannot keep a preview server’s own outgoing connections on this computer, so a project that requires that gets no server preview.' };
+}
+
+/** What this computer can run as a server preview: each runtime's support, and outgoing network containment. */
+export function serverPreviewCapabilities() {
+  return { runtimes: Object.fromEntries(Object.entries(SERVER_RUNTIMES).map(([name, detect]) => [name, detect()])), outgoingNetwork: outgoingNetworkContainment() };
+}
+
+/**
  * The operator's server preview declaration for `project` (config.json `previews.servers`, keyed by the project's
- * repository or lp- id, case folded): null when there is none, { error } when it is malformed, else { script, ready }.
+ * repository or lp- id, case folded): null when there is none, { error } when it is malformed or asks for what is not
+ * built (another `runtime` than node, or `outgoingNetwork: 'contained'`), else { script, ready }.
  */
 export function serverPreviewDeclaration(config, project) {
   const key = projectKey(project), servers = config?.previews?.servers;
@@ -80,7 +106,12 @@ export function serverPreviewDeclaration(config, project) {
   const found = Object.entries(servers).find(([name]) => projectKey(name) === key);
   if (!found) return null;
   const entry = found[1];
-  const valid = plainObject(entry) && Object.keys(entry).every((name) => ['script', 'ready'].includes(name)) &&
+  if (plainObject(entry) && entry.runtime !== undefined && !Object.hasOwn(SERVER_RUNTIMES, entry.runtime)) {
+    return { error: 'AIWorks runs only a Node preview script; the server type named for this project in AIWorks’s settings is not supported, so nothing is started.' };
+  }
+  if (plainObject(entry) && entry.outgoingNetwork === 'contained' && !outgoingNetworkContainment().available) return { error: outgoingNetworkContainment().reason };
+  const valid = plainObject(entry) && Object.keys(entry).every((name) => ['script', 'ready', 'runtime', 'outgoingNetwork'].includes(name)) &&
+    [undefined, 'uncontained'].includes(entry.outgoingNetwork) &&
     typeof entry.script === 'string' && entry.script.length <= 200 && SCRIPT.test(entry.script) && !entry.script.split('/').some((part) => WINDOWS_UNSAFE.test(part)) &&
     (entry.ready === undefined || typeof entry.ready === 'string' && entry.ready.length <= 200 && READY.test(entry.ready));
   if (!valid) return { error: 'The preview script named for this project in AIWorks’s settings is not a plain repository-relative .mjs, .cjs or .js path, so nothing is started.' };
@@ -101,8 +132,16 @@ export function serverPreviewPlan({ git = ['git'], repoPath, sha, declaration, p
   // Every package.json from the repository root down to the script's folder: one that declares dependencies needs them
   // placed exactly as its lockfile pins them.
   const parts = script.split('/'), packages = [];
-  for (let depth = 0; depth < parts.length; depth++) {
-    const folder = parts.slice(0, depth).map((part) => `${part}/`).join(''), manifest = tree.get(`${folder}package.json`);
+  const folders = parts.map((_, depth) => parts.slice(0, depth).map((part) => `${part}/`).join(''));
+  // Node resolves the script's packages from a node_modules folder on its path; one the commit carries itself would
+  // run dependencies no lockfile pins and no cached copy proves, whether or not a package.json declares them. Windows
+  // folds case, so the names are compared folded.
+  const modules = folders.map((folder) => `${folder}node_modules/`.toLowerCase());
+  if ([...tree.keys()].some((path) => modules.some((prefix) => path.toLowerCase().startsWith(prefix)))) {
+    throw new PreviewError('PREVIEW_DEPENDENCY_UNSUPPORTED', 'This checked version carries its own node_modules folder, which AIWorks does not run for a preview, so nothing was started.');
+  }
+  for (const folder of folders) {
+    const manifest = tree.get(`${folder}package.json`);
     if (!manifest) continue;
     let declared = null;
     const read = readGit(git, repoPath, ['cat-file', 'blob', manifest.blob]);
@@ -156,8 +195,10 @@ async function freePort() {
 const LOOPBACK = (address) => /^127\./.test(address) || address === '::1';
 
 /**
- * The addresses the processes under `pid` (the runner, its helper and the server) listen on, TCP and UDP: { proved,
- * exposed }. `proved` is true only when the lookup worked and the server is seen listening on its loopback `port`.
+ * The endpoints the processes under `pid` (the runner, its helper and the server) listen on, TCP and UDP: { proved,
+ * exposed }. `proved` is true only when the lookup worked and the server is seen listening on its loopback `port`;
+ * `exposed` lists every other endpoint (`address port`, UDP ones prefixed `udp`): beyond loopback, on another port, or
+ * UDP at all.
  */
 export async function serverListeners(pid, port) {
   if (!POWERSHELL || !Number.isSafeInteger(pid) || pid <= 0) return { proved: false, exposed: [] };
@@ -173,8 +214,8 @@ ConvertTo-Json -Compress -InputObject @{ tcp = $tcp; udp = $udp }`;
   let seen = null;
   try { seen = JSON.parse(out ?? ''); } catch { return { proved: false, exposed: [] }; }
   const list = (value) => (Array.isArray(value) ? value : typeof value === 'string' ? [value] : []).map((entry) => String(entry).split(' '));
-  const all = [...list(seen?.tcp), ...list(seen?.udp)];
-  return { proved: list(seen?.tcp).some(([address, at]) => LOOPBACK(address) && Number(at) === port), exposed: all.filter(([address]) => !LOOPBACK(address)).map(([address]) => address) };
+  const own = ([address, at]) => LOOPBACK(address) && Number(at) === port, tcp = list(seen?.tcp);
+  return { proved: tcp.some(own), exposed: [...tcp.filter((endpoint) => !own(endpoint)).map((endpoint) => endpoint.join(' ')), ...list(seen?.udp).map((endpoint) => `udp ${endpoint.join(' ')}`)] };
 }
 
 /** A request path relayed to the server: each segment decoded once and a plain name, re-encoded; null otherwise. */
@@ -232,6 +273,8 @@ async function relay(origin, requestPath, running) {
 
 const removeFolder = (dir) => { try { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); } catch { /* the next start removes it */ } };
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
+/** Whether a child process has ended, by exit code or by signal. */
+const exited = (child) => child.exitCode !== null || child.signalCode !== null;
 
 /**
  * Start the server of one checked version as `plan` (serverPreviewPlan) says, in `workDir`, a new folder it owns and
@@ -265,7 +308,7 @@ export async function startServerPreview({ git = ['git'], repoPath, plan, workDi
     const deadline = startedAt + readyMs;
     for (;;) {
       if (signal?.aborted) throw new PreviewError('PREVIEW_SERVER_CANCELLED', 'The preview was cancelled, so its server was stopped.');
-      if (spawnFailed || runner.exitCode !== null) throw new PreviewError('PREVIEW_SERVER_STOPPED', 'The checked version’s server stopped before it answered.');
+      if (spawnFailed || exited(runner)) throw new PreviewError('PREVIEW_SERVER_STOPPED', 'The checked version’s server stopped before it answered.');
       if (Date.now() > deadline) throw new PreviewError('PREVIEW_SERVER_TIMEOUT', `The checked version’s server did not answer within ${Math.round(readyMs / 1000)} seconds, so it was stopped.`);
       try {
         const response = await fetch(`${origin}${plan.ready}`, { redirect: 'manual', signal: AbortSignal.timeout(2000) });
@@ -274,13 +317,13 @@ export async function startServerPreview({ git = ['git'], repoPath, plan, workDi
       } catch { await pause(200); }
     }
     const seen = await serverListeners(runner.pid, port);
-    if (seen.exposed.length) throw new PreviewError('PREVIEW_SERVER_EXPOSED', 'The checked version’s server listened beyond this computer, so it was stopped.');
+    if (seen.exposed.length) throw new PreviewError('PREVIEW_SERVER_EXPOSED', 'The checked version’s server listened somewhere other than the one port on this computer AIWorks gave it, so it was stopped.');
     if (!seen.proved) throw new PreviewError('PREVIEW_SERVER_UNPROVED', 'AIWorks could not prove that the checked version’s server listens only on this computer, so it was stopped.');
     let stopping = null, watch = null;
     const child = runner;
     const server = {
       sha: plan.sha, entry: plan.entry, port, workDir, expiresAt: startedAt + ttlMs,
-      running: () => !stopping && child.exitCode === null,
+      running: () => !stopping && !exited(child),
       request: (path) => relay(origin, path, server.running),
       stop: () => stopping ??= (async () => {
         clearInterval(watch);
@@ -289,9 +332,10 @@ export async function startServerPreview({ git = ['git'], repoPath, plan, workDi
         return proof;
       })(),
     };
-    // A server that stops by itself (its deadline, or a crash) is cleaned up at once; one that starts listening beyond
-    // loopback is stopped.
+    // A server that stops by itself (its deadline, or a crash) is cleaned up at once, even one that stopped before this
+    // listener was added; one that starts listening anywhere but its own port is stopped.
     child.once('exit', () => void server.stop());
+    if (exited(child)) void server.stop();
     watch = setInterval(async () => {
       if (!server.running()) return;
       const again = await serverListeners(child.pid, port);
