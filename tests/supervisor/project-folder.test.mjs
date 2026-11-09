@@ -197,17 +197,43 @@ test('a checkout holding AIWorks\'s data in an ignored folder follows a merge, b
   assert.equal(await r.sync(), FOLDER_UPDATED);
   assert.equal(r.head(), first, 'a merge that changes nothing under the data directory fast-forwards the checkout');
 
-  // A merge that adds a tracked file where the live data is: the checkout is left as it is and the data stays.
+  // Beside it in the same ignored folder: a task worktree with unsaved work.
+  const sibling = join(r.env.repo, '.local', 'worktrees', 'x');
+  mkdirSync(sibling, { recursive: true });
+  writeFileSync(join(sibling, 'notes.txt'), 'unsaved\n');
   const other = join(r.env.tmp, 'elsewhere');
-  mkdirSync(join(other, '.local', 'data'), { recursive: true });
-  writeFileSync(join(other, '.local', 'data', 'config.json'), '{"live":false}\n');
-  run(other, ['add', '-f', '-A']);
-  run(other, [...owner, 'commit', '-q', '-m', 'write over the data']);
-  run(other, ['push', '-q', 'origin', 'main']);
-  const mergeCommit = run(other, ['rev-parse', 'HEAD']);
-  r.store.journal('folder-sync', 'merged', { task: 'T1', sha: mergeCommit, url: `https://github.com/${REPOSITORY}/pull/9`, mergeCommit, reconciled: false, requested: true }, Date.now());
+  let pr = 9;
+  /** A recorded merge that adds tracked files under `.local/`, where the live files are. */
+  const writeOver = (files) => {
+    for (const [file, text] of Object.entries(files)) {
+      mkdirSync(join(other, ...file.split('/').slice(0, -1)), { recursive: true });
+      writeFileSync(join(other, ...file.split('/')), text);
+    }
+    run(other, ['add', '-f', '-A']);
+    run(other, [...owner, 'commit', '-q', '-m', 'write under .local']);
+    run(other, ['push', '-q', 'origin', 'main']);
+    const mergeCommit = run(other, ['rev-parse', 'HEAD']);
+    pr += 1;
+    r.store.journal('folder-sync', 'merged', { task: 'T1', sha: mergeCommit, url: `https://github.com/${REPOSITORY}/pull/${pr}`, mergeCommit, reconciled: false, requested: true }, Date.now());
+  };
+  const kept = () => {
+    assert.equal(r.head(), first, 'the checkout did not move');
+    assert.equal(readFileSync(join(data, 'config.json'), 'utf8'), '{"live":true}\n', 'the live data is unchanged');
+    assert.equal(readFileSync(join(sibling, 'notes.txt'), 'utf8'), 'unsaved\n', 'the task worktree beside it is unchanged');
+  };
+  // Into the data directory, then into the task worktree beside it: the checkout is left as it is.
+  writeOver({ '.local/data/config.json': '{"live":false}\n' });
   assert.equal(await r.sync(), FOLDER_LEFT);
   assert.equal(r.last().detail.reason, 'aiworks-runtime');
-  assert.equal(r.head(), first, 'the checkout did not move');
-  assert.equal(readFileSync(join(data, 'config.json'), 'utf8'), '{"live":true}\n', 'the live data is unchanged');
+  kept();
+  writeOver({ '.local/worktrees/x/notes.txt': 'overwritten\n' });
+  assert.equal(await r.sync(), FOLDER_LEFT);
+  assert.equal(r.last().detail.reason, 'aiworks-runtime');
+  kept();
+  // Whatever holds AIWorks's data, the fast-forward itself never writes over ignored files on disk.
+  r.controller.dataDir = r.env.dataDir;
+  writeOver({ '.local/worktrees/x/notes.txt': 'overwritten again\n' });
+  assert.equal(await r.sync(), FOLDER_LEFT);
+  assert.equal(r.last().detail.reason, 'changes');
+  kept();
 });

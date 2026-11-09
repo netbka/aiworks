@@ -3,6 +3,7 @@ import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readF
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { containsSecret } from '../coordinator.mjs';
+import { assertManagedWorktree } from '../adapters/git.mjs';
 import { writeAtomic } from '../proc.mjs';
 
 const MAX_EDITS = 32;
@@ -219,6 +220,8 @@ export function applyEdits({ git = ['git'], workspace, runDir, operationId, sess
   // Commit in a controller-owned detached worktree first. Normal hooks remain active. Only a fast-forward
   // of this direct child can then advance the task branch; a concurrent sibling commit makes it fail.
   workspace = join(runDir, 'edit-workspace');
+  // Its root is the run directory: never a destination outside it or reached through a link or junction.
+  try { assertManagedWorktree(runDir, workspace); } catch (error) { fail(error.message); }
   if (!existsSync(workspace)) run(git, targetWorkspace, ['-c', 'core.autocrlf=false', '-c', 'core.eol=lf', 'worktree', 'add', '--detach', workspace, baseSha]);
   if (str(run(git, workspace, ['rev-parse', '--show-toplevel'])).replaceAll('\\', '/').toLowerCase() !== workspace.replaceAll('\\', '/').toLowerCase()) fail('candidate workspace identity changed');
   const owned = new Set(intent.entries.map((entry) => entry.path));

@@ -345,20 +345,22 @@ export async function updateFolder(controller, key) {
   const own = [controller.runtimeRoot ?? RUNTIME_ROOT, controller.dataDir].filter(Boolean);
   if (own.some((dir) => within(path, dir))) return left('aiworks-runtime');
   // The runtime checkout or data directory may sit in an ignored folder of this checkout (the AIWorks source with its
-  // `.local/`). The folder then moves only when the fast-forward changes no tracked path there: Git would write over
-  // ignored files.
-  const held = own.filter((dir) => within(dir, path)).map((dir) => comparable(dir).slice(comparable(path).length + 1));
+  // `.local/`), beside task worktrees, campaigns and governance. The folder then moves only when the fast-forward changes
+  // no tracked path anywhere in that top-level folder: Git would write over ignored files.
+  const held = own.filter((dir) => within(dir, path)).map((dir) => comparable(dir).slice(comparable(path).length + 1).split('/')[0]);
   const fetched = await controller.fetchBase(path, base, decl.target.repository);
   // The merged base could not be read: nothing is recorded, so the next pass tries the same merge again.
   if (!fetched.ok) return null;
   if (!gitA.isAncestor({ git, path, ancestor: mergeCommit, descendant: fetched.sha })) return left('unreadable');
+  const head = gitA.exec(git, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], { cwd: path });
+  if (!head.ok || !SHA.test(head.stdout)) return left('unreadable');
   if (held.length) {
-    const head = gitA.exec(git, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], { cwd: path });
-    const changed = head.ok && SHA.test(head.stdout) ? gitA.changedPaths({ git, path, from: head.stdout, to: fetched.sha }) : null;
+    const changed = gitA.changedPaths({ git, path, from: head.stdout, to: fetched.sha });
     if (!changed) return left('unreadable');
     if (changed.some((file) => held.some((dir) => touches(file, dir)))) return left('aiworks-runtime');
   }
-  const moved = fastForwardFolder({ git, path, branch: base, target: fetched.sha, hooksOff: join(controller.dataDir, 'no-hooks') });
+  // The fast-forward starts only from the head checked here.
+  const moved = fastForwardFolder({ git, path, branch: base, target: fetched.sha, hooksOff: join(controller.dataDir, 'no-hooks'), expectedHead: head.stdout });
   return moved.updated ? note(FOLDER_UPDATED, { from: moved.from, to: moved.to, already: moved.already }) : left(moved.reason);
 }
 
