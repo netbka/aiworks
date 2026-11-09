@@ -3086,7 +3086,8 @@ export class Controller {
    * Filter 5 before a routed choice (MODEL_ROUTING 4.2): the host and project check of each candidate kind that is
    * configured and not waiting, against the main checkout. A finding records the same wait as the check after the choice.
    */
-  routedHostChecks(ctx, decl, checkout, web, probe) {
+  routedHostChecks(ctx, decl, task, checkout, web, probe) {
+    const role = task.state === 'implemented' ? 'verification' : 'implementer';
     const found = new Map();
     const waits = this.store.all('SELECT * FROM executor_waits WHERE campaign_id = ?', ctx.id);
     const now = this.now();
@@ -3094,7 +3095,12 @@ export class Controller {
       if (!this.cmd[kind.replace('-cli', '')]?.length) continue;
       const wait = laterWait(waits.find((item) => item.executor_kind === kind), accountWait(this.store, this.config, kind));
       if (wait && (wait.retry_at === null || wait.retry_at > now)) continue;
-      const provider = executorOrder(decl.executor).find((item) => item.kind === kind);
+      const declared = executorOrder(decl.executor).find((item) => item.kind === kind);
+      // A candidate the code broker grant covers runs tool-free, and dispatch checks it as such; judge it the same way here,
+      // or the routed choice loses its only Windows commit implementer. Dispatch still checks the executor it actually runs.
+      const brokered = decl.routing.candidates.find((candidate) => candidate.kind === kind
+        && codeBrokerPolicy(this.config, decl, { ...declared, model: candidate.model }, role, this.cmd.cursor));
+      const provider = brokered ? { ...declared, model: brokered.model, researchOnly: true } : declared;
       const reason = executors.unavailableReason(provider, checkout, this.cmd.gh, { probe, chromeCommand: this.cmd.chrome, web });
       if (!reason) continue;
       this.recordUnavailable(ctx, kind, reason);
@@ -3138,10 +3144,11 @@ export class Controller {
         this.store.run('UPDATE executor_waits SET retry_at = ? WHERE campaign_id = ? AND executor_kind = ?',
           now, ctx.id, provider.kind);
         const ready = this.store.tasks(ctx.id).some((task) => {
-          if (task.blocked || !['pending', 'implemented'].includes(task.state) ||
-              this.executorChoice(decl, task, now).executor?.kind !== provider.kind) return false;
+          const chosen = task.blocked || !['pending', 'implemented'].includes(task.state) ? null : this.executorChoice(decl, task, now).executor;
+          if (chosen?.kind !== provider.kind) return false;
           const spec = specOf(this.store, ctx.id, task.task_id, decl);
-          return spec && !executors.unavailableReason(provider, repo.path, this.cmd.gh, {
+          // A brokered choice is checked as dispatch checks it: tool-free, so global CLI extensions do not apply.
+          return spec && !executors.unavailableReason(chosen.brokeredCode ? { ...chosen, researchOnly: true } : provider, repo.path, this.cmd.gh, {
             chromeCommand: this.cmd.chrome, web: Boolean(spec.web), workList: this.selfHosted(decl.target.repository),
           });
         });
@@ -3295,7 +3302,7 @@ export class Controller {
       const sessionId = randomUUID();
       // A routed campaign runs filter 5 before its choice and reads its history here, once per dispatch (MODEL_ROUTING 4.2, 5.3).
       const routed = decl.routing?.mode === 'auto' ? { session: sessionId, history: true, hostUnavailable: checkout?.path
-        ? this.routedHostChecks(ctx, decl, checkout.path, Boolean(specOf(this.store, ctx.id, task.task_id, decl).web), probe) : null } : {};
+        ? this.routedHostChecks(ctx, decl, task, checkout.path, Boolean(specOf(this.store, ctx.id, task.task_id, decl).web), probe) : null } : {};
       const choice = this.executorChoice(decl, task, this.now(), routed);
       if (!choice.executor) {
         this.waitForExecutor(ctx, decl, task, choice);
