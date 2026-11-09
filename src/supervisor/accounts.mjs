@@ -22,6 +22,17 @@ export function accountOf(config, kind) {
   return typeof name === 'string' && NAME.test(name) ? name : kind;
 }
 
+/**
+ * The operator's included-only record for an executor kind on this host, or null: the owner's private attestation in
+ * config.json ("includedOnly": { "cursor-cli": { "attestedBy": "owner", "paidOverages": false, "recordedAt": "...",
+ * "models": [...] } }) that the account behind it has paid overages off for exactly these models. It is an authorization
+ * record, not a billing audit, and holds no credential; executors.mjs includedOnlyProblem judges it before a model call.
+ */
+export function includedOnlyRecord(config, kind) {
+  const record = config?.includedOnly?.[kind];
+  return record && typeof record === 'object' && !Array.isArray(record) ? record : null;
+}
+
 /** The account's current wait row, or null. */
 export function accountWait(store, config, kind) {
   return store.get('SELECT * FROM provider_waits WHERE account = ? AND executor_kind = ?', accountOf(config, kind), kind) ?? null;

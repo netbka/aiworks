@@ -46,6 +46,8 @@ test('Cursor coordinator requires an included model attestation and never falls 
   assert.equal(coordinator.coordinatorConfigError(env.config.coordinator), null);
   assert.match(coordinator.coordinatorConfigError({ ...env.config.coordinator, includedOnly: false }), /includedOnly/);
   assert.match(coordinator.coordinatorConfigError({ ...env.config.coordinator, model: 'other-model' }), /allowedModels/);
+  // A Fast tier is billed apart from the included allowance: never a coordinator model, even when listed.
+  assert.match(coordinator.coordinatorConfigError({ ...env.config.coordinator, model: 'grok-4.7-fast', allowedModels: ['grok-4.7-fast'] }), /Fast tier/);
   coordinator.postOwnerMessage(store, { text: 'Review the sample project.', repository: 'example-org/sampleapp', requestId: randomUUID() });
 
   await controller.tick();

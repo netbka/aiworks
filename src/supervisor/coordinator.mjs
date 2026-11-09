@@ -9,7 +9,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Ajv from 'ajv';
 import { ALWAYS_DENIED, AUTH, CREDIT_LIMIT, ISOLATION_ARGS, ISOLATION_ENV, QUOTA, VERIFIER_DENIED } from './adapters/claude.mjs';
-import { BUNDLE_STEPS_RULE, MARK_SECTIONS_RULE, classify as classifyExecutor, prepare as prepareExecutor } from './adapters/executors.mjs';
+import { BUNDLE_STEPS_RULE, MARK_SECTIONS_RULE, UNBOUNDED_MODEL, classify as classifyExecutor, prepare as prepareExecutor } from './adapters/executors.mjs';
 import { DEVELOPMENT_RESOURCE_RULE } from './development-policy.mjs';
 import { assertManagedWorktree, exec as gitExec } from './adapters/git.mjs';
 import { readJsonIfExists, readTextIfExists, stopOwnedRun, writeAtomic } from './proc.mjs';
@@ -156,8 +156,8 @@ export function coordinatorConfigError(cfg) {
     if (cfg.includedOnly?.attestedBy !== 'owner' || cfg.includedOnly?.paidOverages !== false || !/^\d{4}-\d{2}-\d{2}/.test(cfg.includedOnly?.recordedAt ?? '')) return 'Cursor coordinator requires an includedOnly owner attestation that paid overages are off';
     if (typeof cfg.nativeModel !== 'string' || !cfg.nativeModel.trim()) return 'Cursor coordinator requires nativeModel identity';
     if (!Array.isArray(cfg.allowedModels) || cfg.allowedModels.length < 1 || cfg.allowedModels.length > 20 ||
-        !cfg.allowedModels.every((model) => typeof model === 'string' && /^[A-Za-z0-9._-]{1,100}$/.test(model) && !/^auto$/i.test(model))) {
-      return 'Cursor coordinator allowedModels must list 1..20 explicit model names';
+        !cfg.allowedModels.every((model) => typeof model === 'string' && /^[A-Za-z0-9._-]{1,100}$/.test(model) && !UNBOUNDED_MODEL.test(model))) {
+      return 'Cursor coordinator allowedModels must list 1..20 explicit model names, never Auto or a Fast tier';
     }
     if (!cfg.model || !cfg.allowedModels.includes(cfg.model)) return 'Cursor coordinator model must be explicitly included in allowedModels';
     if (cfg.permissionMode !== undefined) return 'Cursor coordinator does not accept permissionMode';
