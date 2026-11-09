@@ -63,6 +63,8 @@ function parse(hash) {
   if (tail.length === 1 && tail[0] === 'plan') return { screen: 'plan', project };
   if (tail.length === 2 && tail[0] === 'review' && name(tail[1])) return { screen: 'review', project, plan: tail[1] };
   if (tail.length === 3 && tail[0] === 'step' && name(tail[1]) && name(tail[2])) return { screen: 'step', project, work: tail[1], step: tail[2] };
+  // One goal in its project (HOME_V2 2.2): Home's goal links open exactly this goal.
+  if (tail.length === 2 && tail[0] === 'goal' && name(tail[1])) return { screen: 'goal', project, work: tail[1] };
   return null;
 }
 
@@ -85,6 +87,7 @@ export function formatRoute(route) {
     case 'plan': return `#/p/${p(route.project)}/plan`;
     case 'review': return `#/p/${p(route.project)}/review/${p(route.plan)}`;
     case 'step': return `#/p/${p(route.project)}/step/${p(route.work)}/${p(route.step)}`;
+    case 'goal': return `#/p/${p(route.project)}/goal/${p(route.work)}`;
     default: return '#/projects';
   }
 }
@@ -112,7 +115,7 @@ export const globalOf = (route) => ['home', 'settings', 'chats'].includes(route.
  */
 export const tabOf = (route) => route.screen === 'project' ? LEGACY_TABS[route.tab] ?? route.tab
   : ['plan', 'start', 'review'].includes(route.screen) ? 'plan' : ['knowledge', 'releases'].includes(route.screen) ? route.screen
-    : ['step', 'project-settings'].includes(route.screen) ? 'overview' : null;
+    : ['step', 'goal', 'project-settings'].includes(route.screen) ? 'overview' : null;
 /** The route each project tab opens. */
 export const tabRoute = (project, tab) => ['overview', 'review'].includes(tab) ? { screen: 'project', project, tab } : { screen: tab, project };
 

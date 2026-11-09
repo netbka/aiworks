@@ -2,7 +2,7 @@
 
 **Privacy boundary:** this is a design, not an installation record. Every project, goal, step, amount and time below is fictional.
 
-**Status:** the data (part 1) is built in source: `GET /api/v2/home` and the `home` part of `/api/state` carry it. The screen (part 2) is built in source: `public/home.mjs` and `homeScreen()`. Its check (part 3) is planned.
+**Status:** the data (part 1) is built in source: `GET /api/v2/home` and the `home` part of `/api/state` carry it. The screen (part 2) is built in source: `public/home.mjs` and `homeScreen()`, with answer changes (2.1) and goal links (2.2). Its check (part 3) is planned.
 
 Home answers three questions in the owner's words, in this order: does anything need me, what is being made right now, and what was finished today. It never shows reference numbers, commit hashes, decision codes, step ids, file names, version names or internal state names, and it does not explain how AIWorks works.
 
@@ -22,6 +22,7 @@ Each goal is one entry:
 | `done`, `total`, `dropped` | Steps finished, all steps, steps dropped. |
 | `segments` | One entry per step, in plan order: `done`, `now`, `asks`, `todo` or `dropped`. The screen draws them as a strip. |
 | `state` | `Asks you`, `Building`, `Checking`, `Queued` or `Paused`. |
+| `link` | Where the goal's title leads: `{ project, goal }`, the project's address key and the goal's own id (2.2). Never shown as words; null when the project is not known. |
 
 Order: goals that ask the owner something first, then those being built or checked, then queued, then paused. Within a group, the order they were started.
 
@@ -82,7 +83,7 @@ Home is one centred column, at most 1040 px wide. Top to bottom:
 1. A headline: "Nothing needs you.", "One question for you." or "N things need you.", with one grey line such as "3 goals are moving in bakery. 14 changes landed since yesterday." (`needs.count`, `goals`, `landed.total`).
 2. Only when something waits: one card per item, the question as its heading. A choice shows its two to four options as selectable cards with their effect and "Suggested" on the suggestion, one Answer button and what happens without an answer. Anything else shows its question and a link to where it is settled.
 3. In progress: one row per goal (`goals`) with its title, the `now` line, a strip of its segments, "1 of 3 done" and its state; the spend of `spentToday.usd` in the block head when known.
-4. Decided for you: one line per decision with the chosen answer in bold and a Change link; hidden when empty.
+4. Decided for you: one line per decision with the answer in force in bold and a Change control (2.1); hidden when empty.
 5. Landed since yesterday: at most five lines from `landed.entries`, the rest behind "All N" when all entries are available. When `total` exceeds the available entries, the button says "Latest N" and a note states how many of the total changes are shown. Expanding keeps the data's 20-entry bound; "Fewer" returns to five.
 6. Quiet: one line of project links from `quiet`.
 
@@ -90,7 +91,23 @@ The header carries the logo, the navigation, one word for the work (Working, Pau
 
 Navigation is Home, Projects and Settings. Needs you is not a screen: its address opens Home, and the count on the Home item is `needs.count`, with "checking" beside it while a result's merge is still being checked. When nothing needs the owner but such a check is unresolved, the headline says "Nothing needs you, but a result is still being checked." rather than claiming calm; the count stays the owner's own actions. AIWorks's own problems, work stopped until restarted and routine work are in Settings, in one folded section "AIWorks itself"; Home shows one grey line "AIWorks has N problems of its own" linking there only when such a problem stops work, and it is never in the count.
 
-Words come from the data above as text, never as markup; the screen adds no codes, numbers or explanations of how AIWorks works. Not built yet: Undo after an answer (no command reverses an answer), and the goal link goes to the goal's project because the data names no goal address.
+Words come from the data above as text, never as markup; the screen adds no codes, numbers or explanations of how AIWorks works.
+
+### 2.1 Changing an answer
+
+A decided answer can be changed from Home: Change opens the decision's recorded options with the answer in force chosen, and `POST /api/v2/decisions/change` records the new one. Only the owner's own browser session may send it (the same caller check as answering); a program AIWorks started is refused and nothing is written. The request binds the goal's version, authorization and scope, the step's version, the decision and the exact answer the owner saw.
+
+- **History.** The first answer, with who gave it (AIWorks under AW-017, or the owner), and every change stay in the journal. A change is a new record that names the owner's request, the digest of any words and the answer it replaces; nothing earlier is edited.
+- **Stale or replayed.** A change bound to an answer that is no longer in force, a step that moved on, or a second change of the same answer is refused with nothing written. A retry of the same request is acknowledged, never recorded twice.
+- **Step still being made.** Its later runs, builders and checkers alike, get the new answer in place of the earlier one, under the same authority and scope; the earlier answer is never delivered again. Committed work, runs and checks are kept: the next run builds on them and never rewrites, resets or undoes them, and never repeats an action that published, disclosed, deployed or spent something.
+- **Step that already used the answer** (checked, merged, finished or ended). The step is not reopened and its result is not rewritten. One follow-up item records the new answer, for new, bounded work planned under the existing authority. The same follow-up is added, beside the new guidance, when runs worked under an answer whose effects may not be reversible (an answer that was not AIWorks's own reversible or safe one).
+- **Never wider.** The new option is one of the options recorded with the decision; a change clears no stop, starts no run, raises no limit and widens no packet. A text an AI worker or a GitHub comment posts is never an answer: only the supervisor writes answer records, from the owner's checked session or under AW-017.
+
+An answer the owner gave in their own words, without recorded options, is not changed here.
+
+### 2.2 Goal links
+
+A goal's title on Home opens that goal in its own project, `#/p/<project>/goal/<goal>`, from the goal's `link`. The page shows only that goal, and only when it belongs to that project; otherwise it says the goal is not recorded there and links to the project's work.
 
 Acceptance: the screen reads only the fields of part one, the headline and the badge show the same number, and every visible word is plain English for a person.
 

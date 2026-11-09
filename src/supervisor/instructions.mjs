@@ -1,6 +1,13 @@
+import { inForce } from './decisions.mjs';
+
+// A decision answer the owner later changed is replaced by the change (decisions.mjs inForce): it stays in the events as
+// history and is never delivered again, whether or not a run already read it.
+const instructionRows = (store, campaign) =>
+  inForce(store.all("SELECT * FROM events WHERE campaign_id = ? AND kind = 'agent-instruction' ORDER BY seq", campaign.id), campaign.id);
+
 // Owner guidance is delivered at the next task dispatch, without changing its authority.
 export function pendingInstructions(store, campaign, taskId, role) {
-  return store.all("SELECT * FROM events WHERE campaign_id = ? AND kind = 'agent-instruction' ORDER BY seq", campaign.id)
+  return instructionRows(store, campaign)
     .filter(({ payload }) => payload.taskId === taskId && (!role || payload.role === role) && !payload.delivery &&
       payload.authorizationVersion === campaign.authorization_version && payload.scopeDigest === campaign.scope_digest);
 }
@@ -17,7 +24,7 @@ export function attachInstructions(store, instructions, operationId, now) {
 // later run of both roles. Read the controller's durable receipt, including receipts
 // created before this change. Stale authority and other tasks never inherit it.
 export function decisionInstructions(store, campaign, taskId) {
-  return store.all("SELECT * FROM events WHERE campaign_id = ? AND kind = 'agent-instruction' ORDER BY seq", campaign.id)
+  return instructionRows(store, campaign)
     .filter(({ dedup_key, payload }) => dedup_key?.startsWith(`instruction:decision:${campaign.id}:`) &&
       payload.taskId === taskId && payload.authorizationVersion === campaign.authorization_version &&
       payload.scopeDigest === campaign.scope_digest);

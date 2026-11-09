@@ -715,6 +715,13 @@ export const COMMANDS = {
     answered: 'This decision was already answered. Nothing was recorded twice.',
     notOption: 'Choose one of the options shown, or write your own answer.',
     noted: 'You already said this decision did not need you.',
+    // Changing a recorded answer (HOME_V2 2.1): the earlier answer stays in the record either way.
+    changed: 'Changed. The step’s next runs follow your new answer; nothing already done was undone or done again.',
+    changedLater: 'Changed. Some work already done under the earlier answer cannot be taken back, so it stays; AIWorks added a follow-up for it.',
+    followUp: 'Recorded. That step had already used the earlier answer, so its work stays as it is; AIWorks added a follow-up to apply your new answer.',
+    changeStale: 'This answer changed since the page was loaded, or its step moved on. Nothing was recorded. Refresh the page to see the answer in force.',
+    sameAnswer: 'That is already the answer. Nothing was recorded.',
+    notRecorded: 'The options of this decision were not kept, so its answer cannot be changed here.',
   },
   // Review of a result (OWNER_UI_V2 WP4): accept and request changes are bound to one verified head and its report.
   result: {
