@@ -11,7 +11,7 @@ import Ajv from 'ajv';
 import { ALWAYS_DENIED, AUTH, CREDIT_LIMIT, ISOLATION_ARGS, ISOLATION_ENV, QUOTA, VERIFIER_DENIED } from './adapters/claude.mjs';
 import { BUNDLE_STEPS_RULE, MARK_SECTIONS_RULE, classify as classifyExecutor, prepare as prepareExecutor } from './adapters/executors.mjs';
 import { DEVELOPMENT_RESOURCE_RULE } from './development-policy.mjs';
-import { exec as gitExec } from './adapters/git.mjs';
+import { assertManagedWorktree, exec as gitExec } from './adapters/git.mjs';
 import { readJsonIfExists, readTextIfExists, stopOwnedRun, writeAtomic } from './proc.mjs';
 import { failRequest, IntakeError, pinRequest, recordDraft } from './intake.mjs';
 // messageRepository recovers the fixed header of dashboard requests queued before structured repository storage.
@@ -193,7 +193,8 @@ function prepareWorkspace(ctl, cfg) {
   const source = cfg.sourceRepo ?? AIWORKS_ROOT;
   const revision = ctl.codeRevision ?? git(ctl, source, ['rev-parse', 'HEAD']).stdout;
   if (!/^[0-9a-f]{40}$/.test(revision ?? '')) return { error: 'cannot resolve the deployed AIWorks revision' };
-  const path = join(worktreeBase(ctl, cfg), 'coordinator');
+  const root = worktreeBase(ctl, cfg), path = join(root, 'coordinator');
+  try { assertManagedWorktree(root, path); } catch (error) { return { error: error.message }; }
   if (!existsSync(path)) {
     mkdirSync(dirname(path), { recursive: true });
     if (!git(ctl, source, ['worktree', 'add', '--detach', path, revision]).ok) return { error: 'cannot create the coordinator checkout' };
@@ -212,7 +213,8 @@ function prepareWorkspace(ctl, cfg) {
  * retry; it must be clean before the read and is checked clean again afterwards.
  */
 function prepareTargetCheckout(ctl, cfg, request, source, revision) {
-  const path = join(worktreeBase(ctl, cfg), `intake-${request.request_id.slice(0, 8).toLowerCase()}`);
+  const root = worktreeBase(ctl, cfg), path = join(root, `intake-${request.request_id.slice(0, 8).toLowerCase()}`);
+  try { assertManagedWorktree(root, path); } catch (error) { return { error: error.message }; }
   if (!existsSync(path)) {
     mkdirSync(dirname(path), { recursive: true });
     if (!git(ctl, source, ['worktree', 'add', '--detach', path, revision]).ok) return { error: 'cannot create the planning checkout' };

@@ -63,8 +63,12 @@ export function startGate(path, command) {
   if (!started.ok) throw new Error(`gate start failed: ${started.stderr || started.stdout || `exit ${started.status}`}`.slice(0, 500));
 }
 
-/** A clean detached checkout of `commit` in `path`, reusing one that is already there. */
-export function checkout(git, repoPath, path, commit) {
+/**
+ * A clean detached checkout of `commit` in `path`, reusing one that is already there. `root` is the configured worktree
+ * root: a `path` outside it, or reached through a link or junction, is refused before anything is created.
+ */
+export function checkout(git, repoPath, path, commit, root) {
+  gitA.assertManagedWorktree(root, path);
   if (existsSync(path)) {
     const head = gitA.exec(git, ['rev-parse', 'HEAD'], { cwd: path });
     if (head.ok && head.stdout === commit) return;
@@ -125,7 +129,7 @@ export function refreshStep(controller, ctx, item, repoPath, baseSha, settings) 
     try {
       const commit = gitA.exec(git, [...IDENTITY, 'commit-tree', plan.tree, '-p', baseSha, '-p', sha, '-m', `AIWorks refresh: ${sha} merged with ${baseSha} (local only)`], { cwd: repoPath });
       if (!commit.ok) throw new Error(`commit-tree failed: ${commit.stderr || `exit ${commit.status}`}`);
-      checkout(git, repoPath, path, commit.stdout);
+      checkout(git, repoPath, path, commit.stdout, controller.repo(decl).worktreeRoot);
       // Recorded before the gate starts: after a crash here the next pass finds the worktree and starts the gate.
       journal('merge-refresh-started', { tree: plan.tree, commit: commit.stdout, path, command: settings.command });
       startGate(path, settings.command);

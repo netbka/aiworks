@@ -24,6 +24,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import { writeAtomic } from '../proc.mjs';
+import { assertManagedWorktree } from '../adapters/git.mjs';
 import { mergedEventReader } from './eligibility.mjs';
 import { releaseCommandsStopped, runReleaseCommand } from './runner.mjs';
 import { releasePath } from './paths.mjs';
@@ -74,6 +75,8 @@ export function printed(output) {
 export function releaseCheckout({ repo, dataDir, release: r, revision }) {
   if (!releaseCommandsStopped({ dataDir, release: r })) throw new Error('An earlier release command has no process-tree stop proof');
   const home = releasePath(dataDir, r.id), dir = releasePath(dataDir, r.id, 'checkout'), off = join(home, 'no-hooks');
+  // Its root is the release's own folder: never a checkout outside it or reached through a link or junction.
+  assertManagedWorktree(home, dir);
   mkdirSync(home, { recursive: true });
   if (existsSync(dir)) {
     const source = git(repo, off, 'rev-parse', '--path-format=absolute', '--git-common-dir');
