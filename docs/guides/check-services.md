@@ -33,7 +33,7 @@ A service of kind `remote-gate-http` must provide the following.
 
 - HTTPS on a fixed address that the AIWorks computer can reach, normally on the local network. Reserve the address (for example a DHCP reservation), because the certificate names it.
 - A certificate for that address, signed by a CA certificate that you copy to the AIWorks computer (`caFile`). AIWorks trusts only that certificate for the service, never the system store, and never disables verification.
-- Access control without secrets in AIWorks's configuration: the reference service admits callers by their network address and lets a caller read and cancel only its own jobs. A service that needs a token is not supported yet, because `config.json` holds no secret values.
+- Access control: either by network address (the reference service admits callers by address and lets a caller read and cancel only its own jobs), or by a credential under a documented authentication contract (see [Authentication](#authentication)). Either way a caller reads and cancels only its own jobs.
 - Requests and answers are small JSON, except `stdout.log`. AIWorks reads at most 64 MiB of any answer. It ends a request that has not completed within 30 seconds in total (5 minutes for `stdout.log`).
 
 ### Routes
@@ -50,6 +50,32 @@ A service of kind `remote-gate-http` must provide the following.
 States: `pending` (queued; `waiting.reason` may say why, such as too little free memory), `running`, then one terminal state: `passed`, `test_failure`, `environment_failure`, `cancelled` or `interrupted`.
 
 The result holds at least `jobId`, `projectId`, `profile`, `requestedSha`, `commitSha`, `state`, `exitCode` and `commands`, a list of `{ phase, argv, exitCode }` for every step the service ran. The full gate step must be listed with its real `argv` (ending in `run check`) and exit code.
+
+### Authentication
+
+A service that requires a credential must document exactly how it is sent, and the operator records that contract in the service's `auth` setting. AIWorks never guesses: without `auth` it sends no credential, and a service that then answers `401` or `403` is recorded as unavailable (`the service requires authentication, and no authentication contract is configured for it`). Two schemes are known:
+
+| `auth.scheme` | Sent on every request to the service's fixed routes |
+| --- | --- |
+| `bearer` | `Authorization: Bearer <value>` |
+| `header` | `<auth.header>: <value>`, for a contract that names its own header, such as `X-Check-Key`. `Authorization`, `Cookie`, `Host` and the transport's own headers are not accepted. |
+
+A scheme not in this table (for example Basic or a signed request) is not supported; such a service stays left out until the contract is added here and reviewed.
+
+The value is never in `config.json`, `AIWORKS_CHECK_SERVICES`, a file AIWorks reads or a worker's environment. `auth.tokenRef` names it in the operator's secret store and must start with `aiworks-check-service:`, so it can never name another operator secret. The store is `token-store.mjs`: the Windows Credential Manager by default, or a credential helper command in `auth.credentialStore`.
+
+The authentication contract never leaves the controller. `serve` exports no `auth` in `AIWORKS_CHECK_SERVICES`, and `readCheckServices` drops any `auth` it finds there: every worker inherits that variable and can rewrite it, so a service read from it can never obtain credential headers. The authorized caller builds both the services and the broker only from the controller's own `config.json`: the services from `checkServiceSettings(config)`, the broker from the same entry's `auth.credentialStore` (`tokenStoreFrom(entry.auth.credentialStore ?? { kind: "windows" })`), and passes it to `runOnService` as `broker`. The client has no default broker and never opens a store itself. That caller is not built yet. The value is resolved fresh for each offer, goes only into the request headers to the configured `https` origin (no redirect is followed, and the service certificate is verified against `caFile` as always), and never reaches `gate.log`, an error message or the returned result. An error answer is reduced to its HTTP status; its body is not read.
+
+The service fails closed at every step:
+
+| Situation | Recorded as |
+| --- | --- |
+| `auth` absent in part, an unknown scheme, a reserved header or an invalid reference | the service is left out at start (`check service left out: ...`) |
+| no broker passed, the reference does not resolve, the store cannot tell, or the value is not one printable header line | `unavailable: ...`; no request is sent |
+| `401` or `403` from any route | `unavailable (HTTP 401: ...)`; the job, if any, is cancelled |
+| queued past `queueSeconds`, no answer within `timeoutMinutes`, a state outside the contract | the job is cancelled; no result |
+
+None of these is a pass, a failure of the code or an approval gate. The required local checks, publication and merge go on regardless.
 
 ### Running the gate
 
@@ -76,6 +102,16 @@ Add `checkServices` to the supervisor's `config.json` in its data folder (instal
       },
       "queueSeconds": 120,
       "timeoutMinutes": 60
+    },
+    {
+      "name": "lab-desktop",
+      "kind": "remote-gate-http",
+      "baseUrl": "https://192.0.2.20:4319",
+      "caFile": "check-services/lab-desktop-ca.crt",
+      "projects": {
+        "example-org/sampleapp": { "projectId": "sampleapp", "profile": "windows-full" }
+      },
+      "auth": { "scheme": "bearer", "tokenRef": "aiworks-check-service:lab-desktop" }
     }
   ]
 }
@@ -90,6 +126,7 @@ Add `checkServices` to the supervisor's `config.json` in its data folder (instal
 | `projects` | Which repositories may go to this service: `"<owner>/<repository>"` as in the checkout's `origin`, mapped to the service's own `projectId` and `profile`. Other repositories never go to it. |
 | `queueSeconds` | How long a job may stay queued before AIWorks cancels it and runs the gate itself. 10 to 3600, default 120. |
 | `timeoutMinutes` | The longest run AIWorks waits for. 5 to 75, default 60. The service is told to stop a minute earlier (`timeoutSeconds`). A run that ends without an answer that counts is then run here too, inside the verifier bound (`executor.verifierTimeoutMinutes`, default 120). |
+| `auth` | Only for a service whose contract requires a credential: `{ "scheme": "bearer" \| "header", "header"?: "<name>", "tokenRef": "aiworks-check-service:<name>", "credentialStore"?: { "kind": "windows" } \| { "kind": "command", "command": [...] } }`. `header` is required with scheme `header` and not allowed with `bearer`. Without `credentialStore` the Windows Credential Manager is used. Holds a reference, never the value. See [Authentication](#authentication). |
 | `enabled` | `false` leaves the service out without deleting it. |
 
 Several services may be listed. They are tried in order, and for each repository only the services that list it are tried.
@@ -100,13 +137,15 @@ When `serve` starts it checks the entries and puts the accepted ones in its own 
 
 1. Install the service on the other computer with the project's toolchain (for example the Node.js version the project requires), and register each project with its `origin` address under a `projectId`.
 2. Give the service computer a fixed address and a certificate for it, and copy the CA certificate to the AIWorks computer's data folder.
-3. From the AIWorks computer, check reachability: `curl --cacert <caFile> https://<address>:<port>/health` must print `{"status":"ok"}`.
-4. Add the `checkServices` entry and restart `serve`. The supervisor log names the service.
-5. Push a commit that is already verified here and watch the next gate: `gate.log` starts with `# check service <name> accepted job ...`.
+3. From the AIWorks computer, check reachability: `curl --cacert <caFile> https://<address>:<port>/health` must print `{"status":"ok"}`. If it answers `401`, obtain the service's written authentication contract (scheme and header) before going on.
+4. For a service that requires a credential, store its value under a reference in the operator's secret store yourself (for the Windows Credential Manager, a generic credential named by the reference, for example `aiworks-check-service:<name>`; or through the configured credential helper's `set <ref>`, which reads the value from stdin). Never put the value in `config.json`, a command line or a file in the repository. Add `auth` with the documented scheme and that reference.
+5. Add the `checkServices` entry and restart `serve`. The supervisor log names the service.
+6. Not built yet: the authorized caller that reads the services and broker from `config.json` and offers commits. Once it exists, offer a commit that is already verified here and on origin through it, and read its lines: `# check service <name> accepted job ...`, then the job's states and its terminal result. Record the exact commit, job id, state, time and artifacts as operator evidence outside the repository.
 
 ## Security notes
 
-- Only the commit identifier, the project and profile names and a short gate reference (`gate-<worktree folder name>`) are sent. No source, secrets or credentials leave the computer.
+- Only the commit identifier, the project and profile names and a short gate reference (`gate-<worktree folder name>`) are sent, plus, for a service with `auth`, its own credential to its own origin. No source and no other secret leaves the computer.
+- The credential is resolved by the controller's broker, not by a worker. The services environment every worker inherits carries no `auth` at all (no scheme, reference or store), and any `auth` written into it is ignored. A worker that rewrites it can point a service at another address, but that service never receives a credential.
 - The services come only from the environment `serve` gives each run, never from a shared file. Every contained worker can write to the gate slot folder. Had the list been a file there, one run could have chosen who answers the gates of other runs and of the supervisor. A worker can change only its own gate's environment, just as it could write its own `gate-exit.log`. The exact-head check (`gateHeadProblem`) and the verifier's independence cover that case.
 - Keep `caFile` in a folder workers cannot write, such as the supervisor data folder.
 - The service's own words (states, commit ids, errors) are reduced to plain single-line text before they reach `gate.log`. They cannot add lines the log readers take for a test summary.
@@ -115,5 +154,20 @@ When `serve` starts it checks the entries and puts the accepted ones in its own 
 
 ## Still open
 
-- A verifier gate of a commit that is not yet on origin, and a merge-refresh gate, cannot be offered. The service fetches only from origin. `POST /v1/sources` (a git bundle of the commit) is a proposed addition to the contract and is not built.
-- A service that needs a token is not supported. Configuration holds no secret values.
+- A verifier gate of a commit that is not yet on origin, and a merge-refresh gate, cannot be offered. The service fetches only from origin. The bundle protocol below is a proposal, not built.
+- Nothing in AIWorks calls `runOnService` automatically. An authorized caller that reads services and broker from the controller's `config.json`, offers commits and records receipts is a separate change.
+- Authentication schemes other than `bearer` and a named `header` are not supported.
+
+## Proposal: unpublished commits as a bundle
+
+Status: proposal only, for separate review by both the service and AIWorks. Nothing here is implemented, and the client refuses every route not listed under [Routes](#routes).
+
+Goal: let a service check an exact commit that is not on origin yet (a verifier gate before publication, or a merge-refresh result) without giving the service write access or AIWorks's working tree.
+
+1. `POST /v1/sources` with a body of `application/x-git-bundle`, created by `git bundle create - <base>..<sha>` where `<base>` is a commit the service already has from origin (the configured base branch tip), and headers `X-Commit-Sha: <sha>`, `X-Base-Sha: <base>`, `X-Project-Id: <projectId>`. The same authentication as every other route.
+2. The service verifies the bundle (`git bundle verify` against its own clone of origin), fetches it into a quarantine ref, checks that `<sha>` exists, that its history reaches `<base>`, and that the bundle holds no other refs. It answers `{ sourceId, commitSha, baseSha, sizeBytes, sha256 }`, with `sha256` the digest of the bundle bytes it received. AIWorks compares that digest and both commits with what it sent, and stops on any difference.
+3. `POST /v1/jobs` takes `sourceId` in place of fetching from origin. Everything else in the job, result and acceptance rules is unchanged: `requestedSha` and `commitSha` must still equal `<sha>`.
+4. Limits: a bundle size cap stated by the service (for example 64 MiB), one source per idempotency key, and deletion of the source with the job's workspace. A source never becomes a branch on any remote; the service never pushes.
+5. AIWorks side: build the bundle from the exact verified head only (never a working tree), record its digest in the receipt next to the job id, and never send a bundle for a repository the service does not list.
+
+Open questions for that review: whether a bundle may contain commits that are not yet public under the project's disclosure rules; how long a service keeps a source; and whether a merge-refresh result (a merge commit created locally) needs both parents in the bundle.
