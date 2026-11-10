@@ -185,6 +185,38 @@ export function standingFollowUp(store, { key, title, body, now }) {
   return found ? item(store, found.number) : createItem(store, { kind: 'task', title, body, labels: [FOLLOW_UP, label], authorKind: 'supervisor', now });
 }
 
+export const PRODUCT_DEFECT = 'product-defect';
+
+/**
+ * A product defect an independent verifier found outside its task's write scope (owner decision "independent failure
+ * analyst", routing 2): one open `finding` item per `key` across every campaign, linked to the campaign, task and exact
+ * SHA that first reported it. A later report from another campaign, task or SHA adds one comment to that open item
+ * (idempotent by its links), never a second item; once it is closed, a new report opens a new item. Text that looks like a credential is never stored: the item is then recorded with
+ * `fallbackTitle` and `fallback`. Returns { item, created }; null when this installation has no work list.
+ */
+export function productDefectItem(store, { key, title, body, fallbackTitle, fallback, campaignId, taskId, verifiedSha, now }) {
+  if (!present(store)) return null;
+  const label = `${PRODUCT_DEFECT}:${String(key).slice(0, MAX_LABEL - PRODUCT_DEFECT.length - 1)}`;
+  return store.tx(() => {
+    // Only an open item absorbs a report: once its item is closed, the defect seen again is new work and gets a new item.
+    const found = store.get("SELECT number, campaign_id, task_id, verified_sha FROM work_items WHERE kind = 'finding' AND author_kind = 'supervisor' AND state = 'open' AND EXISTS (SELECT 1 FROM json_each(labels) WHERE value = ?) ORDER BY number LIMIT 1", label);
+    if (found) {
+      if (found.campaign_id !== campaignId || found.task_id !== taskId || found.verified_sha !== verifiedSha) {
+        addComment(store, { number: found.number, idempotencyKey: `${PRODUCT_DEFECT}:${campaignId}:${taskId}:${verifiedSha}`, authorKind: 'supervisor', now,
+          body: `Reported again by the independent verifier of ${campaignId}/${taskId} at \`${verifiedSha}\`.` });
+      }
+      return { item: item(store, found.number), created: false };
+    }
+    const links = { campaignId, taskId, verifiedSha }, labels = [PRODUCT_DEFECT, label];
+    try {
+      return { item: createItem(store, { kind: 'finding', title, body, labels, links, authorKind: 'supervisor', now }), created: true };
+    } catch (error) {
+      if (error?.code !== 'WORK_ITEM_SECRET' && error?.code !== 'WORK_ITEM_TOO_LARGE') throw error;
+      return { item: createItem(store, { kind: 'finding', title: fallbackTitle, body: fallback, labels, links, authorKind: 'supervisor', now }), created: true };
+    }
+  });
+}
+
 /**
  * The work item a declaration names as its owner authorization (`aiworks-work:<n>`), checked: null when the reference
  * is another form. It admits only AIWorks's own repository with local main trusted, and only an open item the owner wrote

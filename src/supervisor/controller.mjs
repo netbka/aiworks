@@ -28,7 +28,7 @@ import { totalmem } from 'node:os';
 import { cleans, cleanupSettings, createStackSweeper, inside, openOperations, runningBatches, runningRefreshes, workerJobLimits } from './host-safety.mjs';
 import { containsSecret, coordinatorTick, LANE as COORDINATOR_LANE } from './coordinator.mjs';
 import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './reading.mjs';
-import { MAX_CITES } from './adapters/claude.mjs';
+import { MAX_CITES, productDefectsOf } from './adapters/claude.mjs';
 import { runnerIdentified, stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions, decisionInstructions } from './instructions.mjs';
 import { answerGuidance, answersItself, autoOption, decideGuidance, decisionId, isDecision, sendsBack, structuredDecision } from './decisions.mjs';
@@ -46,7 +46,7 @@ import { baseCheckStep, baseCompareSettings, baseRecord, claimBaseRed, settleBas
 import { CACHE_RULE, checkClaims, hasRunner, insertResults, offerCache, otherNodeMajor, resultsOf, testCacheSettings } from './test-cache.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
-import { addComment, createItem, followUp, standingFollowUp, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
+import { addComment, createItem, followUp, productDefectItem, standingFollowUp, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 import { alertDecision, configuredTransport, currentAlertRules, renderAlert } from './alerts.mjs';
 import { PUBLICATION_REFUSED, privateTerms, publicationFindings } from '../shared/public-text.mjs';
@@ -1321,6 +1321,60 @@ export class Controller {
     if (item) this.log(`base check of ${record.repository} ${sha}: red; repair item ${item}`);
   }
 
+  /**
+   * Owner decision "independent failure analyst", routing 2: each product defect a verifier found outside its task's
+   * write scope becomes one linked, deduplicated item. Called inside the fenced write that finishes the verify operation,
+   * so it runs once per operation whatever restarts follow; the key (component plus title, normalized, digested) makes a
+   * repeated verdict, another task or another campaign find the same item instead of a second one. AIWorks's own
+   * repository with local main trusted gets a `finding` in the work list linked to the campaign, task and exact SHA;
+   * elsewhere the same fallback as a red base: a comment on the campaign's tracking issue, or a local note for a project
+   * without GitHub. Information only: it never changes the verdict, widens no scope or authority, and a failure to record
+   * is journalled, never thrown.
+   */
+  recordProductDefects(ctx, op, value, now) {
+    const { valid, dropped } = productDefectsOf(value);
+    if (dropped > 0) this.store.journal(ctx.id, 'product-defect-dropped', { op: op.id, task: op.task_id, dropped }, now);
+    if (!valid.length) return;
+    const decl = this.store.campaign(ctx.id).declaration, sha = op.target_sha;
+    // Letters and digits of any script count, so a title in Russian keys on its words; one with none keys on itself.
+    const norm = (text) => {
+      const plain = String(text).normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+      return plain || String(text).trim();
+    };
+    // The verifier's text is quoted as code: it cannot mention anyone, link or render HTML where it is published.
+    const quote = (text) => {
+      const fence = '`'.repeat(Math.max(3, ...(String(text).match(/`+/g) ?? []).map((run) => run.length + 1)));
+      return `${fence}text\n${text}\n${fence}`;
+    };
+    for (const defect of valid) {
+      const key = createHash('sha256').update(`${norm(defect.component)}\n${norm(defect.title)}`, 'utf8').digest('hex').slice(0, 16);
+      const title = `Product defect in ${defect.component}: ${defect.title}`.slice(0, 256);
+      const body = [`The independent verifier of ${ctx.id}/${op.task_id} found this defect outside the task's write scope at \`${sha}\`. It did not change that task's verdict and widens no scope or authority; plan its repair as separate work.`,
+        ...[['Title', defect.title], ['Component', defect.component], ['Evidence', defect.evidence], ['Minimal reproduction', defect.reproduction],
+          ['Proposed scope', defect.proposedScope], ['Acceptance', defect.acceptance]].flatMap(([label, text]) => ['', `**${label}:**`, quote(text)])].join('\n');
+      const fallbackTitle = `Product defect found by ${ctx.id}/${op.task_id}`.slice(0, 256);
+      const fallback = `The independent verifier of ${ctx.id}/${op.task_id} found a product defect outside the task's write scope at \`${sha}\`. Its text was refused by the credential check; it is kept in the verify operation's result.`;
+      let where;
+      try {
+        if (this.selfHosted(decl.target.repository)) {
+          const recorded = productDefectItem(this.store, { key, title, body, fallbackTitle, fallback, campaignId: ctx.id, taskId: op.task_id, verifiedSha: sha, now });
+          where = recorded ? `${workLink(recorded.item.number)}${recorded.created ? '' : ' (existing)'}` : 'not recorded: no work list';
+        } else if (!isLocalTarget(decl) && this.config.github?.comments === false) {
+          where = 'not recorded: GitHub comments are off';
+        } else {
+          const outboxKey = `${ctx.id}:product-defect:${key}`;
+          const text = `**Product defect outside the task's write scope**\n\n${body}`;
+          this.enqueue(ctx.id, outboxKey, decl, containsSecret(text) ? `**${fallbackTitle}**\n\n${fallback}` : text, now);
+          where = `outbox:${outboxKey}`;
+        }
+      } catch (error) {
+        if (error instanceof FencedError) throw error;
+        where = `not recorded: ${error.message}`.slice(0, 500);
+      }
+      this.store.journal(ctx.id, 'product-defect', { op: op.id, task: op.task_id, sha, key, component: defect.component.slice(0, 120), item: where }, now);
+    }
+  }
+
   /** The repository a base check is keyed by: the declared repository, or the local checkout of a local target. */
   baseRepository(decl, repo) { return decl.target.repository ?? `local:${repo.path}`; }
 
@@ -1612,6 +1666,9 @@ export class Controller {
       this.store.updateOperation(op.id, { state: 'finished', outcome: verdict }, now);
       if (testRows && verdict.class === 'result') insertResults(this.store, testRows.repository, testRows.rows, { source: 'verifier', ref: op.target_sha, now });
       for (const [kind, detail] of citeEvents) this.store.journal(ctx.id, kind, detail, now);
+      // Product defects outside the task's write scope are recorded in this same fenced write that finishes the operation,
+      // so a restart or a second settle of it records nothing again. They never change the verdict applied below.
+      if (verdict.class === 'result' && op.kind === 'verify') this.recordProductDefects(ctx, op, verdict.value, now);
       // A run bound to a CAAM profile is attributed to that profile from its durable row, also after a restart: never to
       // the profile selection would choose now, nor to the executor kind's static account (ACCOUNT_ADAPTER_CAAM 3.5).
       const profile = fresh.account_identity ?? null;
