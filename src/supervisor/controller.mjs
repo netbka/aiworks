@@ -20,7 +20,7 @@ import { currentSettings, projectOf, protectedAreasFor, protectedPaths } from '.
 import { authorityChange, authorityPaths } from './release/authority-path.mjs';
 import { drainReleases, releasePass } from './release/controller.mjs';
 import { autoApplyPass } from './release/owner-apply.mjs';
-import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
+import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, includedOnlyRecord, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, recordedRemoteMerge, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { gatePauseOn, hostSamplerFor, pressureThresholds } from './host.mjs';
@@ -2964,14 +2964,17 @@ export class Controller {
       facts: (kind) => ({ ...facts(kind), ...(hostUnavailable?.has(kind) ? { hostUnavailable: hostUnavailable.get(kind) } : {}) }),
       priorAttempts: this.routedAttempts(ops, stage), catalog: spec.role ? this.routingCatalog() : null,
       session: stage === 'verify' ? session ?? randomUUID() : null, ...this.reviewedHead(ops, task, stage) });
-    // A candidate whose model the provider refused waits alone: its own host fact, with the later of both waits.
+    // A candidate whose model the provider refused waits alone: its own host fact, with the later of both waits. A model
+    // the pre-choice host check found unavailable (routedHostChecks) is left out alone the same way, for this choice only.
     for (const candidate of inputs.candidates) {
       const own = waits.find((item) => item.executor_kind === modelWaitKey(candidate.kind, candidate.model));
-      if (!own) continue;
+      const host = hostUnavailable?.get(modelWaitKey(candidate.kind, candidate.model)) ?? null;
+      if (!own && !host) continue;
       const shared = inputs.hostFacts.find((item) => item.kind === candidate.kind);
-      const wait = laterWait(shared.wait && { retry_at: shared.wait.retryAt, reason: shared.wait.reason }, own);
+      const wait = own && laterWait(shared.wait && { retry_at: shared.wait.retryAt, reason: shared.wait.reason }, own);
       inputs.hostFacts.push({ ...shared, model: candidate.model,
-        wait: wait.retry_at === null || wait.retry_at > now ? { retryAt: wait.retry_at, reason: wait.reason } : null });
+        ...(own ? { wait: wait.retry_at === null || wait.retry_at > now ? { retryAt: wait.retry_at, reason: wait.reason } : null } : {}),
+        ...(host ? { hostUnavailable: host } : {}) });
     }
     if (history) {
       const { risk, complexity } = indicators(inputs);
@@ -3088,6 +3091,7 @@ export class Controller {
    */
   routedHostChecks(ctx, decl, task, checkout, web, probe) {
     const role = task.state === 'implemented' ? 'verification' : 'implementer';
+    const spec = specOf(this.store, ctx.id, task.task_id, decl);
     const found = new Map();
     const waits = this.store.all('SELECT * FROM executor_waits WHERE campaign_id = ?', ctx.id);
     const now = this.now();
@@ -3096,17 +3100,38 @@ export class Controller {
       const wait = laterWait(waits.find((item) => item.executor_kind === kind), accountWait(this.store, this.config, kind));
       if (wait && (wait.retry_at === null || wait.retry_at > now)) continue;
       const declared = executorOrder(decl.executor).find((item) => item.kind === kind);
-      // A candidate the code broker grant covers runs tool-free, and dispatch checks it as such; judge it the same way here,
-      // or the routed choice loses its only Windows commit implementer. Dispatch still checks the executor it actually runs.
-      const brokered = decl.routing.candidates.find((candidate) => candidate.kind === kind
-        && codeBrokerPolicy(this.config, decl, { ...declared, model: candidate.model }, role, this.cmd.cursor));
-      const provider = brokered ? { ...declared, model: brokered.model, researchOnly: true } : declared;
-      const reason = executors.unavailableReason(provider, checkout, this.cmd.gh, { probe, chromeCommand: this.cmd.chrome, web });
-      if (!reason) continue;
-      this.recordUnavailable(ctx, kind, reason);
-      found.set(kind, reason);
+      // Each candidate model is judged as dispatch would run it: a candidate the code broker grant covers runs tool-free,
+      // or the routed choice loses its only Windows commit implementer. A model this role never runs is not judged, so its
+      // finding cannot hold the provider's other models or a later step of another role.
+      const judged = decl.routing.candidates.filter((candidate) => candidate.kind === kind).flatMap(({ model }) => {
+        const check = this.hostCheck(decl, { ...declared, model }, role);
+        if (executors.roleUnavailableReason(check.executor, role, spec.deliverable, process.platform, executors.webFlag(spec.web))) return [];
+        return [{ model, reason: executors.unavailableReason(check.judged, checkout, this.cmd.gh,
+          { probe, chromeCommand: this.cmd.chrome, web, ...check.options }) }];
+      });
+      const failed = judged.filter((item) => item.reason);
+      if (!failed.length) continue;
+      // Every model the role could run fails: the provider waits, as before. Otherwise only the failing models are left out
+      // of this choice (host facts per model), and the provider's eligible models stay available without a wait.
+      if (failed.length === judged.length) {
+        this.recordUnavailable(ctx, kind, failed[0].reason);
+        found.set(kind, failed[0].reason);
+      } else for (const { model, reason } of failed) found.set(modelWaitKey(kind, model), reason);
     }
     return found;
+  }
+
+  /**
+   * How dispatch checks `executor` for `role` before launch: the executor with its code broker grant marked, the form the
+   * host check judges (tool-free when brokered), and that check's options: the configured command and the included-only
+   * record covering the model (the grant's own attestation when brokered, else the operator's record in accounts.mjs).
+   */
+  hostCheck(decl, executor, role) {
+    const policy = executor.kind === 'cursor-cli' && role ? codeBrokerPolicy(this.config, decl, executor, role, this.cmd.cursor) : null;
+    const marked = policy ? { ...executor, brokeredCode: true } : executor;
+    return { executor: marked, judged: policy ? { ...marked, researchOnly: true } : marked,
+      options: { command: this.cmd[executor.kind.replace('-cli', '')] ?? null,
+        includedOnly: policy ? { ...policy.includedOnly, models: policy.models } : includedOnlyRecord(this.config, executor.kind) } };
   }
 
   /** Pre-launch host/project findings are timed; dispatch rechecks them before any worker starts. */
@@ -3148,8 +3173,9 @@ export class Controller {
           if (chosen?.kind !== provider.kind) return false;
           const spec = specOf(this.store, ctx.id, task.task_id, decl);
           // A brokered choice is checked as dispatch checks it: tool-free, so global CLI extensions do not apply.
-          return spec && !executors.unavailableReason(chosen.brokeredCode ? { ...chosen, researchOnly: true } : provider, repo.path, this.cmd.gh, {
-            chromeCommand: this.cmd.chrome, web: Boolean(spec.web), workList: this.selfHosted(decl.target.repository),
+          const check = this.hostCheck(decl, chosen, chosen.brokeredCode ? (task.state === 'implemented' ? 'verification' : 'implementer') : null);
+          return spec && !executors.unavailableReason(chosen.brokeredCode ? check.judged : { ...provider, model: chosen.model ?? provider.model }, repo.path, this.cmd.gh, {
+            chromeCommand: this.cmd.chrome, web: Boolean(spec.web), workList: this.selfHosted(decl.target.repository), ...check.options,
           });
         });
         if (!ready) this.store.run('UPDATE executor_waits SET retry_at = ? WHERE campaign_id = ? AND executor_kind = ?',
@@ -3572,7 +3598,8 @@ export class Controller {
         }
       }
       const unavailable = executors.unavailableReason(codePolicy ? { ...executor, researchOnly: true } : executor, workspace, this.cmd.gh, {
-        probe, chromeCommand: this.cmd.chrome, web: Boolean(spec.web), profileHome,
+        probe, chromeCommand: this.cmd.chrome, web: Boolean(spec.web), profileHome, command: this.cmd[executor.kind.replace('-cli', '')] ?? null,
+        includedOnly: codePolicy ? { ...codePolicy.includedOnly, models: codePolicy.models } : includedOnlyRecord(this.config, executor.kind),
       });
       if (unavailable) {
         this.recordUnavailable(ctx, executor.kind, unavailable);

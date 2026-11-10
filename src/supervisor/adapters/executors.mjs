@@ -178,13 +178,15 @@ export function codexExecutorSetupFailure(events) {
  * Pre-dispatch health check of the native Codex sandbox: one contained read-only echo through
  * `codex sandbox`. It costs no model tokens and no campaign run. Any failure keeps Codex out of
  * dispatch for a bounded wait instead of burning a worker run on a host that cannot execute.
+ * The echo is the ordinary cmdlet Write-Output: the managed sandbox refuses .NET method calls such as
+ * [Console]::WriteLine, which made a healthy sandbox read as failed (exit 1). The sandbox itself is unchanged.
  */
 export function codexSandboxProbe(command, { timeoutMs = 90_000, spawn = spawnSync, platform = process.platform } = {}) {
   if (platform !== 'win32') return null;
   const marker = 'AIWORKS_CODEX_SANDBOX_OK';
   const shell = join(process.env.SystemRoot || 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const result = spawn(command[0], [...command.slice(1), 'sandbox', '--include-managed-config', '--permission-profile', ':read-only', '--',
-    shell, '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `[Console]::WriteLine('${marker}')`],
+    shell, '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `Write-Output '${marker}'`],
   { encoding: 'utf8', timeout: timeoutMs, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
   if (result.error) return `codex sandbox probe did not run: ${result.error.code ?? result.error.message}`;
   if (result.status === 0 && String(result.stdout ?? '').includes(marker)) return null;
@@ -198,9 +200,45 @@ export function codexSandboxProbe(command, { timeoutMs = 90_000, spawn = spawnSy
 // home. Only Claude and Codex rotate profiles: agy and Cursor refuse one rather than run under the host login.
 const profileEnv = (kind, profileHome) => profileHome == null ? {} : caamProfileEnv(profileHome, caamProvider(kind));
 
+// Every Cursor run uses the subscription login only: an inherited API key or token, or another endpoint, would bill
+// another way. The ordinary route keeps the host's configuration directory; the research route gets a fresh one.
+const CURSOR_LOGIN_ONLY_ENV = { CURSOR_API_KEY: '', CURSOR_AUTH_TOKEN: '', CURSOR_AUTH_TOKEN_FILE: '', CURSOR_AUTH_TOKEN_EXPIRES_AT: '',
+  CURSOR_API_ENDPOINT: 'https://api2.cursor.sh', CURSOR_API_BASE_URL: '', CURSOR_API_URL: '' };
+
+/** Model names that are not one bounded included model: Auto picks for itself, and a Fast tier is billed apart. */
+export const UNBOUNDED_MODEL = /^(?:auto|.*fast.*)$/i;
+
+/**
+ * The included-only eligibility of one Cursor model call, or null when it may run. `record` is the operator's private
+ * owner attestation (accounts.mjs includedOnlyRecord, or a code broker grant's): paid overages off, a recorded date and
+ * the explicit models it covers. No record, overages on or unknown, or a model it does not name refuses before any model
+ * call; nothing here reads or changes a billing setting.
+ */
+export function includedOnlyProblem(record, model) {
+  if (record?.attestedBy !== 'owner' || record?.paidOverages !== false || !/^\d{4}-\d{2}-\d{2}/.test(record?.recordedAt ?? '')) {
+    return 'included-only eligibility is unknown: no owner attestation that paid overages are off, so no model call is made';
+  }
+  if (typeof model !== 'string' || !model.trim() || UNBOUNDED_MODEL.test(model.trim()) || !Array.isArray(record.models) || !record.models.includes(model)) {
+    return `included-only eligibility is unknown for model ${model || '(none)'}: the owner attestation does not name it`;
+  }
+  return null;
+}
+
+// The last Cursor checks, after the configuration checks: on Windows only the reviewed WSL transport runs Cursor. The
+// native launcher (agent.exe, or the agent.cmd shell shim) gives no filesystem isolation even with --sandbox enabled.
+function cursorGate(executor, command, includedOnly) {
+  if (process.platform === 'win32' && !isCursorWsl(command)) {
+    return 'Cursor on Windows runs only through the reviewed WSL transport: the native launcher has no filesystem sandbox';
+  }
+  return includedOnlyProblem(includedOnly, executor.model);
+}
+
 // workList (work-list-reader.mjs workListRun): the self-hosted repository's run reads the local work list, which needs no
 // command line of its own, so its Codex worker is not unavailable for want of one. Null for every other repository.
-export function unavailableReason(executor, workspace, ghCommand, { probe = null, chromeCommand = null, web = false, profileHome = null, workList = null } = {}) {
+// command and includedOnly (Cursor only): the configured Cursor command, and the included-only record that covers this
+// call (includedOnlyProblem). Without them a Cursor worker is unavailable.
+export function unavailableReason(executor, workspace, ghCommand, { probe = null, chromeCommand = null, web = false, profileHome = null, workList = null,
+  command = null, includedOnly = null } = {}) {
   // agy runs from a run-local profile home with no project or user extensions; it, and Claude on a web task, need only a browser.
   if (executor.kind === 'agy-cli' || web) return agy.unavailableReason(chromeCommand);
   if (executor.kind === 'claude-cli') {
@@ -235,7 +273,7 @@ export function unavailableReason(executor, workspace, ghCommand, { probe = null
   // Existing user/project extensions are neither loaded nor edited. Older CLIs that do not
   // support --disable-project-configs fail before work; ordinary Cursor roles retain the guards.
   if (executor.kind === 'cursor-cli' && executor.researchOnly) return executor.model?.trim() && !/^auto$/i.test(executor.model.trim())
-    ? null : 'Cursor research requires an explicit model; Auto is not a bounded model choice';
+    ? cursorGate(executor, command, includedOnly) : 'Cursor research requires an explicit model; Auto is not a bounded model choice';
   // Per-run flags do not disable arbitrary project extensions. Never silently inherit them.
   const files = executor.kind === 'codex-cli' ? ['.codex/config.toml', '.codex/hooks.json']
     : ['.cursor/mcp.json', '.cursor/hooks.json', '.cursor/cli.json', '.cursor/sandbox.json'];
@@ -252,7 +290,7 @@ export function unavailableReason(executor, workspace, ghCommand, { probe = null
   if (executor.kind === 'cursor-cli' && ['mcp.json', 'hooks.json', 'sandbox.json', 'cli-config.json'].some((path) => existsSync(join(cursorHome, path)))) {
     return 'global Cursor configuration requires a scoped adapter policy';
   }
-  return null;
+  return executor.kind === 'cursor-cli' ? cursorGate(executor, command, includedOnly) : null;
 }
 
 export function roleUnavailableReason(executor, role, deliverable, platform = process.platform, web = false) {
@@ -262,6 +300,11 @@ export function roleUnavailableReason(executor, role, deliverable, platform = pr
     : web ? null : 'AGY runs only web acceptance tasks';
   if (web) return executor.kind === 'claude-cli' && !executor.researchOnly ? null
     : 'Web acceptance tasks run only on a browser worker: AGY, or Claude with the isolated browser';
+  // Windows Cursor runs only tool-free through the WSL transport (cursorGate): an ordinary Cursor worker with tools has no
+  // filesystem sandbox there, in any role. Refused here, so the step goes to another provider without a host wait.
+  if (executor.kind === 'cursor-cli' && platform === 'win32' && !executor.researchOnly && executor.brokeredCode !== true) {
+    return 'Cursor on Windows runs only tool-free through the WSL transport';
+  }
   if (deliverable !== 'commit') return null;
   // This fact is added only by the controller's explicit repository/campaign/model grant.
   // The model remains tool-free; a trusted broker applies proposals and runs the full gate.
@@ -322,9 +365,7 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
         approvalMode: 'allowlist', autoAcceptWebSearch: false, subagentModels: { explore: 'disabled' },
         sandbox: { mode: 'enabled', readBoundary: 'workspace', networkAccess: 'user_config_only' },
         permissions: { allow: [], deny: ['Shell(*)', 'Write(**)', 'Read(**)', 'WebFetch(*)', 'Mcp(*:*)'] } }));
-      cursorEnv = { CURSOR_CONFIG_DIR: config, CURSOR_DATA_DIR: data,
-        CURSOR_API_KEY: '', CURSOR_AUTH_TOKEN: '', CURSOR_AUTH_TOKEN_FILE: '', CURSOR_AUTH_TOKEN_EXPIRES_AT: '',
-        CURSOR_API_ENDPOINT: 'https://api2.cursor.sh', CURSOR_API_BASE_URL: '', CURSOR_API_URL: '' };
+      cursorEnv = { CURSOR_CONFIG_DIR: config, CURSOR_DATA_DIR: data, ...CURSOR_LOGIN_ONLY_ENV };
     }
   }
   const listServer = workList ? workListServer(workList, { runId: sessionId, packetDigest: digest }) : null;
@@ -385,7 +426,7 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
   // the optional WSL transport supplies a separate supported OS boundary and cleanup proof.
   return { argv: [...command, '--print', '--trust', '--mode', 'ask', '--sandbox', 'enabled',
     ...(cursorEnv ? ['--disable-project-configs'] : []), '--output-format', cursorEnv ? 'stream-json' : 'json', ...model],
-    prompt: boundPrompt, cwd, ...(cursorEnv ? { env: cursorEnv } : {}) };
+    prompt: boundPrompt, cwd, env: cursorEnv ?? CURSOR_LOGIN_ONLY_ENV };
 }
 
 /** Claude's argv with the stage's terminal schema; unchanged without a stage. */

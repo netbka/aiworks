@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import childProcess, { spawn } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { campaignPause, campaignRecheck, campaignStart, campaignStatus } from '../../src/supervisor/api.mjs';
-import { classify, prepare, refusedBeforeWork, unavailableReason, roleUnavailableReason } from '../../src/supervisor/adapters/executors.mjs';
+import { classify, includedOnlyProblem, prepare, refusedBeforeWork, unavailableReason, roleUnavailableReason } from '../../src/supervisor/adapters/executors.mjs';
 import { CaamError, caamProfileEnv, ensureShallowProfile, shallowHomeOf } from '../../src/supervisor/adapters/caam.mjs';
 import { scopeDigest, validateDeclaration } from '../../src/supervisor/campaign.mjs';
 import { route } from '../../src/supervisor/router.mjs';
@@ -131,7 +131,7 @@ test('Codex never verifies a commit task on Windows; report tasks and other plat
     assert.equal(roleUnavailableReason(codex, 'verification', 'commit', platform), null, platform);
     assert.equal(roleUnavailableReason(codex, 'implementer', 'commit', platform), null, platform);
   }
-  for (const kind of ['claude-cli', 'cursor-cli']) assert.equal(roleUnavailableReason({ kind }, 'verification', 'commit', 'win32'), null, kind);
+  assert.equal(roleUnavailableReason({ kind: 'claude-cli' }, 'verification', 'commit', 'win32'), null);
   const chain = (deliverable, platform) => route({ stage: 'verify', chain: true, task: { deliverable, web: false }, platform,
     candidates: [{ kind: 'codex-cli', model: null }, { kind: 'claude-cli', model: 'opus' }],
     hostFacts: ['codex-cli', 'claude-cli'].map((kind) => ({ kind, cliConfigured: true, hostUnavailable: false, wait: null })),
@@ -182,6 +182,11 @@ test('Codex gets one required repository reader with immutable scope and no glob
   assert.ok(claudeResearch.argv.includes('--safe-mode'));
 });
 
+// The owner's included-only attestation for the synthetic Cursor model (accounts.mjs includedOnlyRecord).
+const included = { attestedBy: 'owner', paidOverages: false, recordedAt: '2026-01-01', models: ['sample-model'] };
+// A Cursor command of the WSL transport's shape: the only Cursor launcher Windows accepts (cursor-wsl.mjs isCursorWsl).
+const wslCursor = [process.execPath, fileURLToPath(new URL('../../src/supervisor/adapters/cursor-wsl.mjs', import.meta.url)), '--config', 'private.json'];
+
 function fixture(t, maxWorkerRuns = 12, tasks, repository = 'example-org/sampleapp') {
   const env = environment();
   const oldHomes = { CODEX_HOME: process.env.CODEX_HOME, CURSOR_CONFIG_DIR: process.env.CURSOR_CONFIG_DIR };
@@ -191,11 +196,13 @@ function fixture(t, maxWorkerRuns = 12, tasks, repository = 'example-org/samplea
   } });
   env.config.commands.codex = ['synthetic-codex'];
   env.config.commands.cursor = ['synthetic-cursor'];
+  env.config.includedOnly = { 'cursor-cli': included };
   const store = new Store(join(env.dataDir, 'supervisor.db'));
   const d = declaration({ tasks: tasks ?? [{ ...declaration().tasks[0], deliverable: 'report' }], limits: { maxWorkerRuns } });
   d.target.repository = repository;
   env.config.repositories[repository] = env.config.repositories['example-org/sampleapp'];
   d.executor = structuredClone(chain);
+  d.executor.providers[2].model = 'sample-model'; // the attested model: an unnamed Cursor model never reaches a call
   campaignStart(store, d);
   const controller = new Controller({ store, config: env.config, dataDir: env.dataDir });
   controller.launch = async () => {}; // Exercise durable dispatch without an external model process.
@@ -220,17 +227,17 @@ test('a Windows receipt alone cannot accept a run with unconfirmed Linux custody
 test('fallback is ordered, durable across restart and charges each recorded operation', { skip: skipWithoutSqlite }, async (t) => {
   const { env, store, d, controller, id } = fixture(t);
   await controller.tick();
-  for (const kind of ['codex-cli', 'claude-cli', 'cursor-cli']) {
+  const kinds = process.platform === 'win32' ? ['codex-cli', 'claude-cli'] : ['codex-cli', 'claude-cli', 'cursor-cli'];
+  for (const [i, kind] of kinds.entries()) {
     const op = store.openOperations(id)[0];
     assert.equal(op.executor_kind, kind);
     const ctx = { id, generation: controller.held.get(id) };
     controller.applyOutcome(ctx, op, { class: 'quota', retryAt: Date.now() + 60_000, detail: 'synthetic quota', receipt: {} });
     const replacement = new Controller({ store, config: env.config, dataDir: env.dataDir });
-    assert.equal(replacement.executorChoice(d, store.task(id, 'T1')).executor?.kind ?? null,
-      kind === 'codex-cli' ? 'claude-cli' : kind === 'claude-cli' ? 'cursor-cli' : null);
+    assert.equal(replacement.executorChoice(d, store.task(id, 'T1')).executor?.kind ?? null, kinds[i + 1] ?? null);
     await controller.tick();
   }
-  assert.equal(store.campaign(id).runs_used, 3);
+  assert.equal(store.campaign(id).runs_used, kinds.length);
   assert.equal(store.openOperations(id).length, 0);
   assert.ok(store.task(id, 'T1').retry_at > Date.now());
   assert.equal(store.campaign(id).liveness_defect, 0);
@@ -409,7 +416,8 @@ test('research providers restrict capabilities, isolate scratch space and cannot
       const poison = join(env.repo, '.cursor'); mkdirSync(poison, { recursive: true });
       const hooks = JSON.stringify({ hooks: { beforeShellExecution: [{ command: 'not-authorized' }] } });
       writeFileSync(join(poison, 'hooks.json'), hooks);
-      assert.equal(unavailableReason(executor, env.repo), null, 'fresh config and disabled project loading admit only research');
+      assert.equal(unavailableReason(executor, env.repo, null, { command: wslCursor, includedOnly: included }), null,
+        'fresh config and disabled project loading admit only research');
       assert.match(unavailableReason({ ...executor, researchOnly: false }, env.repo), /scoped adapter/);
       assert.equal(readFileSync(join(poison, 'hooks.json'), 'utf8'), hooks);
       assert.match(unavailableReason({ ...executor, model: 'auto' }, env.repo), /explicit model/);
@@ -632,3 +640,26 @@ test('a profile run under Job Object containment reads its prompt, writes stdout
     assert.deepEqual(JSON.parse(readFileSync(join(dirs.runDir, 'stdout.json'), 'utf8')), { prompt: invocation.prompt, homedir: dirs.home,
       HOME: dirs.home, USERPROFILE: dirs.home, CODEX_HOME: null, view: '1', background: '1', memory: '1', session: null });
   });
+
+test('a Cursor model call needs the owner included-only attestation for that exact model, and Windows needs the WSL transport', () => {
+  const research = { kind: 'cursor-cli', model: 'sample-model', researchOnly: true };
+  const check = (record, executor = research, command = wslCursor) => unavailableReason(executor, '.', null, { command, includedOnly: record });
+  assert.equal(check(included), null);
+  for (const record of [null, { ...included, paidOverages: true }, { ...included, paidOverages: undefined }, { ...included, attestedBy: 'agent' },
+    { ...included, recordedAt: 'unknown' }, { ...included, models: ['other-model'] }, { ...included, models: undefined }]) {
+    assert.match(check(record), /included-only eligibility is unknown/, JSON.stringify(record));
+  }
+  // The declared model never becomes Auto or a Fast tier, even when an attestation names one.
+  for (const model of ['auto', 'sample-model-fast']) assert.match(includedOnlyProblem({ ...included, models: [model] }, model), /unknown for model/);
+  if (process.platform === 'win32') {
+    // agent.cmd (the npm shell shim) and agent.exe both run without a filesystem sandbox on Windows.
+    for (const command of [['C:/example/cursor/agent.cmd'], ['C:/example/cursor/agent.exe'], null]) {
+      assert.match(check(included, research, command), /WSL transport/, String(command));
+    }
+  }
+  // An ordinary Cursor worker with tools is never eligible on Windows, in any role; a brokered tool-free one is.
+  for (const deliverable of ['report', 'commit']) for (const role of ['implementer', 'verification']) {
+    assert.match(roleUnavailableReason({ kind: 'cursor-cli' }, role, deliverable, 'win32'), /WSL transport/);
+    assert.equal(roleUnavailableReason({ kind: 'cursor-cli', brokeredCode: true }, role, deliverable, 'win32'), null);
+  }
+});
