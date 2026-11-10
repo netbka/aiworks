@@ -131,27 +131,68 @@ export function pullRequest({ gh, repository, number }) {
 }
 
 const CI_PASSED = new Set(['success', 'neutral', 'skipped']);
-const CI_FAILED = new Set(['failure', 'timed_out', 'startup_failure']);
+const CI_FAILED = new Set(['failure', 'timed_out', 'startup_failure', 'error']);
 
 /**
- * The CI result of one commit from a check-runs response (aiworks#42). `pending`: no run yet, or a run not completed.
- * `failure`: every run completed and one failed, timed out or could not start. `success`: every run completed as success,
- * neutral or skipped. `inconclusive`: completed otherwise (for example cancelled), or more runs than the page holds.
- * `checks` are { name, status, conclusion, url }.
+ * The CI result of one commit (aiworks#42) from its check-runs response and its combined commit status (the statuses
+ * non-Actions providers report). `pending`: nothing reported, or a run or status not completed. `failure`: everything
+ * completed and one failed, timed out, errored or could not start. `success`: everything completed as success, neutral or
+ * skipped. `inconclusive`: completed otherwise (for example cancelled), or more runs or statuses than the page holds.
+ * `none` only with `noneExpected` (the repository is declared to run no hosted checks and its base requires none) and both
+ * answers complete and empty: a missing, malformed or truncated answer is never read as empty. `checks` are
+ * { name, status, conclusion, url }.
  */
-export function ciState(body) {
+export function ciState(body, statusBody, { noneExpected = false } = {}) {
   if (!Array.isArray(body?.check_runs)) throw new Error('GET check-runs returned no check_runs');
-  const checks = body.check_runs.map((run) => ({ name: String(run.name ?? 'unnamed').slice(0, 200), status: run.status ?? null,
-    conclusion: run.conclusion ?? null, url: typeof run.html_url === 'string' ? run.html_url : null }));
-  if (!checks.length || checks.some((check) => check.status !== 'completed')) return { state: 'pending', checks };
+  if (!Array.isArray(statusBody?.statuses)) throw new Error('GET status returned no statuses');
+  const checks = [
+    ...body.check_runs.map((run) => ({ name: String(run.name ?? 'unnamed').slice(0, 200), status: run.status ?? null,
+      conclusion: run.conclusion ?? null, url: typeof run.html_url === 'string' ? run.html_url : null })),
+    ...statusBody.statuses.map((status) => ({ name: String(status.context ?? 'unnamed').slice(0, 200),
+      status: status.state === 'pending' ? 'pending' : 'completed', conclusion: status.state === 'pending' ? null : status.state ?? null,
+      url: typeof status.target_url === 'string' ? status.target_url : null })),
+  ];
+  const truncated = Number(body.total_count) !== body.check_runs.length || Number(statusBody.total_count) !== statusBody.statuses.length;
+  if (!checks.length) return { state: noneExpected && !truncated ? 'none' : 'pending', checks };
+  if (checks.some((check) => check.status !== 'completed')) return { state: 'pending', checks };
   if (checks.some((check) => CI_FAILED.has(check.conclusion))) return { state: 'failure', checks };
-  if (Number(body.total_count) > checks.length) return { state: 'inconclusive', checks };
+  if (truncated) return { state: 'inconclusive', checks };
   return { state: checks.every((check) => CI_PASSED.has(check.conclusion)) ? 'success' : 'inconclusive', checks };
 }
 
-/** Read-only CI result of a pushed commit: GET repos/{repo}/commits/{sha}/check-runs (REST, one page of 100). */
-export function commitChecks({ gh, repository, sha }) {
-  return ciState(rest(gh, 'GET check-runs', ['--method', 'GET', `repos/${repository}/commits/${sha}/check-runs`, '-f', 'per_page=100'], { timeoutMs: 30_000 }));
+/**
+ * Names of the status checks branch protection requires on `branch`:
+ * GET repos/{repo}/branches/{branch}/protection/required_status_checks. [] only when GitHub answers 404 saying the branch
+ * is not protected or requires no status checks. Any other failure (no access, a bare 404, a rate limit) throws, so it is
+ * never read as "none required".
+ */
+export function requiredStatusChecks({ gh, repository, branch }) {
+  let body;
+  try {
+    body = rest(gh, 'GET required status checks', ['--method', 'GET',
+      `repos/${repository}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`], { timeoutMs: 30_000 });
+  } catch (error) {
+    if (error.status === 404 && /branch not protected|required status checks not enabled/i.test(error.message)) return [];
+    throw error;
+  }
+  if (!Array.isArray(body?.contexts) && !Array.isArray(body?.checks)) throw new Error('GET required status checks returned neither contexts nor checks');
+  return [...new Set([...(body.contexts ?? []), ...(body.checks ?? []).map((check) => check?.context)].map(String))];
+}
+
+/**
+ * Read-only CI result of a pushed commit: GET repos/{repo}/commits/{sha}/check-runs and GET .../status (REST, one page of
+ * 100 each). Only for a repository the owner declared to run no hosted checks (`noHostedChecks`), and only when both are
+ * complete and empty, it reads the required status checks of `baseBranch`: with none required the result is `none`; a
+ * required check that has not reported keeps the head `pending` under its name.
+ */
+export function commitChecks({ gh, repository, sha, baseBranch = null, noHostedChecks = false }) {
+  const runs = rest(gh, 'GET check-runs', ['--method', 'GET', `repos/${repository}/commits/${sha}/check-runs`, '-f', 'per_page=100'], { timeoutMs: 30_000 });
+  const status = rest(gh, 'GET status', ['--method', 'GET', `repos/${repository}/commits/${sha}/status`, '-f', 'per_page=100'], { timeoutMs: 30_000 });
+  const none = ciState(runs, status, { noneExpected: true });
+  if (!noHostedChecks || !baseBranch || none.state !== 'none') return ciState(runs, status);
+  const required = requiredStatusChecks({ gh, repository, branch: baseBranch });
+  if (!required.length) return none;
+  return { state: 'pending', checks: required.map((name) => ({ name: name.slice(0, 200), status: 'expected', conclusion: null, url: null })) };
 }
 
 /**
