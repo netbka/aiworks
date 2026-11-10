@@ -98,7 +98,7 @@ A checked version's preview of a page runs under existing containment. A project
 }
 ```
 
-Only `script` (a repository-relative `.mjs`, `.cjs` or `.js` path) and optional `ready` (the page to open) are accepted; any other field makes the entry invalid and nothing starts. Without an entry the server preview stays unavailable. `previews.packageCache` is an optional absolute folder holding npm's cache, from which locked packages are prepared and hash-checked; if unset, npm's own cache location is used, and a relative path means nothing is prepared.
+Only `script` (a repository-relative `.mjs`, `.cjs` or `.js` path) and optional `ready` (the page to open) are accepted, plus `runtime` and `outgoingNetwork`, which exist only to refuse what is not built: a `runtime` other than `node`, or `outgoingNetwork: "contained"`, starts nothing. Any other field makes the entry invalid and nothing starts. Without an entry the server preview stays unavailable. `previews.packageCache` is an optional absolute folder holding npm's cache, from which locked packages are prepared and hash-checked; if unset, npm's own cache location is used, and a relative path means nothing is prepared.
 
 ### Test result cache
 
