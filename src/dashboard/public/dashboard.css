@@ -572,7 +572,6 @@ html{scrollbar-gutter:stable;scroll-padding-top:88px}
 .itself-resolve,.itself-line .card-more{flex:1 1 100%;min-width:0}
 .itself-line{display:flex;gap:6px 12px;flex-wrap:wrap;align-items:center;padding:10px 14px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);min-width:0}
 .itself-text{flex:1 1 220px;min-width:0;font-size:14px;overflow-wrap:anywhere}
-.home-confirm{margin:12px 0 0;font-size:14px;color:var(--green);font-weight:600}
 .home-note{font-size:13px;color:var(--muted)}
 .home-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:0 0 10px;min-height:32px}
 .home-block>h2{margin:0 0 10px}

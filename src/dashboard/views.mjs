@@ -202,7 +202,7 @@ export function homeView({ supervisor, owner, projects, events, lastSeen, newest
 // step; one landed line per step merged in the last day; the one Needs you count; the quiet projects; today's spend.
 
 const LANDED_WINDOW_MS = 24 * 60 * 60 * 1000;
-const GOAL_ORDER = { 'Asks you': 0, Building: 1, Checking: 1, Queued: 2, Paused: 3 };
+const GOAL_ORDER = { 'Asks you': 0, Building: 1, Checking: 1, Waiting: 1, Queued: 2, Paused: 3 };
 const ACTIVE = new Set(['implementing', 'implemented', 'verifying', 'verified']);
 const DROPPED = new Set(['cancelled', 'abandoned']);
 const OPEN = new Set(['registered', 'paused']);
@@ -232,6 +232,8 @@ function homeV2({ supervisor, owner, projects, now }) {
   // The one owner-action set (owner.mjs `attention`): what the owner must answer, by goal and by step.
   const actions = (owner?.items ?? []).filter((item) => !item.system);
   const open = (supervisor.goals ?? []).filter((goal) => OPEN.has(goal.control));
+  // AIWorks stopped on this computer (the header's Stopped): nothing is built or checked, so no goal says it is.
+  const stopped = supervisor.controller?.stopped === true;
   const goals = open.map((goal, index) => {
     const c = campaigns.get(goal.id) ?? { tasks: [] }, tasks = c.tasks ?? [], agents = c.agents ?? [];
     const mine = actions.filter((item) => item.campaignId === goal.id || item.local?.campaignId === goal.id);
@@ -239,7 +241,8 @@ function homeV2({ supervisor, owner, projects, now }) {
     const segments = tasks.map((task) => segmentOf(task, asks, new Set(agents.map((agent) => agent.taskId))));
     const checking = tasks.some((task, i) => segments[i] === 'now' && (['verifying', 'verified'].includes(task.state)
       || agents.some((agent) => agent.taskId === task.id && agent.role === 'Verifier')));
-    const state = goal.control === 'paused' ? 'Paused' : mine.length ? 'Asks you' : checking ? 'Checking' : segments.includes('now') ? 'Building' : 'Queued';
+    const state = goal.control === 'paused' ? 'Paused' : mine.length ? 'Asks you' : stopped ? 'Waiting'
+      : checking ? 'Checking' : segments.includes('now') ? 'Building' : 'Queued';
     const done = new Set(tasks.filter((task) => task.state === 'done').map((task) => task.id));
     const current = tasks.find((task, i) => segments[i] === 'now');
     const next = tasks.find((task, i) => segments[i] === 'todo' && (task.dependsOn ?? []).every((dep) => done.has(dep))) ?? tasks.find((task, i) => segments[i] === 'todo');
@@ -248,7 +251,7 @@ function homeV2({ supervisor, owner, projects, now }) {
     // Where the goal's link leads: this goal in its own project, by the ids the page's addresses use (never shown as words).
     const route = c.projectName !== undefined ? c.project ?? null : c.repository ?? goal.project ?? null;
     return { index, cost: c.costToday ?? null, item: { project, title: goalTitle(c), link: route ? { project: route, goal: goal.id } : null,
-      now: state === 'Asks you' ? 'Waiting for your answer' : current ? `Now: ${stepTitle(current)}` : next ? `Next: ${stepTitle(next)}` : null,
+      now: state === 'Asks you' ? 'Waiting for your answer' : current ? `${stopped ? 'Next' : 'Now'}: ${stepTitle(current)}` : next ? `Next: ${stepTitle(next)}` : null,
       done: done.size, total: tasks.length, dropped: segments.filter((segment) => segment === 'dropped').length, segments, state } };
   }).sort((a, b) => GOAL_ORDER[a.item.state] - GOAL_ORDER[b.item.state] || a.index - b.index);
   // Landed: one line per step whose checked version was merged in the last day, never one per event.
@@ -270,6 +273,7 @@ function homeV2({ supervisor, owner, projects, now }) {
   return {
     // The one owner-action set: the same number for the nav badge and the hero. A result AIWorks merged is landed, never counted.
     needs: { count: owner?.attention?.count ?? actions.length },
+    stopped,
     goals: goals.map((goal) => goal.item),
     landed: { total: landed.length, entries: landed.slice(0, 20) },
     quiet,
@@ -414,10 +418,12 @@ export function connectionsView({ supervisor, merges, trustedMain }) {
     supervisor: { state: controller.state ?? 'unknown', stopRequested: controller.stopRequested === true },
     accounts: (supervisor.settings?.accounts ?? []).map((account) => ({ kind: account.kind, name: account.name, state: account.state, retryAt: account.retryAt ?? null,
       open: account.open ?? 0, limit: account.limit ?? null })),
-    // The AI workers that can take work, from the same readiness Settings shows: with no account registered, they run on
-    // this computer's default login, and Connections says so instead of "none is set up".
-    workers: (supervisor.settings?.workers ?? []).filter((worker) => ['ready', 'running', 'waiting'].includes(worker.state))
-      .map((worker) => ({ kind: worker.kind, state: worker.state })),
+    // Each AI worker with the same readiness Settings shows, and the goals that wait for it. With no account registered,
+    // the ones that can take work (`usable`) run on this computer's default login, and Connections says so instead of
+    // "none is set up".
+    workers: (supervisor.settings?.workers ?? []).map((worker) => ({ kind: worker.kind, state: worker.state,
+      usable: ['ready', 'running', 'waiting'].includes(worker.state), retryAt: worker.retryAt ?? null, overdue: worker.overdue === true,
+      reason: worker.availabilityReason ?? null, blocked: worker.blocked ?? 0, blockedReason: worker.blockedReason ?? null, limited: worker.limited ?? 0 })),
     merges: (merges?.repositories ?? []).map((repo) => ({ repository: repo.repository, configured: repo.configured, local: repo.local === true,
       checkedAt: repo.fetchedAt ?? null, error: repo.error ?? null })),
     trustedMain };

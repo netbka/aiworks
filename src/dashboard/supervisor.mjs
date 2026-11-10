@@ -465,6 +465,9 @@ export function configuredCommandNames(config) {
  * AIWorks tries again, "unavailable" with the supervisor's reason, "not-set-up" when config.json sets no command for it
  * (Claude falls back to `claude` on PATH, as the controller does), and "host-unavailable" when it cannot run on this
  * operating system at all. Finished and cancelled work no longer waits for anything, so its rows are not read.
+ * Whatever the merged state, `blocked` counts the active goals that cannot use it now (`blockedReason` is the
+ * supervisor's first reason) and `limited` those waiting for its usage limit, so a worker running in one goal is not
+ * shown as free while another goal waits for it.
  */
 export function aiWorkers(campaigns, config, { platform = process.platform, now = Date.now() } = {}) {
   const names = configuredCommandNames(config), active = campaigns.filter((c) => !TERMINAL.includes(c.control));
@@ -481,7 +484,9 @@ export function aiWorkers(campaigns, config, { platform = process.platform, now 
     return { kind: w.kind, state, setUp, usedBy: rows.length, retryAt, overdue: retryAt !== null && retryAt <= now,
       reason: state === 'waiting' ? waits.find((p) => p.retryAt === retryAt).reason ?? 'quota' : state === 'unavailable' ? unavailable.reason : null,
       credits: state === 'waiting' && waits.some((p) => p.credits), availabilityReason: state === 'unavailable' ? unavailable.availabilityReason : null,
-      hostLimit, buildLimit: !limit ? null : w.kind === 'agy-cli' ? 'web-only' : 'checks-only' };
+      hostLimit, buildLimit: !limit ? null : w.kind === 'agy-cli' ? 'web-only' : 'checks-only',
+      blocked: rows.filter((p) => p.state === 'unavailable').length,
+      blockedReason: rows.find((p) => p.state === 'unavailable' && p.availabilityReason)?.availabilityReason ?? null, limited: waits.length };
   });
 }
 

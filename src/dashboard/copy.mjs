@@ -937,13 +937,12 @@ export const DASHBOARD_VERSIONS = [
   {
     version: '0.9.0',
     name: 'Model Routing & Task Signatures',
-    description: 'Role-based model preferences and durable task model signatures.',
+    // Only what is in effect: the saved model order per role is kept, but work does not use it yet (Settings › Worker accounts).
+    description: 'Durable task model signatures.',
     features: [
       'Task model signatures (model name, type, effort, tokens consumed)',
-      'Role-based model preferences (implementer, checker, assistant)',
       'Model signature badges in Step, Overview, and Review views',
-      'Interactive preference configuration in Settings',
-      'CLI model preference management commands',
+      'A model order per role can be saved in Settings or from the command line; work does not use it yet',
     ],
     status: 'current',
   },
