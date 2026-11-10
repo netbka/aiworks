@@ -2563,7 +2563,7 @@ function itemDecision(item) {
  * answered on its own card, what is in progress, what was decided for the owner, what landed and which projects are
  * quiet. The blocks are built in home.mjs from the Home data (`state.home`); this part adds the cards that act.
  */
-let homeConfirm = null, landedAll = false;
+let landedAll = false;
 
 /** One waiting decision with two to four options as selectable cards and one Answer button. */
 function homeDecisionCard(c, task) {
@@ -2587,9 +2587,8 @@ function homeDecisionCard(c, task) {
       const option = form.querySelector(`input[name="${radios}"]:checked`)?.value;
       error.hidden = Boolean(option);
       if (!option) { form.querySelector(`input[name="${radios}"]`)?.focus(); return; }
-      void sendDecision('answer', c, task, { option }, { address, done: () => {
-        drafts.delete(address, key); homeConfirm = { text: 'Answered. AIWorks carries on.', until: Date.now() + 15_000 };
-      } });
+      // The page's one notice confirms the answer; Home repeats nothing under its headline.
+      void sendDecision('answer', c, task, { option }, { address, done: () => drafts.delete(address, key) });
     } },
     el('h2', { id: heading, class: 'home-question' }, d.question),
     el('fieldset', { class: 'home-options', 'aria-labelledby': heading }, ...options), error,
@@ -2640,7 +2639,6 @@ async function sendAnswerChange(c, task, d, option, { address = current.address 
       const result = await post('/api/v2/decisions/change', payload);
       changingDecision = null;
       const words = result.duplicate ? COMMANDS.duplicate : COMMANDS.decision[CHANGE_WORDS[result.outcome] ?? 'changed'];
-      homeConfirm = { text: words, until: Date.now() + 15_000 };
       notice(words, null, null, address);
     } catch (error) {
       notice(error.known ? error.message : COMMANDS.unconfirmed, error.known ? null : attempt, error.known ? error.detail : null, address);
@@ -2682,8 +2680,7 @@ function homeScreen() {
     address: formatRoute({ screen: 'step', project: d.project, work: d.campaignId, step: d.taskId }) }));
   // A goal opens itself in its own project; the data names both.
   const goalAddress = (goal) => goal.link ? formatRoute({ screen: 'goal', project: goal.link.project, work: goal.link.goal }) : null;
-  const confirmation = homeConfirm && homeConfirm.until > Date.now() ? homeConfirm.text : null;
-  const blocks = homeBlocks({ ...home, needCards, decided, confirmation, checking: state.owner?.unknownResults ?? 0, goalAddress,
+  const blocks = homeBlocks({ ...home, needCards, decided, checking: state.owner?.unknownResults ?? 0, goalAddress,
     ownProblems: { count: ownProblemCount(), address: formatRoute({ screen: 'settings', section: 'itself' }) }, address: projectAddress, showAll: landedAll,
     onShowAll: () => { landedAll = !landedAll; render(); } }, { el, timeAgo });
   // AIWorks's answer to the owner's last message, as one line with its link.
@@ -2792,6 +2789,24 @@ async function trustLocalMain({ oldTip, newTip }) {
   } finally { sending = false; await poll(); }
 }
 
+/** Whether one AI worker can take work now, in the words of Settings › AI workers. */
+function connectionWorkerState(w) {
+  if (w.state === 'running') return 'Working now';
+  if (w.state === 'ready') return 'Ready';
+  if (w.state === 'waiting') return w.overdue ? 'Usage limit: tried again at AIWorks’s next check' : `Waiting for its usage limit until ${clock(w.retryAt)}`;
+  if (w.state === 'unavailable') return `Not available: ${w.reason ?? 'AIWorks recorded it as unavailable'}`;
+  if (w.state === 'not-set-up') return 'Not set up: the AIWorks configuration file sets no command for it';
+  if (w.state === 'host-unavailable') return 'Not available on Windows';
+  return 'Not known';
+}
+
+/** The goals that wait for one AI worker, said only where its own state does not already say so. */
+function connectionWorkerWaits(w) {
+  return [w.blocked > 0 ? w.state === 'unavailable' ? `${plural(w.blocked, 'goal')} ${w.blocked === 1 ? 'waits' : 'wait'} for it.`
+    : `${plural(w.blocked, 'goal')} cannot use it now: ${w.blockedReason ?? 'AIWorks recorded it as unavailable'}.` : null,
+  w.limited > 0 && w.state !== 'waiting' ? `${plural(w.limited, 'goal')} ${w.limited === 1 ? 'waits' : 'wait'} for its usage limit.` : null].filter(Boolean);
+}
+
 /** Settings -> Connections: AIWorks itself, each AI worker account, each project's merge check and the trusted main. */
 function connectionsScreen() {
   const view = state.connections;
@@ -2801,6 +2816,7 @@ function connectionsScreen() {
       : repo.local ? `Read from local main on this computer${repo.checkedAt ? ` at ${clock(repo.checkedAt)}` : ''}; never fetched.`
         : `${repo.checkedAt ? `Merge check from GitHub’s main at ${clock(repo.checkedAt)}` : 'Not checked yet'}${repo.error ? '; the last check failed and is retried' : ''}.`))))
     : el('p', { class: 'subtext' }, 'No published result to check yet.');
+  const usable = (view.workers ?? []).filter((w) => w.usable);
   return [
     panel('AIWorks on this computer', null, el('div', { class: 'panel-body' },
       el('p', {}, `${SUPERVISOR_WORDS[view.supervisor.state] ?? 'Not known'}${view.supervisor.stopRequested ? '; a stop was requested (an upgrade or an operator stop)' : ''}.`))),
@@ -2809,9 +2825,13 @@ function connectionsScreen() {
         el('strong', {}, `${provider(account.kind)} · ${account.name}`),
         el('div', { class: 'subtext' }, `${ACCOUNT_WORDS[account.state] ?? 'Waiting for a limit'}${account.retryAt ? ` until ${clock(account.retryAt)}` : ''}${account.limit ? ` · ${account.open} of ${account.limit} runs at once` : ''}`))))
         // The same readiness as Settings › AI workers: workers that run on the default login are set up, with no account here.
-        : view.workers?.length ? el('p', {}, `No separate account is registered: ${view.workers.map((w) => provider(w.kind)).join(', ')} ${view.workers.length === 1 ? 'runs' : 'run'} on this computer’s default login. `,
+        : usable.length ? el('p', {}, `No separate account is registered: ${usable.map((w) => provider(w.kind)).join(', ')} ${usable.length === 1 ? 'runs' : 'run'} on this computer’s default login. `,
           routeLink('See AI workers in Settings', '#/settings'), '.')
-          : el('p', {}, 'No AI worker account is set up on this computer.'))),
+          : el('p', {}, 'No AI worker account is set up on this computer.'),
+      // Each AI worker's own availability, and the goals that wait for it even while it works elsewhere.
+      view.workers?.length ? el('ul', { class: 'settings-links' }, ...view.workers.map((w) => el('li', { 'data-focus-scope': `connections/worker/${w.kind}` },
+        el('strong', {}, `${provider(w.kind)} · ${connectionWorkerState(w)}`),
+        ...connectionWorkerWaits(w).map((line) => el('div', { class: 'subtext' }, line))))) : null)),
     panel('Merge checks', 'Where each project’s merges are seen from. The dashboard never calls GitHub’s API.', el('div', { class: 'panel-body' }, merges)),
     panel('Project trust and backup', 'The approved starting point AIWorks checks before it starts or resumes work.', el('div', { class: 'panel-body' }, ...trustedMainLines(view.trustedMain).filter(Boolean)))];
 }
@@ -4785,13 +4805,14 @@ function command(c, action, task, extra = {}, draftAddress = null) {
     ...(task ? { taskId: task.id, taskVersion: task.version } : {}), ...extra }, draftAddress);
 }
 
-// The header says one word about the work (Working, Paused, Stopped; Offline while this page cannot reach the dashboard)
-// and carries Pause all or Resume all, bound to the goals the Home data lists.
-const HEADER_TONES = { Working: 'online', Paused: 'stale', Stopped: 'offline', Offline: 'offline' };
+// The header says one word about the work (Working, Idle, Paused, Stopped; Offline while this page cannot reach the
+// dashboard) and carries Pause all or Resume all, bound to the goals the Home data lists. Idle is Connections' "Idle":
+// no work needs AIWorks, so it never claims to be working.
+const HEADER_TONES = { Working: 'online', Idle: 'online', Paused: 'stale', Stopped: 'offline', Offline: 'offline' };
 function showHeader() {
   const node = $('#connection'), summary = state?.home?.pause ?? null, button = $('#header-pause');
   const word = offline ? 'Offline' : !state || !state.supervisor.available || state.supervisor.controller?.stopped ? 'Stopped'
-    : summary && !summary.running && (summary.stopped || summary.stopping) ? 'Paused' : 'Working';
+    : summary && !summary.running && (summary.stopped || summary.stopping) ? 'Paused' : state.supervisor.controller?.state === 'idle' ? 'Idle' : 'Working';
   if (node.textContent !== word) node.textContent = word;
   node.className = `connection ${HEADER_TONES[word]}`;
   const action = summary?.pause?.length ? 'pause' : summary?.resume?.length ? 'resume' : null;

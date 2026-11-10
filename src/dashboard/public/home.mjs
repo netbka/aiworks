@@ -4,7 +4,7 @@
 // reads the page, so a test can build it with a stand-in for `el`.
 
 const TONES = { done: 'merged', now: 'building', asks: 'you', todo: 'todo', dropped: 'waiting' };
-const PILLS = { 'Asks you': 'attention', Building: 'in_progress', Checking: 'review', Queued: 'pending', Paused: 'pending' };
+const PILLS = { 'Asks you': 'attention', Building: 'in_progress', Checking: 'review', Queued: 'pending', Waiting: 'pending', Paused: 'pending' };
 const LANDED_SHOWN = 5;
 
 // While AIWorks is still finding out whether a result merged, the headline never claims calm: the count stays the
@@ -14,20 +14,25 @@ export const heroWords = (count, checking = 0) => count === 0
   : count === 1 ? 'One question for you.' : `${count} things need you.`;
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-/** The one grey line under the headline: what is moving and what landed. */
-export function summaryLine(goals, landed, checking = 0, count = 0) {
+/**
+ * The one grey line under the headline: what is moving and what landed. While AIWorks is stopped on this computer
+ * (`stopped`), nothing moves: the goals are said to wait until it starts again.
+ */
+export function summaryLine(goals, landed, checking = 0, count = 0, stopped = false) {
   const moving = goals.filter((goal) => goal.state !== 'Paused');
   const projects = [...new Set(moving.map((goal) => goal.project).filter(Boolean))];
   const where = projects.length === 1 ? ` in ${projects[0]}` : projects.length > 1 ? ` across ${plural(projects.length, 'project')}` : '';
-  return [moving.length ? `${plural(moving.length, 'goal')} ${moving.length === 1 ? 'is' : 'are'} moving${where}.` : 'Nothing is moving right now.',
+  const verb = stopped ? 'waiting' : 'moving';
+  return [moving.length ? `${plural(moving.length, 'goal')} ${moving.length === 1 ? 'is' : 'are'} ${verb}${where}.` : stopped ? null : 'Nothing is moving right now.',
+    stopped ? 'Nothing runs until AIWorks starts again.' : null,
     landed.total ? `${plural(landed.total, 'change')} landed since yesterday.` : null,
     checking > 0 && count > 0 ? 'A result is also still being checked.' : null].filter(Boolean).join(' ');
 }
 
 /**
  * @param data   the Home data (goals, landed, needs, quiet, spentToday) plus `decided` ({ question, chosen, change?, address }),
- *               `goalAddress(goal)` for a goal's own page, `address(project)` for a project's page, `confirmation` text
- *               or null, `needCards` (finished nodes)
+ *               `goalAddress(goal)` for a goal's own page, `address(project)` for a project's page, `needCards`
+ *               (finished nodes) and `stopped` (AIWorks stopped on this computer)
  * @param h      { el, timeAgo }
  */
 export function homeBlocks(data, h) {
@@ -40,9 +45,8 @@ export function homeBlocks(data, h) {
   const ownWords = own.count > 0 ? `AIWorks has ${plural(own.count, 'problem')} of its own.` : null;
   out.push(el('section', { class: 'home-hero', 'aria-labelledby': 'home-title' },
     el('h1', { id: 'home-title', tabindex: '-1' }, heroWords(count, checking)),
-    el('p', { class: 'home-summary' }, summaryLine(goals, landed, checking, count)),
-    ownWords ? el('p', { class: 'home-summary home-own' }, own.address ? el('a', { href: own.address }, ownWords) : ownWords) : null,
-    data.confirmation ? el('p', { class: 'home-confirm', role: 'status' }, data.confirmation) : null));
+    el('p', { class: 'home-summary' }, summaryLine(goals, landed, checking, count, data.stopped === true)),
+    ownWords ? el('p', { class: 'home-summary home-own' }, own.address ? el('a', { href: own.address }, ownWords) : ownWords) : null));
 
   if (count > 0 && data.needCards?.length) out.push(el('section', { class: 'home-block home-needs', 'aria-label': 'Needs you' },
     el('ul', { class: 'home-cards' }, ...data.needCards.map((card) => el('li', {}, card)))));

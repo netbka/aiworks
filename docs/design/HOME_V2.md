@@ -18,15 +18,15 @@ Each goal is one entry:
 | --- | --- |
 | `project` | The project's name. |
 | `title` | A short title, at most 60 characters (1.2). |
-| `now` | `Now: <step>` while a step is being built or checked, `Next: <step>` when none is, `Waiting for your answer` when the goal asks the owner something, or null when nothing is left to start. |
+| `now` | `Now: <step>` while a step is being built or checked, `Next: <step>` when none is or while AIWorks is stopped, `Waiting for your answer` when the goal asks the owner something, or null when nothing is left to start. |
 | `done`, `total`, `dropped` | Steps finished, all steps, steps dropped. |
 | `segments` | One entry per step, in plan order: `done`, `now`, `asks`, `todo` or `dropped`. The screen draws them as a strip. |
-| `state` | `Asks you`, `Building`, `Checking`, `Queued` or `Paused`. |
+| `state` | `Asks you`, `Building`, `Checking`, `Waiting`, `Queued` or `Paused`. |
 | `link` | Where the goal's title leads: `{ project, goal }`, the project's address key and the goal's own id (2.2). Never shown as words; null when the project is not known. |
 
-Order: goals that ask the owner something first, then those being built or checked, then queued, then paused. Within a group, the order they were started.
+Order: goals that ask the owner something first, then those being built, checked or waiting, then queued, then paused. Within a group, the order they were started.
 
-A goal asks the owner something only when the owner-action list counts it (1.3). It is `Checking` when one of its current steps is with the independent checker, `Building` when a step is being made, and `Queued` otherwise.
+A goal asks the owner something only when the owner-action list counts it (1.3). While AIWorks is stopped on this computer (the header's Stopped), nothing is built or checked: every goal that is neither paused nor asking is `Waiting`. Otherwise it is `Checking` when one of its current steps is with the independent checker, `Building` when a step is being made, and `Queued` otherwise. The Home data carries `stopped: true` then.
 
 Example (fictional):
 
@@ -80,14 +80,14 @@ What the runs of the running and paused goals that finished today (from local mi
 
 Home is one centred column, at most 1040 px wide. Top to bottom:
 
-1. A headline: "Nothing needs you.", "One question for you." or "N things need you.", with one grey line such as "3 goals are moving in bakery. 14 changes landed since yesterday." (`needs.count`, `goals`, `landed.total`).
+1. A headline: "Nothing needs you.", "One question for you." or "N things need you.", with one grey line such as "3 goals are moving in bakery. 14 changes landed since yesterday." (`needs.count`, `goals`, `landed.total`). The line counts the goals that are not paused. While AIWorks is stopped (`stopped`) they are not moving: the line says "3 goals are waiting in bakery. Nothing runs until AIWorks starts again."
 2. Only when something waits: one card per item, the question as its heading. A choice shows its two to four options as selectable cards with their effect and "Suggested" on the suggestion, one Answer button and what happens without an answer. Anything else shows its question and a link to where it is settled.
 3. In progress: one row per goal (`goals`) with its title, the `now` line, a strip of its segments, "1 of 3 done" and its state; the spend of `spentToday.usd` in the block head when known.
 4. Decided for you: one line per decision with the answer in force in bold and a Change control (2.1); hidden when empty.
 5. Landed since yesterday: at most five lines from `landed.entries`, the rest behind "All N" when all entries are available. When `total` exceeds the available entries, the button says "Latest N" and a note states how many of the total changes are shown. Expanding keeps the data's 20-entry bound; "Fewer" returns to five.
 6. Quiet: one line of project links from `quiet`.
 
-The header carries the logo, the navigation, one word for the work (Working, Paused or Stopped) and Pause all. It shows no version, computer name, connection or refresh text; while the page cannot reach the dashboard that word is "Offline" and the controls are off.
+The header carries the logo, the navigation, one word for the work (Working, Idle, Paused or Stopped) and Pause all. Idle is said when no work needs AIWorks, as Settings › Connections says. It shows no version, computer name, connection or refresh text; while the page cannot reach the dashboard that word is "Offline" and the controls are off.
 
 Navigation is Home, Projects and Settings. Needs you is not a screen: its address opens Home, and the count on the Home item is `needs.count`, with "checking" beside it while a result's merge is still being checked. When nothing needs the owner but such a check is unresolved, the headline says "Nothing needs you, but a result is still being checked." rather than claiming calm; the count stays the owner's own actions. AIWorks's own problems, work stopped until restarted and routine work are in Settings, in one folded section "AIWorks itself"; Home shows one grey line "AIWorks has N problems of its own" linking there only when such a problem stops work, and it is never in the count.
 
