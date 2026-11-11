@@ -217,3 +217,15 @@ proof, non-text failure, report deliverable, known-defect delivery or base-expla
 independent verification path. Existing privacy guards, session fences, retry limits and run/cost budgets remain
 binding. Private reports and proof records remain in private run evidence and the store. See
 [publication safety](SUPERVISOR.md#3-lifecycle-of-one-task).
+
+## AW-020 - A red test stays red: no list of tolerated failures
+
+Issue #69 asked whether repositories may declare environment-sensitive tests whose failure still counts as an
+accepted gate. They may not. A full gate passes only when every test file passes. A file that fails is run once more
+on its own after every tier has finished (`scripts/run-tests.mjs`, `scripts/lib/test-retry.mjs`), and the gate passes
+only when each retried file passes alone; the summary names every retry, and the test result cache records such a
+file as failed. A file that cannot pass within the runner's per-file limit is made faster or split into smaller files;
+it is never exempted, and the limit is not raised to hide a slow file. A failure that reproduces alone is diagnosed
+before any repair (the failure-review rule of aiworks#57 and #67): a product defect is fixed, a test that waits less
+than the work it starts needs takes the deadline its siblings use, and anything still unexplained stays a red gate with
+a recorded follow-up. No repository setting, verifier verdict or report turns a red file green.
