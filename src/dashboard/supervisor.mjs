@@ -1150,7 +1150,7 @@ function localRuns(store, c, now, config, projectOf) {
 
 export function supervisorSnapshot(dataDir, now = Date.now(), { since, textChecks } = {}) {
   const path = join(dataDir, 'supervisor.db');
-  if (!existsSync(path)) return { available: false, message: 'No supervisor store at the configured location.', campaigns: [], costs: [], local: [], localCosts: [], activity: [] };
+  if (!existsSync(path)) return { available: false, message: 'AIWorks has no work records on this computer yet.', campaigns: [], costs: [], local: [], localCosts: [], activity: [] };
   let store;
   try {
     store = new Store(path, { readOnly: true });

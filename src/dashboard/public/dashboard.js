@@ -3347,7 +3347,7 @@ function reviewActions(review, binding, { more } = {}) {
     resume ? el('label', { class: 'choice' }, resume, el('span', {}, 'This work is paused. Resume it so the changes start now')) : null,
     aside(el('p', { class: 'subtext' }, `AIWorks reopens this step as a repair round within the approved plan${review.roundsLeft === null ? '' : ` (${plural(review.roundsLeft, 'round')} left)`}. A wider change needs a new plan. No secrets; up to 2,000 characters.`)),
     el('div', { class: 'campaign-controls' }, el('button', { class: 'button secondary', type: 'submit', disabled: off }, 'Request changes'))) : null;
-  const accepted = review.state === 'accepted' ? `You accepted this version at ${clock(review.acceptedAt)}. ${review.mergeGate === 'on' ? 'AIWorks merges it when its merge conditions hold.' : 'Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.'}`
+  const accepted = review.state === 'accepted' ? `You accepted this version at ${clock(review.acceptedAt)}. ${review.mergeGate === 'on' ? 'AIWorks adds it to your project once its last checks pass.' : 'Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.'}`
     : review.state === 'merged' ? 'This version is merged.' : null;
   // What is still open stays in sight beside Accept result; that everything passed is an explanation.
   const verdict = el('p', { role: 'status' }, open ? `Not complete: ${[u.failed ? `${plural(u.failed, 'criterion', 'criteria')} failed` : null, u.notChecked ? `${plural(u.notChecked, 'criterion', 'criteria')} not checked` : null,
@@ -3359,7 +3359,7 @@ function reviewActions(review, binding, { more } = {}) {
     aside(review.awaitsAcceptance ? el('p', { role: 'status' }, 'Waiting for you: you accept results yourself in this project, so this version is not merged until you accept it.') : null),
     aside(!review.local && review.state === 'ready' && !review.canAccept && (u.failed || u.blocking) ? el('p', { class: 'subtext' }, COMMANDS.result.unresolved) : null),
     review.canAccept ? el('div', { class: 'campaign-controls' }, button('Accept result', () => sendReview('accept', binding, review, {}, { address }), '', off),
-      aside(el('span', { class: 'subtext' }, review.mergeGate === 'on' ? 'Approves exactly this version; AIWorks merges it when its merge conditions hold.' : 'Approves exactly this version and takes it off Home. Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.'))) : null,
+      aside(el('span', { class: 'subtext' }, review.mergeGate === 'on' ? 'Approves exactly this version; AIWorks adds it to your project once its last checks pass.' : 'Approves exactly this version and takes it off Home. Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.'))) : null,
     form].filter(Boolean);
 }
 

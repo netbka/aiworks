@@ -4,6 +4,7 @@
 
 import { DELEGATED, NEEDS, RESTART_ADVICE, blockerCheck, blockerWords, stateCopy } from './copy.mjs';
 import { rulesSummary } from './projects.mjs';
+import { plainTitle } from './display-text.mjs';
 
 const PR_URL = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/;
 const COMMENT_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+#issuecomment-\d+$/;
@@ -40,7 +41,7 @@ const REPORTS_ACTION = /review recommendations before assigning implementation\.
 const short = (repository) => repository.split('/')[1] ?? repository;
 const list = (values) => values.length <= 2 ? values.join(' and ') : `${values.slice(0, -1).join(', ')} and ${values.at(-1)}`;
 const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
-const label = (task) => task.outcome ?? task.title ?? task.id;
+const label = (task) => plainTitle(task.outcome) ?? plainTitle(task.title) ?? 'A step';
 /** Steps named by what they deliver, never by ID: “Price sync” and “Search page”. */
 const named = (tasks) => list(tasks.map((task) => `“${label(task)}”`));
 const NO_MERGES = { repositories: [], steps: {} };
@@ -617,7 +618,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     const project = (supervisor.goals ?? []).find((goal) => goal.id === c.id)?.project ?? c.repository;
     const stepRoute = (task, text = 'Open the step') => ({ label: text, address: { screen: 'step', project, work: c.id, step: task.id } });
     const reviewRoute = (task) => { const entry = reviewEntry(c, task); return entry ? { label: 'Open the full review', address: entry.address } : stepRoute(task); };
-    const reference = (d) => d && !d.local && d.number ? { label: `Pull request #${d.number}`, url: d.url } : null;
+    const reference = (d) => d && !d.local && d.number ? { label: `See this change on GitHub (#${d.number})`, url: d.url } : null;
     const stopped = !['registered', 'finished'].includes(c.control);
     const stoppedWords = c.control === 'paused' ? 'This work is paused. Resume it from its work controls when you want it to continue.'
       : 'This work was stopped. AIWorks will not continue it; plan new work if you want to use this result.';

@@ -496,6 +496,8 @@ export function blockerWords(kind, { check = true } = {}) {
     action: `Set up an AI worker that can do it on this computer (see Settings)${then}` };
   if (kind === 'budget') return { reason: 'This work has used all the runs or cost it was approved for',
     action: 'Decide whether to allow more. If you do, approve it again with higher limits' };
+  if (kind === 'auth') return { reason: 'The AI worker on this computer is signed out',
+    action: `Sign in to it again on this computer${then}` };
   return { reason: 'AIWorks stopped this work and needs a fix on this computer',
     action: `See Settings › Diagnostics for what it recorded, and fix it${then}` };
 }
@@ -725,7 +727,7 @@ export const COMMANDS = {
   },
   // Review of a result (OWNER_UI_V2 WP4): accept and request changes are bound to one verified head and its report.
   result: {
-    accept: (gate) => gate === 'on' ? 'Accepted. AIWorks recorded your acceptance of this checked version; the merge gate merges it when its own conditions hold.'
+    accept: (gate) => gate === 'on' ? 'Accepted. AIWorks recorded your acceptance of this checked version and adds it to your project once its last checks pass.'
       : 'Accepted. AIWorks recorded your approval of this checked version and took it off Home. Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.',
     'request-changes': 'Changes requested. AIWorks reopens this step as a repair round within the approved plan; nothing of it is published or merged until a fresh independent check passes.',
     changed: 'This result changed since you opened it, or it is not the version that passed the check. Nothing was recorded. Refresh the page and review it again.',
