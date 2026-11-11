@@ -124,4 +124,4 @@ Done on 11 November 2026. The independent check found engineer words that could 
 - a GitHub link was called a pull request;
 - a card could fall back to a bare step id.
 
-The Change control on Decided for you now lines up with the other links and has a full-size tap target. The words of the Review form ("repair round", "criterion") are outside Home and are not part of this check.
+An Accept card on Home also shows words from the review of a result. They now say "done-when item", "serious problem" and "another try" instead of criterion, blocking finding and repair round. The Change control on Decided for you now lines up with the other links and has a full-size tap target. The complete local check's tally and the exact version are recorded in the pull request that closed this part.

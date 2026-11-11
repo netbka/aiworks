@@ -729,16 +729,16 @@ export const COMMANDS = {
   result: {
     accept: (gate) => gate === 'on' ? 'Accepted. AIWorks recorded your acceptance of this checked version and adds it to your project once its last checks pass.'
       : 'Accepted. AIWorks recorded your approval of this checked version and took it off Home. Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.',
-    'request-changes': 'Changes requested. AIWorks reopens this step as a repair round within the approved plan; nothing of it is published or merged until a fresh independent check passes.',
+    'request-changes': 'Changes requested. AIWorks gives this step another try within the approved plan; nothing of it is published or merged until a fresh independent check passes.',
     changed: 'This result changed since you opened it, or it is not the version that passed the check. Nothing was recorded. Refresh the page and review it again.',
     closed: 'This work is paused, cancelled or not finished, so its result takes no review now. Refresh the page to see where it stands.',
     requested: 'Changes to this version were already requested. Nothing was recorded twice.',
     merged: 'This version is already merged. To change it, ask for a new plan.',
     reportOnly: 'Requesting changes is available for code results. For a report, ask for a new plan.',
-    noRounds: 'This step has used all its repair rounds, so no further repair starts. Ask for a new plan to change it.',
+    noRounds: 'This step has used all its tries, so no further try starts. Ask for a new plan to change it.',
     applyLocal: 'A result in a project without GitHub is accepted with Apply.',
     alreadyAccepted: 'You already accepted this version.',
-    unresolved: 'A criterion failed or a blocking finding is open, so this version cannot be accepted. Request changes instead.',
+    unresolved: 'A done-when item failed or a serious problem is still open, so this version cannot be accepted. Request changes instead.',
   },
 };
 

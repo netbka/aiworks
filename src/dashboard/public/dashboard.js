@@ -3345,13 +3345,13 @@ function reviewActions(review, binding, { more } = {}) {
     aside(el('label', { class: 'field' }, el('strong', {}, 'About'), which)),
     el('label', { class: 'field' }, el('strong', {}, 'What should change'), words),
     resume ? el('label', { class: 'choice' }, resume, el('span', {}, 'This work is paused. Resume it so the changes start now')) : null,
-    aside(el('p', { class: 'subtext' }, `AIWorks reopens this step as a repair round within the approved plan${review.roundsLeft === null ? '' : ` (${plural(review.roundsLeft, 'round')} left)`}. A wider change needs a new plan. No secrets; up to 2,000 characters.`)),
+    aside(el('p', { class: 'subtext' }, `AIWorks gives this step another try within the approved plan${review.roundsLeft === null ? '' : ` (${plural(review.roundsLeft, 'try', 'tries')} left)`}. A wider change needs a new plan. No secrets; up to 2,000 characters.`)),
     el('div', { class: 'campaign-controls' }, el('button', { class: 'button secondary', type: 'submit', disabled: off }, 'Request changes'))) : null;
   const accepted = review.state === 'accepted' ? `You accepted this version at ${clock(review.acceptedAt)}. ${review.mergeGate === 'on' ? 'AIWorks adds it to your project once its last checks pass.' : 'Merging follows this project’s own rules: AIWorks merges only in projects where you allowed it.'}`
     : review.state === 'merged' ? 'This version is merged.' : null;
   // What is still open stays in sight beside Accept result; that everything passed is an explanation.
-  const verdict = el('p', { role: 'status' }, open ? `Not complete: ${[u.failed ? `${plural(u.failed, 'criterion', 'criteria')} failed` : null, u.notChecked ? `${plural(u.notChecked, 'criterion', 'criteria')} not checked` : null,
-      u.blocking ? `${plural(u.blocking, 'blocking finding')} open` : null].filter(Boolean).join(' · ')}.` : 'Every criterion passed the independent check.');
+  const verdict = el('p', { role: 'status' }, open ? `Not complete: ${[u.failed ? `${plural(u.failed, 'done-when item')} failed` : null, u.notChecked ? `${plural(u.notChecked, 'done-when item')} not checked` : null,
+      u.blocking ? `${plural(u.blocking, 'serious problem')} still open` : null].filter(Boolean).join(' · ')}.` : 'Every done-when item passed the independent check.');
   return [
     open ? verdict : aside(verdict),
     accepted ? el('p', { role: 'status' }, accepted) : null,
@@ -3380,10 +3380,10 @@ function stepScreen(project, c, task) {
       : unfinished && c.controls?.more.length ? button('Send guidance', () => openInstructions(c, task), '', commandsOff()) : null;
   // Passed only when the check passed every criterion (the server's checkPassed); otherwise what is still open.
   const u = task.review?.unresolved;
-  const open = u ? [u.failed ? `${plural(u.failed, 'criterion', 'criteria')} failed` : null, u.notChecked ? `${plural(u.notChecked, 'criterion', 'criteria')} not checked` : null,
-    u.blocking ? `${plural(u.blocking, 'blocking finding')} open` : null].filter(Boolean).join(' · ') : '';
+  const open = u ? [u.failed ? `${plural(u.failed, 'done-when item')} failed` : null, u.notChecked ? `${plural(u.notChecked, 'done-when item')} not checked` : null,
+    u.blocking ? `${plural(u.blocking, 'serious problem')} still open` : null].filter(Boolean).join(' · ') : '';
   const last = !task.verifiedSha ? outcomeText(task.lastOutcome) : task.checkPassed ? 'Passed the independent check'
-    : `Checked, not complete: ${open || 'not every criterion is recorded as passed'}`;
+    : `Checked, not complete: ${open || 'not every done-when item is recorded as passed'}`;
   const meaning = task.verifiedSha ? null : resultMeaning(task.lastOutcome, { stopped: Boolean(task.stopped), check: canCheckAgain(c, task) });
   const guidance = (c.instructions ?? []).filter((item) => item.taskId === task.id);
   const reading = readingLines(task.reading);
