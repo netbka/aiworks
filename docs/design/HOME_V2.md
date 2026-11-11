@@ -2,7 +2,7 @@
 
 **Privacy boundary:** this is a design, not an installation record. Every project, goal, step, amount and time below is fictional.
 
-**Status:** the data (part 1) is built in source: `GET /api/v2/home` and the `home` part of `/api/state` carry it. The screen (part 2) is built in source: `public/home.mjs` and `homeScreen()`, with answer changes (2.1) and goal links (2.2). Its check (part 3) is planned.
+**Status:** the data (part 1) is built in source: `GET /api/v2/home` and the `home` part of `/api/state` carry it. The screen (part 2) is built in source: `public/home.mjs` and `homeScreen()`, with answer changes (2.1) and goal links (2.2). Its check (part 3) was done on 11 November 2026.
 
 Home answers three questions in the owner's words, in this order: does anything need me, what is being made right now, and what was finished today. It never shows reference numbers, commit hashes, decision codes, step ids, file names, version names or internal state names, and it does not explain how AIWorks works.
 
@@ -113,6 +113,15 @@ A goal's title on Home opens that goal in its own project, `#/p/<project>/goal/<
 
 Acceptance: the screen reads only the fields of part one, the headline and the badge show the same number, and every visible word is plain English for a person.
 
-## 3. Part three: the check of the whole (planned)
+## 3. Part three: the check of the whole (done)
 
 An independent check of the final version runs the complete local check and the public-scope check, and reports the real tally and the exact version it checked. It looks at Home at desktop and phone width on the synthetic fixtures and confirms that nothing on it is written for an engineer.
+
+Done on 11 November 2026. The independent check found engineer words that could reach Home, and they were rewritten:
+- the notice after Accept named the merge gate;
+- a sign-in stop sent the owner to Diagnostics instead of saying to sign in again;
+- a missing store and a busy refusal named the supervisor;
+- a GitHub link was called a pull request;
+- a card could fall back to a bare step id.
+
+An Accept card on Home also shows words from the review of a result. They now say "done-when item", "serious problem" and "another try" instead of criterion, blocking finding and repair round. The Change control on Decided for you now lines up with the other links and has a full-size tap target. The complete local check's tally and the exact version are recorded in the pull request that closed this part.

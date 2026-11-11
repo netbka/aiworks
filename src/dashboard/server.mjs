@@ -115,7 +115,7 @@ export function createCampaignApiServer({ dataDir, provenanceRoot = undefined })
       return send(status, body);
     } catch (error) {
       if (error.status) return send(error.status, { error: error.message, ...(typeof error.code === 'string' ? { code: error.code } : {}) });
-      return send(503, { error: 'The supervisor is busy or unavailable. Try again later.' });
+      return send(503, { error: 'AIWorks is busy or not running right now. Try again in a minute.' });
     }
   });
   server.requestTimeout = 10_000;
@@ -257,7 +257,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
           return send(status, body);
         } catch (error) {
           if (error.status) return send(error.status, { error: error.message, ...(typeof error.code === 'string' ? { code: error.code } : {}) });
-          return send(503, { error: 'The supervisor is busy or unavailable. Try again later.' });
+          return send(503, { error: 'AIWorks is busy or not running right now. Try again in a minute.' });
         }
       }
     }
@@ -347,7 +347,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
             return send(400, { error: 'Invalid event query.' });
           }
           const events = withReadOnlyStore(dataDir, (store) => typedEvents(store, { after, cursor, project, type }), null);
-          return events ? send(200, { ...events, lastSeen: readLastSeen(dataDir) }) : send(503, { error: 'The supervisor is busy or unavailable. Refresh before trying again.' });
+          return events ? send(200, { ...events, lastSeen: readLastSeen(dataDir) }) : send(503, { error: 'AIWorks is busy or not running right now. Refresh the page before trying again.' });
         }
         // The connected projects with each one's own folder, the one path a response may carry (404 while Add project is off).
         if (path === '/api/projects') return send(200, listConnectedProjects(dataDir));
@@ -504,7 +504,7 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
       const status = error.status ?? (error.code === 'INVALID_STATE' || error.name === 'ConflictError' ? 409 : 503);
       // `detail`: the machine's reason behind a refusal, which the page keeps in a Details disclosure (aiworks#11 review F3).
       // `code`: a refusal the page answers in place, such as INSTRUCTION_LOOKS_SENSITIVE beside the instruction (aiworks#61).
-      send(status, { error: error.status ? error.message : 'The supervisor is busy or unavailable. Refresh before trying again.', ...(error.status && error.detail ? { detail: error.detail } : {}),
+      send(status, { error: error.status ? error.message : 'AIWorks is busy or not running right now. Refresh the page before trying again.', ...(error.status && error.detail ? { detail: error.detail } : {}),
         ...(error.status && typeof error.code === 'string' ? { code: error.code } : {}) });
     }
   });

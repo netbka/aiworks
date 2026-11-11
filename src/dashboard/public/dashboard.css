@@ -599,7 +599,7 @@ a.home-goal-title{display:inline-flex;align-items:center;min-height:44px}
 .home-progress-row .step-strip{flex:1 1 120px;min-width:0}
 .home-progress-row .step-seg{max-width:none}
 .home-lines li{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-height:44px;padding:4px 2px;border-bottom:1px solid var(--line)}
-.home-lines li>a{margin-left:auto;display:inline-flex;align-items:center;min-height:44px;padding:0 4px}
+.home-lines li>a,.home-lines li>.button.link{margin-left:auto;display:inline-flex;align-items:center;min-height:44px;padding:0 4px}
 .home-landed li .home-note{margin-left:auto}
 .home-landed-title{min-width:0;overflow-wrap:anywhere}
 .home-check{color:var(--green);font-weight:700}
