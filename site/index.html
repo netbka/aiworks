@@ -27,11 +27,11 @@
 </header>
 
 <main id="content" tabindex="-1">
-  <h1>Plan once, check every result, decide only what needs you</h1>
-  <p class="lead">AIWorks is a manager for AI coding agents that runs on your own Windows computer. You approve a plan; an AI builder does each step in an isolated copy; a fresh AI session checks that exact version; and nothing in your folder changes until you press Apply.</p>
+  <h1>Plan once, check every result, undo any apply</h1>
+  <p class="lead">AIWorks is a manager for AI coding agents that runs on your own Windows computer. You approve a plan; an AI builder does each step in an isolated copy; a fresh AI session checks that exact version; only that checked version reaches your folder, and Undo apply puts the folder back.</p>
 
   <div class="notice" role="note">
-    <p><strong>Synthetic demonstration.</strong> Every screen below was captured from a disposable runtime with two fictional projects, <em>notes</em> (a plain folder) and <em>site</em> (a local Git repository), and a synthetic AI worker that makes no model or network call. The computer name in the header is replaced with “Example PC”.</p>
+    <p><strong>Synthetic demonstration.</strong> Every screen below was captured from a disposable runtime with two fictional projects, <em>notes</em> (a plain folder) and <em>site</em> (a local Git repository), and a synthetic AI worker that makes no model or network call.</p>
     <p>It is not an installation, nobody's real projects appear in it, and this page makes no claim about any installed or running copy of AIWorks.</p>
   </div>
 
@@ -47,19 +47,19 @@
 
   <section class="panel" id="journey" aria-labelledby="journey-title">
     <h2 id="journey-title">The owner journey</h2>
-    <p>The <a href="../docs/design/OWNER_JOURNEY_ACCEPTANCE.md">owner journey acceptance</a> runs 29 checked steps. These are the ones you can see. <span class="label demo">Shown in this demonstration</span> applies to every step in this section.</p>
+    <p>The <a href="../docs/design/OWNER_JOURNEY_ACCEPTANCE.md">owner journey acceptance</a> ran 52 checked steps, all passing. These are the ones you can see. <span class="label demo">Shown in this demonstration</span> applies to every step in this section.</p>
 
     <article class="step" aria-labelledby="s1">
       <div>
         <h3 id="s1">1. Start from nothing</h3>
-        <p>Home answers “What changed, and what needs me?”. With no projects it says so and offers Add project: an idea first, then a folder on this computer.</p>
+        <p>Home answers “What needs me, and what is moving?”. Before any project, nothing needs the owner and nothing is moving. A project is added from Projects: an idea first, then a folder on this computer.</p>
         <ul>
           <li>Confirming a project's rules is a protected owner action. It passed the Windows check that the request came from the owner's browser, not from an AI worker.</li>
           <li><span class="label off">Off by default</span> Add project needs <code>projectConnection.enabled</code>; planning and starting work from the page need <code>coordinator.intake</code>.</li>
         </ul>
       </div>
       <figure>
-        <a href="assets/home-empty.png"><img src="assets/home-empty.png" width="1366" height="900" alt="Home with no projects yet: Needs you says nothing needs you right now, and Projects offers Add project."></a>
+        <a href="assets/home-empty.png"><img src="assets/home-empty.png" width="1366" height="900" alt="Home with no projects yet: Nothing needs you, and nothing is moving right now."></a>
         <figcaption>Home, before any project. Open the image for full size.</figcaption>
       </figure>
     </article>
@@ -93,34 +93,33 @@
 
     <article class="step" aria-labelledby="s3">
       <div>
-        <h3 id="s3">3. Review the checked result, then Apply it yourself</h3>
-        <p>The builder worked in an isolated copy. A separate checker approved that exact version, and Review shows it, named by its commit.</p>
+        <h3 id="s3">3. The checked result is applied, and Undo puts it back</h3>
+        <p>The builder worked in an isolated copy. A separate checker approved that exact version, AIWorks applied it to the folder, and Review shows it, named by its commit.</p>
         <ul>
           <li>Try this version opens the checked pages in a sealed frame that cannot reach the dashboard or the internet. Desktop and phone screenshots of it were taken under the same containment as the workers.</li>
-          <li>Apply refused while the owner had changed the same file and wrote nothing; it then applied and kept an unrelated owner edit.</li>
+          <li>Undo apply put the folder back as it was before the automatic apply. Applying again by hand refused while the owner had changed the same file and wrote nothing; it then applied and kept an unrelated owner edit.</li>
           <li>Undo apply refused while the owner had edited an applied file, then put the folder back byte for byte.</li>
           <li>For the local Git project, Apply refused a dirty working tree, then fast-forwarded the branch; a builder that tried to press Apply from inside its job was refused.</li>
         </ul>
       </div>
       <figure>
         <a href="assets/result-review.png"><img src="assets/result-review.png" width="1366" height="900" alt="Review of a result: ready for your review, checked at a named commit, an Apply button, the checker's verdict and a Try this version panel showing the checked page."></a>
-        <figcaption>A result waiting on Review, with its preview open.</figcaption>
+        <figcaption>A checked result on Review after Undo, ready to apply again, with its preview open.</figcaption>
       </figure>
     </article>
 
     <article class="step" aria-labelledby="s4">
       <div>
-        <h3 id="s4">4. A step stops for your decision</h3>
-        <p>When a step needs the owner, it stops, nothing in the folder changes, and it appears in Needs you and on Home under its project.</p>
+        <h3 id="s4">4. A step decides for itself</h3>
+        <p>A builder that stopped to ask without offering options was sent back once to decide within its plan. It finished, and its result was checked again. Home kept saying that nothing needs the owner while the goal moved.</p>
         <ul>
-          <li>The answer was written on the project's Overview; its draft was kept across navigation.</li>
-          <li>The next builder run received the answer, and its result was checked again.</li>
-          <li>Checked by hand in the acceptance run: answering with the keyboard alone, Tab to Send answer, with a visible focus ring.</li>
+          <li>Routine choices are AIWorks's to make (decision AW-017); only the owner's own sign-in, credentials and payment are the owner's.</li>
+          <li><span class="label code">In the source code</span> A recorded answer can be changed from Home's Decided for you. This journey did not exercise it; it has its own tests.</li>
         </ul>
       </div>
       <figure>
-        <a href="assets/decision.png"><img src="assets/decision.png" width="1366" height="900" alt="Home with one item in Needs you: a decision needed on the Greeting step, with an Answer button and a text field for the answer."></a>
-        <figcaption>Home, with a decision waiting.</figcaption>
+        <a href="assets/decision.png"><img src="assets/decision.png" width="1366" height="900" alt="Home while a goal is checked: Nothing needs you, one goal moving in notes, its Greeting step being checked, and what it cost today."></a>
+        <figcaption>Home while the step is being checked.</figcaption>
       </figure>
     </article>
 
@@ -141,7 +140,7 @@
     <article class="step" aria-labelledby="s6">
       <div>
         <h3 id="s6">6. Alerts, rehearsed</h3>
-        <p>The decision raised an alert. The rehearsal transport recorded it on this computer as it would be sent: nothing was sent and nothing was reported delivered.</p>
+        <p>An alert raised during the journey was recorded by the rehearsal transport on this computer as it would be sent: nothing was sent and nothing was reported delivered.</p>
         <ul>
           <li>Alert rules, a Knowledge fact and the project budget were each saved through the same owner check.</li>
           <li><span class="label reserved">Owner-reserved</span> Real delivery needs a recipient the owner configures. None was configured.</li>
@@ -156,10 +155,10 @@
 
   <section class="panel" id="phone" aria-labelledby="phone-title">
     <h2 id="phone-title">On a phone</h2>
-    <p>Below 960px the navigation moves to the bottom. At a 320px window and a 390px phone, none of the 13 checked screens scrolled sideways.</p>
+    <p>Below 960px the navigation moves to the bottom. At a 320px window and a 390px phone, none of the checked screens scrolled sideways.</p>
     <div class="phones">
       <figure>
-        <a href="assets/phone-home.png"><img src="assets/phone-home.png" width="390" height="844" alt="Home on a 390 pixel phone: what changed, Needs you with nothing waiting, and the notes project with two checked results waiting for review."></a>
+        <a href="assets/phone-home.png"><img src="assets/phone-home.png" width="390" height="844" alt="Home on a 390 pixel phone: Nothing needs you, a link to the coordinator's reply, and both projects quiet and done."></a>
         <figcaption>Home at 390px.</figcaption>
       </figure>
       <figure>
@@ -178,8 +177,7 @@
         <tr><th scope="row">Real notification delivery</th><td data-label="Where it stands"><span class="label reserved">Owner-reserved</span> Needs a recipient and secret references the owner configures.</td></tr>
         <tr><th scope="row">Release destinations and a Publish button</th><td data-label="Where it stands"><span class="label reserved">Owner-reserved</span> Needs a specific grant; the button is not built.</td></tr>
         <tr><th scope="row">Opening the dashboard from another device</th><td data-label="Where it stands"><span class="label reserved">Owner-reserved</span> The dashboard answers on this computer only; remote access is not designed yet.</td></tr>
-        <tr><th scope="row">Model and cost per step for local work</th><td data-label="Where it stands">Not built yet for projects without GitHub. Their project budget does count their work.</td></tr>
-        <tr><th scope="row">A study with a person</th><td data-label="Where it stands">Not done. The journey is a scripted check by an AI implementer, not a usability study.</td></tr>
+                <tr><th scope="row">A study with a person</th><td data-label="Where it stands">Not done. The journey is a scripted check by an AI implementer, not a usability study.</td></tr>
         <tr><th scope="row">Real AI workers and their limits</th><td data-label="Where it stands">Not exercised: the demonstration's worker is synthetic.</td></tr>
       </tbody>
     </table>
@@ -203,7 +201,7 @@
 </main>
 
 <footer>
-  <p>Screens captured by <code>scripts/supervisor/owner-journey.mjs</code> from a source revision whose product code is the accepted owner-journey revision; how to capture them again is in <a href="README.md">site/README.md</a>. All projects, names and data on this page are fictional.</p>
+  <p>Screens captured by <code>scripts/supervisor/owner-journey.mjs</code> from source revision <code>808d8d1</code> on 2026-11-11, with all 52 journey steps passing; how to capture them again is in <a href="README.md">site/README.md</a>. All projects, names and data on this page are fictional.</p>
 </footer>
 </body>
 </html>

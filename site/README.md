@@ -41,7 +41,7 @@ Then copy from `<folder>/evidence` into `site/assets`:
 | `03-review-v2.png` | `plan-review.png` |
 | `08-plan.png` | `plan-versions.png` |
 | `04-review-preview.png` | `result-review.png` |
-| `05-home-decision.png` | `decision.png` |
+| `05-home-decided.png` | `decision.png` |
 | `06-releases-local.png` | `releases.png` |
 | `07-settings-alerts.png` | `alerts.png` |
 | `12-phone-home.png` | `phone-home.png` |
@@ -51,4 +51,4 @@ Look at every image before committing it, and update the page's text where a scr
 
 ## Current assets
 
-Captured on 2026-10-21 by the journey above, all 29 steps `ok`, from source commit `3eb287b`. Its product code (`src/`) is identical to the independently accepted owner-journey revision `fcb1282` and its merge `76700f5`; the only difference is the journey script's computer-name replacement in screenshots.
+Captured on 2026-11-11 by the journey above from source commit `808d8d1` with no uncommitted changes, all 52 steps `ok`. Home while a step is checked replaces the earlier decision screen: under AW-017 the journey's builder decides for itself, so no decision waits for the owner.
