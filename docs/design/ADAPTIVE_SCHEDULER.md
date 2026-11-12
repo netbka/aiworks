@@ -199,7 +199,7 @@ These protect workstation. They are **not** AW-002 limits: they never stop a cam
 
 - **Host ceiling.** At most `scheduler.maxWorkers` worker operations at once, across all campaigns. It is set in the data directory's `config.json` (local machine config, not a campaign declaration). Default: `clamp(floor(os.availableParallelism() / 4), 1, 4)`. Workers run full test suites, which are CPU heavy. The coordinator does not count against it (owner messages must not queue behind work), but it does count in the pressure sample.
 - **Pressure sample.** Taken at most once per tick, in-process, without model calls:
-  - free memory below `max(2 GiB, 10% of total)` (`os.freemem`, `os.totalmem`);
+  - free memory below `max(minFreeMemoryBytes, minFreeMemoryShare × total)` (`os.freemem`, `os.totalmem`); off by default (owner decision 2026-11-07), on when either is set, for example `"minFreeMemoryBytes": 3221225472` for 3 GiB;
   - CPU busy above 90% over the last 60 s, from `os.cpus()` time deltas (`os.loadavg` is always zero on Windows);
   - free disk on the worktree volume below 5 GiB (`fs.statfsSync`); each worktree may install dependencies;
   - runner heartbeats late: any open run whose heartbeat is older than three intervals but younger than `staleMs`. This means the host is starving runners, as measured in `tests/supervisor/measure-liveness.mjs`.

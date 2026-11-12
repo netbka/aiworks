@@ -27,7 +27,7 @@ import { isPlannedMerge, moveMain, writeMergeCommit } from './release/local-merg
 import { mainLedger, recordMainCommit, trustedTip } from './self-hosting.mjs';
 import { backupStep } from './github-backup.mjs';
 import { reviewItem, WORK_REFERENCE, workLink } from './work-list.mjs';
-import { campaignLimits } from './campaign.mjs';
+import { effectiveLimits } from './project-settings.mjs';
 import { specsOf } from './plan.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { passedTree, refreshSettings, refreshStep } from './merge-refresh.mjs';
@@ -884,7 +884,7 @@ function repair(controller, ctx, item, repoPath, baseSha, refreshed) {
       `Sibling commits on ${base}: ${commits.map((entry) => `${entry.sha.slice(0, 12)} ${entry.subject}`).join('; ') || 'unknown'}. ` +
       `Merge ${baseSha} into this branch (git merge -m "Merge ${base} at ${baseSha.slice(0, 12)} into this branch" ${baseSha}: always this message, never Git's default, which can name a local path), resolve any conflicts, run the full gate and commit the merge. Never rebase, reset or amend: ${sha} must stay an ancestor of the new head.`,
   };
-  const stalled = controller.reopenPublished(ctx, fresh, finding, { limits: campaignLimits(decl), now,
+  const stalled = controller.reopenPublished(ctx, fresh, finding, { limits: effectiveLimits(store, decl), now,
     lastError: `merge-base-moved: ${sha} does not contain ${base} at ${baseSha}`,
     stalledReason: `the base moved before merging, after ${fresh.repair_rounds} repair rounds`, bounded: false });
   store.journal(campaignId, 'merge-base-moved', { task: task.task_id, sha, base: baseSha, paths, commits: commits.map((entry) => entry.sha), stalled }, now);

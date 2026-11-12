@@ -84,17 +84,35 @@ export const scopeDigest = (declaration) => sha256({ ...declaration, authorizati
 /** Digest of the whole current authority; bound into every worker packet. */
 export const authorityDigest = (declaration) => sha256(declaration);
 
+/** Repair rounds per step when neither the declaration nor the project's settings name a number (AW-002, amended 2026-11-06). */
+export const DEFAULT_MAX_REPAIR_ROUNDS = 3;
+
 /**
- * Effective limits. Every limit is optional and defaults to no limit: an omitted or null limit never
- * stops work; only provider subscription/usage limits (which the supervisor waits out) do. Parallel
- * slots default to 1; `limits.slots` may be 1..8 or "auto", which the scheduler (slice RUN5) honours once it is enabled.
+ * Where a campaign's repair-round limit comes from: 'goal' when its declaration names `limits.maxRepairRounds` (a number,
+ * or null for no limit), 'project' when the project's settings do (`projectLimits`, project-settings.mjs effectiveLimits),
+ * else 'default' (DEFAULT_MAX_REPAIR_ROUNDS).
  */
-export function campaignLimits(declaration) {
+export function repairRoundsSource(declaration, projectLimits = null) {
+  if (declaration?.limits?.maxRepairRounds !== undefined) return 'goal';
+  return projectLimits && typeof projectLimits === 'object' && projectLimits.maxRepairRounds !== undefined ? 'project' : 'default';
+}
+
+/**
+ * Effective limits. Run, retry and cost limits are optional and default to no limit: an omitted or null limit never
+ * stops work; only provider subscription/usage limits (which the supervisor waits out) do. Repair rounds alone have a
+ * default (AW-002, amended 2026-11-06): the declaration's number, or no limit when it says null explicitly; else the
+ * project's settings (`projectLimits.maxRepairRounds`, 0..5 or null for no limit); else DEFAULT_MAX_REPAIR_ROUNDS. Callers
+ * that hold the store use project-settings.mjs effectiveLimits, which supplies the project's settings. Reaching the
+ * limit never waits for the owner: the step is finished (controller.mjs settleStopped, AW-017). Parallel slots default
+ * to 1; `limits.slots` may be 1..8 or "auto", which the scheduler (slice RUN5) honours once it is enabled.
+ */
+export function campaignLimits(declaration, projectLimits = null) {
   const l = declaration?.limits ?? {};
+  const source = repairRoundsSource(declaration, projectLimits);
   return {
     slots: l.slots ?? 1,
     maxWorkerRuns: l.maxWorkerRuns ?? null,
-    maxRepairRounds: l.maxRepairRounds ?? null,
+    maxRepairRounds: source === 'goal' ? l.maxRepairRounds : source === 'project' ? projectLimits.maxRepairRounds : DEFAULT_MAX_REPAIR_ROUNDS,
     maxRetriesPerTask: l.maxRetriesPerTask ?? null,
     maxCostUsd: l.maxCostUsd ?? null,
     unknownRunCostUsd: l.unknownRunCostUsd ?? null,
@@ -154,9 +172,10 @@ export function validateDeclaration(declaration) {
   const l = d.limits && typeof d.limits === 'object' ? d.limits : {};
   // Every limit is optional. Omitted or null means no limit (the default): work then stops only on provider
   // subscription/usage limits, which the supervisor waits out. A budget is set only when the owner declares one.
+  // maxRepairRounds alone: null is no limit, and omitted is the project's setting, else DEFAULT_MAX_REPAIR_ROUNDS.
   if (l.maxWorkerRuns != null && !int(l.maxWorkerRuns, 1, 100)) bad('limits.maxWorkerRuns must be 1..100, or omitted/null for no limit');
   if (l.slots != null && !(l.slots === 'auto' || int(l.slots, 1, 8))) bad('limits.slots must be 1..8 or "auto"');
-  if (l.maxRepairRounds != null && !int(l.maxRepairRounds, 0, 5)) bad('limits.maxRepairRounds must be 0..5, or omitted/null for no limit');
+  if (l.maxRepairRounds != null && !int(l.maxRepairRounds, 0, 5)) bad('limits.maxRepairRounds must be 0..5, null for no limit, or omitted for the project setting or 3');
   if (l.maxRetriesPerTask != null && !int(l.maxRetriesPerTask, 0, 5)) bad('limits.maxRetriesPerTask must be 0..5, or omitted/null for no limit');
   for (const key of Object.keys(l)) if (!['maxWorkerRuns', 'slots', 'maxRepairRounds', 'maxRetriesPerTask', 'maxCostUsd', 'unknownRunCostUsd'].includes(key)) bad(`unknown limits key ${key}`);
   // Optional cost ceiling in USD; runs whose provider reports no cost are priced at a declared conservative value.

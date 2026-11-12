@@ -12,6 +12,8 @@ import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { branchName } from '../../src/supervisor/adapters/git.mjs';
+import { saveSettings } from '../../src/supervisor/project-settings.mjs';
+import { items } from '../../src/supervisor/work-list.mjs';
 import { declaration, environment, passedGate } from './helpers.mjs';
 
 const git = (cwd, ...args) => {
@@ -248,6 +250,19 @@ test('integration repair is bounded by maxRepairRounds', async (t) => {
   // AW-017: past the bound the step does not wait for the owner; it ends as not done and nothing of it merges.
   assert.equal(r.store.task(B, 'B1').state, 'cancelled');
   assert.match(r.store.task(B, 'B1').last_error, /^not done: integration conflict with main after 0 repair rounds/);
+  assert.equal(r.store.openOperations(B).length, 0, 'no worker is dispatched past the bound');
+});
+
+test('integration repair at a limit from Project settings ends the step as not done with one follow-up', async (t) => {
+  // AW-002 amended: the declarations name no repair limit, so the project's setting applies (AW-017 finishes the step).
+  const r = rig(t, { limits: { maxRepairRounds: undefined } });
+  saveSettings(r.store, { project: 'example-org/sampleapp', expectedVersion: 0, requestId: 'integration-limit-1', settings: { limits: { maxRepairRounds: 0 } } }, Date.now());
+  await siblingsPublishedThenAMerged(r);
+  r.advance(r.controller.config.integrationPollMs + 1);
+  await r.tick();
+  assert.equal(r.journal(B, 'integration-conflict')[0]?.stalled, true);
+  assert.equal(r.store.task(B, 'B1').state, 'cancelled', 'finished, not left for the owner');
+  assert.equal(items(r.store).filter((item) => item.task_id === 'B1').length, 1, 'one follow-up item');
   assert.equal(r.store.openOperations(B).length, 0, 'no worker is dispatched past the bound');
 });
 

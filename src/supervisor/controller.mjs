@@ -13,10 +13,10 @@ import { researchContext } from './adapters/research-context.mjs';
 import { browserLoginSettings } from './browser-login.mjs';
 import * as gitA from './adapters/git.mjs';
 import * as github from './adapters/github.mjs';
-import { authorityDigest, campaignLimits, canonicalJson, executorOrder, overlayGovernance, projectGovernance, webBuildRefusal } from './campaign.mjs';
+import { authorityDigest, canonicalJson, executorOrder, overlayGovernance, projectGovernance, webBuildRefusal } from './campaign.mjs';
 import { localProjectName, resolveCheckout, resolveLocalProject } from './project-connect.mjs';
 import { admissionBudget } from './api.mjs';
-import { currentSettings, projectOf, protectedAreasFor, protectedPaths } from './project-settings.mjs';
+import { currentSettings, effectiveLimits, projectOf, protectedAreasFor, protectedPaths } from './project-settings.mjs';
 import { authorityChange, authorityPaths } from './release/authority-path.mjs';
 import { drainReleases, releasePass } from './release/controller.mjs';
 import { autoApplyPass } from './release/owner-apply.mjs';
@@ -1811,7 +1811,7 @@ export class Controller {
   }
 
   transition(ctx, task, op, v, decl, now) {
-    const limits = campaignLimits(decl);
+    const limits = effectiveLimits(this.store, decl);
     const back = op.kind === 'verify' ? 'implemented' : 'pending';
     const retry = (cls, detail, state) => {
       // A launch that never started is kept apart ('not-started', outside RETRYABLE): it uses no attempt of the task.
@@ -2309,7 +2309,7 @@ export class Controller {
       // A newer authorization during the read (a lower maxRepairRounds, say) is not judged by the old one: next pass.
       if (!this.authorityHolds(ctx.id, c)) { this.integrationCheckedAt.delete(ctx.id); return; }
       specs = specsOf(this.store, ctx.id, decl);
-      const limits = campaignLimits(decl);
+      const limits = effectiveLimits(this.store, decl);
       let open = 0;
       for (const task of published(this.store.tasks(ctx.id))) {
         const sha = task.verified_sha, branch = gitA.branchName(ctx.id, task.task_id);
@@ -2382,7 +2382,7 @@ export class Controller {
         if (!current) this.store.journal(ctx.id, 'result-changes-stale', { task: p.taskId ?? null, sha: p.verifiedSha ?? null }, now);
         else {
           const stalled = this.reopenPublished(ctx, task, ownerChangesFinding({ verifiedSha: p.verifiedSha, text: p.text, criterion: p.criterion ?? null }),
-            { limits: campaignLimits(c.declaration), now, lastError: `owner-changes: requested on ${p.verifiedSha}`,
+            { limits: effectiveLimits(this.store, c.declaration), now, lastError: `owner-changes: requested on ${p.verifiedSha}`,
               stalledReason: `owner requested changes on ${p.verifiedSha} after ${task.repair_rounds} repair rounds` });
           // The owner's words stay in the request's own event; the journal names the step and the head only.
           this.store.journal(ctx.id, 'result-changes-reopened', { task: task.task_id, sha: p.verifiedSha, criterion: p.criterion ?? null, stalled }, now);
@@ -2528,7 +2528,7 @@ export class Controller {
       }
       const failed = checks.filter((check) => !['success', 'neutral', 'skipped'].includes(check.conclusion)).slice(0, 20);
       const repairable = pr?.url === task.pr_url && pr.headRefOid === sha;
-      const limits = campaignLimits(decl);
+      const limits = effectiveLimits(this.store, decl);
       const stalled = repairable && limits.maxRepairRounds !== null && task.repair_rounds >= limits.maxRepairRounds;
       this.store.journal(ctx.id, 'ci-failed', { task: task.task_id, sha, checks: names(failed), url: task.pr_url,
         repair: repairable, stalled, ...(repairable ? {} : { reason: pr ? `the open PR is at ${pr.headRefOid}` : 'no open PR' }) }, now);
@@ -2552,7 +2552,7 @@ export class Controller {
         this.store.patch('campaigns', { id: ctx.id }, campaign.version, { control: 'registered', status: 'active', next_action: null }, now);
       }
       this.enqueue(ctx.id, `${ctx.id}:${task.task_id}:ci-failed:${sha}`, decl, `**${task.task_id}** (#${spec.issue}): CI failed on the published head \`${sha}\` (${task.pr_url}) in ${names(failed).join(', ')}. ` +
-        (stalled ? 'The repair-round limit is reached, so the task stalls until a recheck.' : 'The task is reopened as a repair round; a fresh independent verification precedes any push to the same PR.') +
+        (stalled ? 'The repair-round limit is reached: AIWorks finishes the step without waiting for the owner, as not done with a follow-up item (AW-017).' : 'The task is reopened as a repair round; a fresh independent verification precedes any push to the same PR.') +
         ' Nothing was merged or deployed.', now);
       return false;
     });
@@ -4028,7 +4028,7 @@ export class Controller {
    * head. Past PUBLICATION_REPAIRS or maxRepairRounds, or when the supervisor's own text is refused, the task stalls.
    */
   publicationRefused(ctx, decl, spec, task, { findings, sources }) {
-    const now = this.now(), limits = campaignLimits(decl);
+    const now = this.now(), limits = effectiveLimits(this.store, decl);
     const reportDigest = createHash('sha256').update(String(task.result?.report ?? ''), 'utf8').digest('hex');
     const earlier = this.store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'publication-refused'", ctx.id)
       .filter((row) => row.detail?.task === task.task_id && row.detail.repair).length;
@@ -4052,7 +4052,7 @@ export class Controller {
       : { ...correction, retry_at: null, last_error: `publish: ${reason}`, blocked: { class: 'stalled', reason, at: now } }, now);
     if (!repairable) {
       this.enqueue(ctx.id, `${ctx.id}:${task.task_id}:publication-refused:${task.verified_sha}`, decl,
-        `**${task.task_id}** (#${spec.issue}) is stalled: ${reason}. The verified evidence stays private on this computer. After a correction, run \`supervisor recheck ${ctx.id} --task ${task.task_id}\`.`, now);
+        `**${task.task_id}** (#${spec.issue}) is stopped: ${reason}. The verified evidence stays private on this computer. AIWorks finishes the step without waiting for the owner, as not done with a follow-up item (AW-017).`, now);
     }
     this.log(`publication of ${task.task_id} refused: ${findings.join(', ')}`);
   }
