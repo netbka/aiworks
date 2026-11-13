@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
+import { carriedAnswers, settledPoints } from '../../src/supervisor/decisions.mjs';
 import { decisionInstructions, pendingInstructions } from '../../src/supervisor/instructions.mjs';
 import { applyAnswerChange, applyDecision, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
@@ -147,6 +148,14 @@ test('a part the owner answered reaches the worker as the owner\'s, the rest sta
   stop(3000, [risky, font]);
   controller.answerSuggested(ctx());
   assert.equal(answered().length, 2, 'no answer is recorded for a point whose consequence changed');
+
+  // An answer AIWorks gave itself is carried only while its AW-017 rule still allows it: asked again in a decision that
+  // is neither reversible nor names it as safeOption, it is not carried.
+  const settled = settledPoints([{ seq: 1, detail: { decision: 'a'.repeat(32), auto: true, option: 'go', question: 'Proceed?',
+    options: [{ id: 'go', label: 'Yes', consequence: 'Local branch only.' }, { id: 'stop', label: 'No', consequence: 'Nothing.' }] } }]);
+  const asked = { question: 'Proceed?', options: [{ id: 'go', label: 'Yes', consequence: 'Local branch only.' }, { id: 'stop', label: 'No', consequence: 'Nothing.' }] };
+  assert.deepEqual(carriedAnswers(asked, settled), {});
+  assert.equal(carriedAnswers({ ...asked, safeOption: 'go' }, settled)['']?.option, 'go');
 });
 
 test('only the owner\'s own session changes an answer: a program AIWorks started is refused and nothing is written', async (t) => {
