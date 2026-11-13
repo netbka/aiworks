@@ -49,7 +49,7 @@ import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
 import { addComment, createItem, followUp, productDefectItem, settleSubject, standingFollowUp, reviewItem, subjectLabel, WorkListError, workAuthorization, workLink } from './work-list.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 import { alertDecision, configuredTransport, currentAlertRules, renderAlert } from './alerts.mjs';
-import { PUBLICATION_REFUSED, privateTerms, publicationFindings } from '../shared/public-text.mjs';
+import { PUBLICATION_REFUSED, privateTerms, publicationFindings, relativeTo } from '../shared/public-text.mjs';
 import { captureCodeEvidence, codeEvidence, reportDigest as digestReport } from './verification-evidence.mjs';
 import { rewriteNote, rewriteProof, withoutRewrite } from './report-rewrite.mjs';
 import { assertBrokerRoot, codeBrokerPolicy, codeBrokerPrompt, codeSnapshot, settleCodeProposal, verifyBrokerCheck } from './code-broker.mjs';
@@ -3940,7 +3940,7 @@ export class Controller {
           // aiworks#27, aiworks#42: the repaired head goes to the same branch and PR. The push is a plain fast-forward (the
           // earlier verified head is an ancestor), never a force-push; without an open PR nothing is pushed and no PR is opened.
           const key = `${ctx.id}:${task.task_id}:${repairKind}:${task.verified_sha}`;
-          const comment = `${integration ? this.integrationBody(decl, spec, task, integration) : this.repairBody(decl, spec, task, repair)}\n\n${github.marker(key)}`;
+          const comment = this.publicText(decl, `${integration ? this.integrationBody(decl, spec, task, integration) : this.repairBody(decl, spec, task, repair)}\n\n${github.marker(key)}`);
           if (this.refusedPublication(ctx, decl, spec, fresh, [comment], terms)) return;
           if (comment.length > BODY_LIMIT) {
             this.raiseBlocker(ctx, decl, { kind: 'publication-size', class: 'B2', reason: `The ${REPAIR_WORDS[repairKind]} repair verification exceeds the GitHub comment limit; nothing was truncated or pushed.`,
@@ -3968,8 +3968,8 @@ export class Controller {
         } else if (spec.deliverable === 'commit') {
           // Over GitHub's body limit, the verification moves to its own marked PR comment: nothing is truncated.
           const split = this.prBody(decl, spec, task).length > BODY_LIMIT;
-          const body = this.prBody(decl, spec, task, { verificationElsewhere: split });
-          const verification = split ? this.verificationBody(decl, spec, task) : null;
+          const body = this.publicText(decl, this.prBody(decl, spec, task, { verificationElsewhere: split }));
+          const verification = split ? this.publicText(decl, this.verificationBody(decl, spec, task)) : null;
           const vKey = `${ctx.id}:${task.task_id}:verification:${task.verified_sha}`;
           const title = `${spec.id}: ${spec.title}`;
           // Checked before the push: a refused text leaves nothing on GitHub, not even the branch.
@@ -4002,9 +4002,9 @@ export class Controller {
           const target = { gh: this.cmd.gh, repository: decl.target.repository, issue: spec.issue, key };
           // Over GitHub's comment limit, the verification goes in a second marked comment: nothing is truncated.
           const split = `${this.reportBody(decl, spec, task, digest)}\n\n${github.marker(key)}`.length > BODY_LIMIT;
-          const body = `${this.reportBody(decl, spec, task, digest, { verificationElsewhere: split })}\n\n${github.marker(key)}`;
+          const body = this.publicText(decl, `${this.reportBody(decl, spec, task, digest, { verificationElsewhere: split })}\n\n${github.marker(key)}`);
           const vTarget = { ...target, key: `${key}:verification` };
-          const verification = split ? `${this.verificationBody(decl, spec, task)}\n\n${github.marker(vTarget.key)}` : null;
+          const verification = split ? this.publicText(decl, `${this.verificationBody(decl, spec, task)}\n\n${github.marker(vTarget.key)}`) : null;
           if (this.refusedPublication(ctx, decl, spec, fresh, [body, verification ?? ''], terms)) return;
           if (body.length > BODY_LIMIT || (verification && verification.length > BODY_LIMIT)) {
             this.raiseBlocker(ctx, decl, { kind: 'publication-size', class: 'B2', reason: 'Even split into a report comment and a verification comment, the verified report exceeds the GitHub limit; nothing was truncated or posted.',
@@ -4087,6 +4087,18 @@ export class Controller {
     return [...new Set(roots.flatMap((root) => privateTerms(root)))];
   }
 
+  /**
+   * Text bound for GitHub with the target's own checkout and worktree prefixes made repository-relative (work item 86):
+   * a verifier citing a file by its absolute path in its worktree is no reason for another verifier run. Every other
+   * absolute or personal path stays and is refused by the privacy check as before.
+   */
+  publicText(decl, text) {
+    let repo = null;
+    try { repo = this.repo(decl); } catch { /* no checkout: nothing to relativise */ }
+    const roots = repo ? [...(repo.worktreeRoot ? [{ path: repo.worktreeRoot, depth: 1 }] : []), { path: repo.path }] : [];
+    return relativeTo(text, roots);
+  }
+
   publicationFinding(task) {
     return (task.findings ?? []).find((finding) => finding.id === 'publication-text') ?? null;
   }
@@ -4108,8 +4120,8 @@ export class Controller {
     const findings = [...new Set(texts.flatMap((text) => publicationFindings(text, options)))];
     if (!findings.length) return false;
     const sources = [
-      ...(publicationFindings(String(task.result?.report ?? ''), options).length ? ['report'] : []),
-      ...(publicationFindings([...this.verificationLines(task), ...this.gateLines(task)].join('\n'), options).length ? ['verification'] : []),
+      ...(publicationFindings(this.publicText(decl, task.result?.report), options).length ? ['report'] : []),
+      ...(publicationFindings(this.publicText(decl, [...this.verificationLines(task), ...this.gateLines(task)].join('\n')), options).length ? ['verification'] : []),
     ];
     this.publicationRefused(ctx, decl, spec, task, { findings, sources });
     return true;
