@@ -155,3 +155,35 @@ test('a service from the worker-writable environment can never obtain a credenti
   assert.equal(planted.length, 1);
   for (const listed of planted) assert.deepEqual(serviceCredentialHeaders(listed, broker), { headers: {} });
 });
+
+test('an unpublished commit goes only as a bundle to a service that accepts sources, and a mismatched receipt submits no job', async () => {
+  const bundle = { bytes: Buffer.from('bundle bytes'), sha256: 'c'.repeat(64) };
+  const sourcing = (receipt) => {
+    const base = fake(['passed']);
+    const sent = [];
+    const client = (svc, options) => ({ ...base.client(svc, options),
+      source: async (input) => { base.calls.push('source'); sent.push(input); return receipt; },
+      submit: async (spec) => { base.calls.push('submit'); sent.push(spec); return { jobId: JOB, state: 'pending', spec }; } });
+    return { client, calls: base.calls, sent };
+  };
+  const good = { sourceId: 'd'.repeat(32), projectId: 'sampleapp', commitSha: SHA, sizeBytes: bundle.bytes.length, sha256: bundle.sha256 };
+  const unpublished = { available: () => false, bundle: () => bundle };
+
+  const plain = sourcing(good);
+  assert.equal(await offer(plain, unpublished), null);
+  assert.deepEqual(plain.calls, [], 'a service that did not opt in gets neither the bundle nor a job');
+
+  const opted = sourcing(good);
+  const result = await runOnService({ services: [{ ...service, sources: true }], repository: 'example-org/sampleapp', sha: SHA,
+    client: opted.client, summaryRequired: true, ...clock(), ...unpublished });
+  assert.equal(result?.exit, 0);
+  assert.equal(opted.sent[0].sha, SHA);
+  assert.equal(opted.sent[1].sourceId, good.sourceId, 'the job names the accepted source');
+
+  for (const receipt of [{ ...good, sha256: 'e'.repeat(64) }, { ...good, commitSha: OTHER }, { ...good, sourceId: undefined }]) {
+    const wrong = sourcing(receipt);
+    assert.equal(await runOnService({ services: [{ ...service, sources: true }], repository: 'example-org/sampleapp', sha: SHA,
+      client: wrong.client, ...clock(), ...unpublished }), null);
+    assert.ok(!wrong.calls.includes('submit'), 'no job after a receipt that does not match what was sent');
+  }
+});

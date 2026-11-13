@@ -3,6 +3,7 @@
 // notes of the self-hosted repository here; the import (SELF10, work-list-import.mjs) writes imported issues. Only
 // the owner route and the supervisor write; a worker never does. Every text is bounded and refused when it looks like a
 // credential.
+import { createHash } from 'node:crypto';
 import { containsSecret } from './coordinator.mjs';
 import { trustsLocalMain } from './self-hosting.mjs';
 
@@ -160,18 +161,68 @@ export const FOLLOW_UP = 'follow-up';
  * never stored: the item is then recorded with a plain title and `fallback`, a body without the refused text. Not for the
  * owner to answer: AIWorks plans it like any other work item.
  */
-export function followUp(store, { campaignId, taskId, key, title, body, fallback, verifiedSha = null, now }) {
+export function followUp(store, { campaignId, taskId, key, title, body, fallback, verifiedSha = null, subject = null, now }) {
   const label = `${FOLLOW_UP}:${String(key).slice(0, MAX_LABEL - FOLLOW_UP.length - 1)}`;
   const found = present(store) && store.get(`SELECT number FROM work_items WHERE kind = 'task' AND author_kind = 'supervisor' AND campaign_id = ? AND task_id = ?
     AND EXISTS (SELECT 1 FROM json_each(labels) WHERE value = ?) LIMIT 1`, campaignId, taskId, label);
   if (found) return item(store, found.number);
+  // The same work run again (another campaign with the same subject) that is again not done adds one comment to the
+  // open item instead of a second item, so retries of one request never pile up.
+  const open = subject && key === NOT_DONE && openSubjectItem(store, subject);
+  if (open) {
+    addComment(store, { number: open.number, idempotencyKey: `again:${campaignId}:${taskId}`, authorKind: 'supervisor', now,
+      body: `Not done again in campaign ${campaignId}, step ${taskId}. ${containsSecret(body) ? fallback : body}`.slice(0, MAX_BODY_BYTES / 4) });
+    return item(store, open.number);
+  }
   const links = { campaignId, taskId, verifiedSha };
+  const labels = [FOLLOW_UP, label, ...(subject ? [subject] : [])];
   try {
-    return createItem(store, { kind: 'task', title, body, labels: [FOLLOW_UP, label], links, authorKind: 'supervisor', now });
+    return createItem(store, { kind: 'task', title, body, labels, links, authorKind: 'supervisor', now });
   } catch (error) {
     if (error?.code !== 'WORK_ITEM_SECRET' && error?.code !== 'WORK_ITEM_TOO_LARGE') throw error;
-    return createItem(store, { kind: 'task', title: `Follow-up for step ${taskId}`, body: fallback, labels: [FOLLOW_UP, label], links, authorKind: 'supervisor', now });
+    return createItem(store, { kind: 'task', title: `Follow-up for step ${taskId}`, body: fallback, labels, links, authorKind: 'supervisor', now });
   }
+}
+
+const NOT_DONE = 'not-done';
+const SUBJECT = 'subject';
+
+/**
+ * The subject of a campaign step: the same declared work (target, purpose, step) under whatever campaign id it is run.
+ * A label, so a later run of the same work finds the earlier run's not-done follow-up. Null without a purpose.
+ */
+export function subjectLabel(declaration, taskId) {
+  const target = declaration?.target?.repository ?? declaration?.target?.projectId ?? null;
+  if (!target || typeof declaration?.purpose !== 'string' || !declaration.purpose.trim()) return null;
+  // The step's own title and goal too, so unrelated campaigns that reuse a generic purpose and step id never share a
+  // subject. A retry whose goal differs gets its own item: more items, never a wrong close.
+  const task = (declaration.tasks ?? []).find((t) => t?.id === taskId);
+  if (!task || typeof task.goal !== 'string' || !task.goal.trim()) return null;
+  const digest = createHash('sha256').update(JSON.stringify([target, declaration.purpose.trim(), taskId, task.title ?? null, task.goal.trim()]), 'utf8')
+    .digest('hex').slice(0, 24);
+  return `${SUBJECT}:${digest}`;
+}
+
+const openSubjectItem = (store, subject) => present(store) && store.get(`SELECT number FROM work_items WHERE kind = 'task' AND author_kind = 'supervisor'
+  AND state = 'open' AND EXISTS (SELECT 1 FROM json_each(labels) WHERE value = ?) AND EXISTS (SELECT 1 FROM json_each(labels) WHERE value = ?)
+  ORDER BY number LIMIT 1`, subject, `${FOLLOW_UP}:${NOT_DONE}`);
+
+/**
+ * A step finished done: the open not-done follow-ups of the same subject from other campaigns are settled by it. Each is
+ * closed with one comment naming the campaign that finished the work. Known-defect follow-ups stay open: a later pass
+ * of the same work does not show their defects were fixed. Returns the closed item numbers.
+ */
+export function settleSubject(store, { subject, campaignId, taskId, now }) {
+  if (!subject || !present(store)) return [];
+  const rows = store.all(`SELECT number FROM work_items WHERE kind = 'task' AND author_kind = 'supervisor' AND state = 'open'
+    AND (campaign_id IS NULL OR campaign_id <> ?) AND EXISTS (SELECT 1 FROM json_each(labels) WHERE value = ?)
+    AND EXISTS (SELECT 1 FROM json_each(labels) WHERE value = ?)`, campaignId, subject, `${FOLLOW_UP}:${NOT_DONE}`);
+  for (const { number } of rows) {
+    addComment(store, { number, idempotencyKey: `settled:${campaignId}:${taskId}`, authorKind: 'supervisor', now,
+      body: `Settled: the same work finished in campaign ${campaignId}, step ${taskId}.` });
+    setItemState(store, { number, state: 'closed', now });
+  }
+  return rows.map((row) => row.number);
 }
 
 /**

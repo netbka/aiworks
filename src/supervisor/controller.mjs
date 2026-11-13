@@ -46,7 +46,7 @@ import { baseCheckStep, baseCompareSettings, baseRecord, claimBaseRed, settleBas
 import { CACHE_RULE, checkClaims, hasRunner, insertResults, offerCache, otherNodeMajor, resultsOf, testCacheSettings } from './test-cache.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
-import { addComment, createItem, followUp, productDefectItem, standingFollowUp, reviewItem, WorkListError, workAuthorization, workLink } from './work-list.mjs';
+import { addComment, createItem, followUp, productDefectItem, settleSubject, standingFollowUp, reviewItem, subjectLabel, WorkListError, workAuthorization, workLink } from './work-list.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 import { alertDecision, configuredTransport, currentAlertRules, renderAlert } from './alerts.mjs';
 import { PUBLICATION_REFUSED, privateTerms, publicationFindings } from '../shared/public-text.mjs';
@@ -1145,7 +1145,7 @@ export class Controller {
       }
     }
     for (const [row, why] of ended) {
-      const item = followUp(this.store, { campaignId: ctx.id, taskId: row.task_id, key: 'not-done', now,
+      const item = followUp(this.store, { campaignId: ctx.id, taskId: row.task_id, key: 'not-done', subject: subjectLabel(decl, row.task_id), now,
         title: `Finish ${row.task_id === task.task_id ? title : row.task_id}`.slice(0, 256),
         body: [`AIWorks ended this step as not done: ${why}. Nothing of it was merged. Plan it again to finish it.`,
           ...(row.task_id === task.task_id ? reviewLines(review).map((line) => redact(line)) : [])].join('\n'),
@@ -4309,6 +4309,13 @@ export class Controller {
       if (!waiting.length) {
         status = 'ready';
         control = 'finished';
+        // A step done without known defects settles the not-done follow-ups other campaigns left for the same work.
+        for (const task of tasks) {
+          if (task.state !== 'done' || defectsOf(task)?.length) continue;
+          // Settling is bookkeeping: a refused comment never keeps the campaign from finishing.
+          try { settleSubject(this.store, { subject: subjectLabel(decl, task.task_id), campaignId: ctx.id, taskId: task.task_id, now }); }
+          catch (error) { if (!(error instanceof WorkListError)) throw error; this.store.journal(ctx.id, 'follow-up-settle-refused', { task: task.task_id, code: error.code }, now); }
+        }
         const reportsOnly = decl.tasks.every((task) => task.deliverable === 'report');
         // AW-017: steps AIWorks finished by itself are said as they are, never as passed.
         const notDone = tasks.filter((task) => task.state === 'cancelled' && /^not done:/.test(task.last_error ?? '')).length;

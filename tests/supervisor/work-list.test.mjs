@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
-import { addComment, comments, createItem, items } from '../../src/supervisor/work-list.mjs';
+import { addComment, comments, createItem, followUp, item, items, settleSubject, subjectLabel } from '../../src/supervisor/work-list.mjs';
 
 const NOW = 1_760_000_000_000;
 
@@ -50,4 +50,25 @@ test('secret-like text is refused and nothing is stored', (t) => {
   const { number } = createItem(store, { kind: 'note', title: 'Clean', body: 'API_KEY=<your-key> is a placeholder', authorKind: 'owner', now: NOW });
   assert.throws(() => addComment(store, { number, idempotencyKey: 'k', body: ['-----BEGIN RSA', 'PRIVATE KEY-----\nMIIE'].join(' '), authorKind: 'supervisor', now: NOW }), code('WORK_ITEM_SECRET'));
   assert.deepEqual(comments(store, number), []);
+});
+
+test('a retry of the same work shares one not-done item, and only a clean finish of that work closes it', (t) => {
+  const { store } = rig(t);
+  const decl = { purpose: 'Analyse request 7', target: { repository: 'example/app' }, tasks: [{ id: 'ANALYZE', title: 'Analyse', goal: 'Analyse request 7.' }] };
+  const subject = subjectLabel(decl, 'ANALYZE');
+  const notDone = (campaignId, extra = {}) => followUp(store, { campaignId, taskId: 'ANALYZE', key: 'not-done', subject, now: NOW,
+    title: 'Finish ANALYZE', body: 'Not done.', fallback: 'Not done.', ...extra });
+  const first = notDone('analyse-7-a');
+  assert.equal(notDone('analyse-7-b').number, first.number, 'the retry comments on the open item instead of adding one');
+  assert.equal(notDone('analyse-7-b').number, first.number);
+  assert.equal(comments(store, first.number).length, 1, 'a repeated retry report records nothing twice');
+  const other = followUp(store, { campaignId: 'analyse-8-a', taskId: 'ANALYZE', key: 'not-done', subject: subjectLabel({ ...decl, purpose: 'Analyse request 8' }, 'ANALYZE'),
+    now: NOW, title: 'Finish ANALYZE', body: 'Not done.', fallback: 'Not done.' });
+  const defects = followUp(store, { campaignId: 'analyse-7-a', taskId: 'ANALYZE', key: 'abc123', subject, now: NOW, title: 'Fix the known defects', body: 'Defects.', fallback: 'Defects.' });
+  assert.deepEqual(settleSubject(store, { subject, campaignId: 'analyse-7-c', taskId: 'ANALYZE', now: NOW }), [first.number]);
+  assert.equal(item(store, first.number).state, 'closed');
+  assert.equal(item(store, other.number).state, 'open', 'other work stays open');
+  assert.equal(item(store, defects.number).state, 'open', 'known defects are not shown fixed by a later pass');
+  assert.equal(subjectLabel({ target: { repository: 'example/app' } }, 'ANALYZE'), null, 'no purpose, no subject');
+  assert.notEqual(subjectLabel({ ...decl, tasks: [{ id: 'ANALYZE', title: 'Analyse', goal: 'Another goal.' }] }, 'ANALYZE'), subject, 'another goal under a reused purpose is other work');
 });

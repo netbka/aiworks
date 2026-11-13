@@ -10,8 +10,10 @@
 // Each offer has one bounded budget. An unsuitable or unavailable additional service never blocks local work.
 import https from 'node:https';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { isAbsolute, join, resolve } from 'node:path';
 import { setTimeout as sleepFor } from 'node:timers/promises';
 import { readToken, validTokenRef } from './token-store.mjs';
 
@@ -25,6 +27,9 @@ const KNOWN = new Set([...TERMINAL, 'pending', 'running']);
 const plain = (text) => String(text).replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, ' ').slice(0, 300);
 const SHA = /^[0-9a-f]{40}$/;
 const JOB_ID = /^[0-9a-f-]{36}$/;
+const SOURCE_ID = /^[0-9a-f]{32}$/;
+/** The largest bundle of unpublished commits AIWorks sends, the same cap the service states. */
+export const MAX_BUNDLE_BYTES = 64 * 1024 * 1024;
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
 const IDENTIFIER = /^[\w.-]{1,64}$/;
 const DEFAULT_GATE = ['run', 'check'];
@@ -65,6 +70,7 @@ function serviceProblem(entry) {
     if (!REPOSITORY.test(repository)) return `has projects key ${JSON.stringify(repository)}, which is not <owner>/<repository>`;
     if (!IDENTIFIER.test(project?.projectId ?? '') || !IDENTIFIER.test(project?.profile ?? '')) return `needs projectId and profile for ${repository}`;
   }
+  if (entry.sources !== undefined && typeof entry.sources !== 'boolean') return 'has sources that is not true or false';
   return entry.auth === undefined ? null : authProblem(entry.auth);
 }
 
@@ -120,6 +126,7 @@ export function checkServiceSettings(config) {
     services.push({ name: entry.name, kind: entry.kind, baseUrl: new URL(entry.baseUrl).origin, caFile: entry.caFile,
       projects: Object.fromEntries(Object.entries(entry.projects).map(([repository, p]) => [repository.toLowerCase(),
         { projectId: p.projectId, profile: p.profile }])),
+      ...(entry.sources === true ? { sources: true } : {}),
       ...(entry.auth === undefined ? {} : { auth: { scheme: entry.auth.scheme, ...(entry.auth.scheme === 'header' ? { header: entry.auth.header } : {}),
         tokenRef: entry.auth.tokenRef } }),
       queueSeconds: bounded(entry.queueSeconds, 10, 3600, 120), timeoutMinutes: bounded(entry.timeoutMinutes, 5, MAX_TIMEOUT_MINUTES, 60) });
@@ -195,14 +202,15 @@ class ServiceHttpError extends Error {
  */
 function httpsTransport(service, credentialHeaders = {}) {
   let ca = null;
-  return (method, path, payload, limitMs = 30_000) => new Promise((resolve, reject) => {
-    if (path !== '/health' && !/^\/v1\/jobs(?:\/[0-9a-f-]{36}(?:\/(?:result|cancel|artifacts\/stdout\.log))?)?$/.test(path)) {
+  return (method, path, payload, limitMs = 30_000, bundle = null) => new Promise((resolve, reject) => {
+    if (path !== '/health' && !(path === '/v1/sources' && bundle) && !/^\/v1\/jobs(?:\/[0-9a-f-]{36}(?:\/(?:result|cancel|artifacts\/stdout\.log))?)?$/.test(path)) {
       reject(new Error(`route ${path} is not part of the service contract`)); return;
     }
     try { ca ??= readFileSync(service.caFile); } catch (error) { reject(new Error(`certificate ${service.caFile} unreadable (${error.code ?? error.message})`)); return; }
-    const body = payload === undefined ? null : Buffer.from(JSON.stringify(payload));
+    const body = bundle ? bundle.bytes : payload === undefined ? null : Buffer.from(JSON.stringify(payload));
+    const type = bundle ? { 'Content-Type': 'application/x-git-bundle', 'X-Project-Id': bundle.projectId, 'X-Commit-Sha': bundle.sha } : { 'Content-Type': 'application/json' };
     const request = https.request(new URL(path, service.baseUrl), { method, ca, rejectUnauthorized: true,
-      headers: { ...credentialHeaders, ...(body ? { 'Content-Type': 'application/json', 'Content-Length': body.length } : {}) } }, (response) => {
+      headers: { ...credentialHeaders, ...(body ? { ...type, 'Content-Length': body.length } : {}) } }, (response) => {
       if (response.statusCode >= 300) { clearTimeout(timer); response.resume(); reject(new ServiceHttpError(response.statusCode)); return; }
       const chunks = [];
       let size = 0;
@@ -233,7 +241,35 @@ export function remoteGateHttp(service, { headers = {}, transport = httpsTranspo
     result: (jobId) => transport('GET', `/v1/jobs/${jobId}/result`),
     log: (jobId) => transport('GET', `/v1/jobs/${jobId}/artifacts/stdout.log`, undefined, 5 * 60_000),
     cancel: (jobId) => transport('POST', `/v1/jobs/${jobId}/cancel`, {}),
+    source: ({ bytes, projectId, sha }) => transport('POST', '/v1/sources', undefined, 10 * 60_000, { bytes, projectId, sha }),
   };
+}
+
+/**
+ * The unpublished commits of `sha` as a git bundle, for a service that accepts sources: `sha` must be the checkout's
+ * HEAD (never a working tree), and the bundle holds HEAD and only the commits no origin branch has, so its prerequisites
+ * are commits the service already fetched from origin. Returns { bytes, sha256 }, or { problem }.
+ */
+export function bundleOf(sha, cwd = process.cwd()) {
+  const git = (args) => spawnSync('git', args, { cwd, encoding: 'buffer', windowsHide: true, timeout: 120_000, maxBuffer: MAX_BUNDLE_BYTES * 2 });
+  const head = git(['rev-parse', 'HEAD']);
+  if (head.status !== 0 || head.stdout.toString('utf8').trim() !== sha) return { problem: `${sha} is not this checkout's HEAD` };
+  const dir = mkdtempSync(join(tmpdir(), 'aiworks-bundle-'));
+  try {
+    const file = join(dir, 'source.bundle');
+    if (git(['bundle', 'create', file, 'HEAD', '--not', '--remotes=origin']).status !== 0) return { problem: 'git could not bundle the commits origin does not have' };
+    const bytes = readFileSync(file);
+    if (bytes.length > MAX_BUNDLE_BYTES) return { problem: `the bundle is ${bytes.length} bytes; the limit is ${MAX_BUNDLE_BYTES}` };
+    return { bytes, sha256: createHash('sha256').update(bytes).digest('hex') };
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+/** Why a service's receipt for an uploaded bundle does not match what was sent, or null. */
+export function sourceProblem(receipt, { sha, projectId, bundle }) {
+  if (!receipt || typeof receipt !== 'object' || !SOURCE_ID.test(receipt.sourceId ?? '')) return 'it answered without a sourceId';
+  if (receipt.commitSha !== sha || receipt.projectId !== projectId) return 'its receipt names another commit or project';
+  if (receipt.sizeBytes !== bundle.bytes.length || receipt.sha256 !== bundle.sha256) return 'its receipt names other bundle bytes than were sent';
+  return null;
 }
 
 /**
@@ -271,11 +307,18 @@ export function acceptRemoteResult(result, { jobId, sha, projectId, profile }) {
  * unavailable and no request is sent. A refused request (HTTP 401 or 403) is recorded as unavailable, never as a result.
  */
 export async function runOnService({ services, repository, sha, available = () => true, say: sayLine = () => {}, reference = 'gate',
-  summaryRequired = false, client = remoteGateHttp, broker = null, sleep = sleepFor, now = Date.now, pollMs = 10_000 }) {
+  summaryRequired = false, client = remoteGateHttp, broker = null, sleep = sleepFor, now = Date.now, pollMs = 10_000, bundle = null }) {
   if (!SHA.test(sha ?? '') || !repository) return null;
-  const listed = services.filter((service) => service.projects[repository.toLowerCase()]);
+  let listed = services.filter((service) => service.projects[repository.toLowerCase()]);
   if (!listed.length) return null;
-  if (!available(sha)) { sayLine(`# check services skipped: ${sha} is on no origin branch, and a service can fetch only from origin`); return null; }
+  // A commit origin does not have goes only to a service that declared it accepts sources, and only as a bundle.
+  let source = null;
+  if (!available(sha)) {
+    listed = bundle ? listed.filter((service) => service.sources === true) : [];
+    if (!listed.length) { sayLine(`# check services skipped: ${sha} is on no origin branch, and no service for it accepts sources`); return null; }
+    source = bundle(sha);
+    if (!source?.bytes) { sayLine(plain(`# check services skipped: no bundle of ${sha} (${source?.problem ?? 'unavailable'})`)); return null; }
+  }
   // The credential in use, if any, is cut from every line: a service's own words may echo a request header back.
   let secrets = [];
   const redact = (text) => secrets.reduce((cut, secret) => cut.split(secret).join('[credential]'), String(text));
@@ -297,8 +340,16 @@ export async function runOnService({ services, repository, sha, available = () =
     try {
       const health = await api.health();
       if (health?.status !== 'ok') { say(`# ${name} skipped: health is ${JSON.stringify(health?.status ?? null)}`); continue; }
+      let sourceId = null;
+      if (source) {
+        const receipt = await api.source({ bytes: source.bytes, projectId: project.projectId, sha });
+        const problem = sourceProblem(receipt, { sha, projectId: project.projectId, bundle: source });
+        if (problem) { say(`# ${name} skipped: ${problem}`); continue; }
+        sourceId = receipt.sourceId;
+        say(`# ${name} accepted source ${sourceId} for ${sha} (${source.bytes.length} bytes, sha256 ${source.sha256})`);
+      }
       const spec = { idempotencyKey: `aiworks-gate-${sha.slice(0, 12)}-${now().toString(36)}`, projectId: project.projectId, commitSha: sha,
-        profile: project.profile, timeoutSeconds, aiworksTaskId: String(reference).replace(/[^\w.-]+/g, '-').slice(0, 120) };
+        profile: project.profile, timeoutSeconds, aiworksTaskId: String(reference).replace(/[^\w.-]+/g, '-').slice(0, 120), ...(sourceId ? { sourceId } : {}) };
       const submitted = await api.submit(spec);
       if (!JOB_ID.test(submitted?.jobId ?? '') || submitted.spec?.commitSha !== sha || submitted.spec?.projectId !== project.projectId
         || submitted.spec?.profile !== project.profile) { say(`# ${name} skipped: it answered the submission for another job`); continue; }
