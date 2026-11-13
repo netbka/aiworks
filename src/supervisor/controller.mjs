@@ -2796,10 +2796,20 @@ export class Controller {
       this.baseCheckedAt.set(key, now);
       const repo = this.checkout(decl);
       if (!repo?.path) continue;
-      // The lease is checked before the read and again after it: a lease lost meanwhile ends admission (FencedError).
-      this.fenced(ctx, () => null);
-      const fetched = await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository);
-      this.fenced(ctx, () => null);
+      // The lease is checked before the read and again after it: a lease lost meanwhile skips this base, whose holders
+      // then stay refused this pass; the other candidates are still admitted.
+      let fetched;
+      try {
+        this.fenced(ctx, () => null);
+        fetched = await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository);
+        this.fenced(ctx, () => null);
+      } catch (error) {
+        if (!(error instanceof FencedError)) throw error;
+        this.held.delete(ctx.id);
+        this.baseCheckedAt.delete(key);
+        this.log(`admission retried next tick: ${error.message}`);
+        continue;
+      }
       if (!fetched?.ok) continue;
       for (const holder of holders.values()) {
         const row = this.store.task(holder.campaignId, holder.taskId);
@@ -2885,27 +2895,51 @@ export class Controller {
         reasons.set(key, refusal);
         // Scheduler admission can reject the candidate before dispatch records its provider wait.
         // Persist that same wait under the lease, so an unsupported role cannot stay "ready" forever.
-        if (refusal.reason === 'provider-cooldown' && this.held.has(candidate.campaignId)) this.fenced(candidate.ctx, () => {
-          const campaign = this.store.campaign(candidate.campaignId);
-          const task = this.store.task(candidate.campaignId, candidate.taskId);
-          if (campaign.control !== 'registered' || campaign.blocker || !RUNNABLE.includes(task.state) || task.state === 'verified') return;
-          const choice = this.executorChoice(campaign.declaration, task);
-          if (!choice.executor) this.waitForExecutor(candidate.ctx, campaign.declaration, task, choice);
-        });
+        if (refusal.reason === 'provider-cooldown' && this.held.has(candidate.campaignId)) {
+          try {
+            this.fenced(candidate.ctx, () => {
+              const campaign = this.store.campaign(candidate.campaignId);
+              const task = this.store.task(candidate.campaignId, candidate.taskId);
+              if (campaign.control !== 'registered' || campaign.blocker || !RUNNABLE.includes(task.state) || task.state === 'verified') return;
+              const choice = this.executorChoice(campaign.declaration, task);
+              if (!choice.executor) this.waitForExecutor(candidate.ctx, campaign.declaration, task, choice);
+            });
+          } catch (error) {
+            if (!(error instanceof FencedError)) throw error;
+            this.leaseLostInAdmission(candidate, error);
+          }
+        }
         if (refusal.reason === 'campaign-fanout') this.fanoutWaited.add(candidate.campaignId);
         if (refusal.reason === 'write-domain') domainWaits.push({ candidate, refusal });
         continue;
       }
       // Admissible, but this tick already started one: it is next (one launch per tick keeps leases renewed on time).
       if (launched || !this.held.has(candidate.campaignId)) { reasons.set(key, { reason: 'launch-turn' }); continue; }
-      const op = await this.dispatch(candidate.ctx, this.store.campaign(candidate.campaignId), this.store.task(candidate.campaignId, candidate.taskId),
-        candidate.kind, { admission: () => admissionCheck(this.store, candidate, inputs) });
-      // null means the recording transaction refused it (a race): the next candidate may still go this tick.
-      launched = Boolean(op);
+      // A lease that lapsed or changed hands since the step (a long tick) skips this candidate only: it is retried next
+      // tick and the other candidates keep their turn. Nothing runs without its lease, since every write is fenced. An
+      // operation recorded before the fence failed still counts as this tick's launch, so no limit is exceeded.
+      const openBefore = new Set(this.store.openOperations(candidate.campaignId).map((item) => item.id));
+      try {
+        const op = await this.dispatch(candidate.ctx, this.store.campaign(candidate.campaignId), this.store.task(candidate.campaignId, candidate.taskId),
+          candidate.kind, { admission: () => admissionCheck(this.store, candidate, inputs) });
+        // null means the recording transaction refused it (a race): the next candidate may still go this tick.
+        launched = Boolean(op);
+      } catch (error) {
+        if (!(error instanceof FencedError)) throw error;
+        this.leaseLostInAdmission(candidate, error);
+        reasons.set(key, { reason: 'launch-turn' });
+        launched = this.store.openOperations(candidate.campaignId).some((item) => !openBefore.has(item.id));
+      }
     }
     this.waitReasons = reasons;
     this.domainWaits = domainWaits;
     this.recordDomainRefusals(domainWaits);
+  }
+
+  /** A candidate's campaign lease was lost in admission: it no longer counts as held, and its step retakes it next tick. */
+  leaseLostInAdmission(candidate, error) {
+    this.held.delete(candidate.campaignId);
+    this.log(`admission retried next tick for ${candidate.campaignId}/${candidate.taskId}: ${error.message}`);
   }
 
   /**
