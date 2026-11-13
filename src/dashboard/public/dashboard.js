@@ -2660,8 +2660,8 @@ function decidedChange(d) {
     const form = el('form', { novalidate: true, class: 'home-card', 'data-focus-scope': `home/change/${d.decision}`,
       onsubmit: (event) => {
         event.preventDefault();
-        const parts = Object.fromEntries(Object.entries(chosenParts(form, d, name)).filter(([part, option]) => inForce[part] !== option ||
-          d.parts.find((p) => p.id === part)?.by !== 'owner'));
+        // Only what the owner changed: an answer AIWorks gave stays AIWorks's unless the owner picks something else.
+        const parts = Object.fromEntries(Object.entries(chosenParts(form, d, name)).filter(([part, option]) => inForce[part] !== option));
         if (off || !Object.keys(parts).length) return;
         void sendAnswerChange(c, task, d, null, { parts });
       } },
@@ -3144,7 +3144,8 @@ function decisionPanel(c, task, { more } = {}) {
   const draft = drafts.get(address, key) ?? { option: null, text: '', feedback: '' };
   // Every control is named for this decision: two decisions on one page (Needs you) never share an id, a radio group or a draft.
   const radios = `decision-option-${d.id}`;
-  const save = () => drafts.set(address, key, { option: form.querySelector(`input[name="${radios}"]:checked`)?.value ?? null, text: words.value, feedback: feedback.value });
+  const save = () => drafts.set(address, key, { option: form.querySelector(`input[name="${radios}"]:checked`)?.value ?? null, text: words.value, feedback: feedback.value,
+    ...(d.parts?.length ? { parts: chosenParts(form, d, `decision-part-${d.id}`) } : {}) });
   const words = el('textarea', { id: `decision-text-${d.id}`, rows: 3, maxlength: 2000, required: !d.structured, oninput: save });
   words.value = draft.text ?? '';
   const feedback = el('textarea', { id: `decision-feedback-${d.id}`, rows: 2, maxlength: 2000, oninput: save });

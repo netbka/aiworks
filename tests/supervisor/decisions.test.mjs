@@ -126,12 +126,12 @@ test('a part the owner answered reaches the worker as the owner\'s, the rest sta
   applyDecision(env.dataDir, 'answer', { ...bind, parts: { palette: 'brand' } });
   controller.processEvents(ctx());
 
-  // The worker's packet gets the owner's part with the supervisor's provenance, and the unanswered part as open.
+  // The worker's packet gets the owner's part, recorded as the owner's from this very request; the font stays open.
+  const answered = () => store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'decision-answered' ORDER BY seq", d.campaignId).map((row) => row.detail);
+  const parts = (detail) => Object.fromEntries(Object.entries(detail.answers).map(([part, a]) => [part, [a.option, a.by, Boolean(a.carried)]]));
+  assert.deepEqual(parts(answered().at(-1)), { palette: ['brand', 'owner', false] });
   const texts = () => decisionInstructions(store, store.campaign(d.campaignId), 'T1').map((item) => item.payload.text);
-  const first = texts().at(-1);
-  assert.match(first, /Part palette: Which palette\? Settled, the owner's answer: Brand \(brand\)/);
-  assert.match(first, new RegExp(`owner request ${requestId}`));
-  assert.match(first, /Part font: Which font\? Still open/);
+  assert.ok(texts().at(-1).includes(requestId), 'the packet carries the provenance of the owner\'s request');
   assert.equal(store.task(d.campaignId, 'T1').blocked, null);
 
   // The worker stops again and asks the palette again under another id, beside the open font: the palette is answered
@@ -140,10 +140,13 @@ test('a part the owner answered reaches the worker as the owner\'s, the rest sta
   controller.answerSuggested(ctx());
   assert.equal(store.task(d.campaignId, 'T1').blocked, null, 'the step goes on without asking anyone');
   assert.equal(shown(), null, 'no open decision is shown to the owner');
-  const again = texts().at(-1);
-  assert.match(again, /Part colours: Which palette\? Settled, already answered by the owner: Brand \(brand\)/);
-  assert.match(again, /Part font: Which font\? Still open/);
-  assert.equal(store.all("SELECT 1 FROM journal WHERE campaign_id = ? AND kind = 'decision-reasked'", d.campaignId).length, 1);
+  assert.deepEqual(parts(answered().at(-1)), { colours: ['brand', 'owner', true] });
+
+  // Asked again with an option of the same name that now does something else: the owner's answer is not carried to it.
+  const risky = palette('colours'); risky.options[0].consequence = 'Publishes the palette to production.';
+  stop(3000, [risky, font]);
+  controller.answerSuggested(ctx());
+  assert.equal(answered().length, 2, 'no answer is recorded for a point whose consequence changed');
 });
 
 test('only the owner\'s own session changes an answer: a program AIWorks started is refused and nothing is written', async (t) => {

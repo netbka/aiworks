@@ -126,7 +126,7 @@ export function settledPoints(rows) {
     for (const [part, answer] of Object.entries(answersOf(detail))) {
       const point = part ? d.parts?.find((p) => p.id === part) : d.parts ? null : d;
       const chosen = point?.options.find((o) => o.id === answer.option);
-      if (chosen) out.set(plain(point.question), { question: point.question, label: chosen.label, by: answer.by, from: answer.from ?? detail.decision });
+      if (chosen) out.set(plain(point.question), { question: point.question, label: chosen.label, consequence: chosen.consequence, by: answer.by, from: answer.from ?? detail.decision });
     }
   }
   return out;
@@ -134,15 +134,19 @@ export function settledPoints(rows) {
 
 /**
  * The answers a new decision inherits from points its step already settled: for a whole decision `{ '': answer }`, for a
- * decision with parts one entry per part asked again. An option is matched by its wording; a point whose options no
- * longer hold the settled answer is not inherited and stays to be answered.
+ * decision with parts one entry per part asked again. An option is matched by its wording and its consequence, so an
+ * answer never carries over to an option that now does something else. An answer AIWorks gave is carried only when its
+ * AW-017 rule still allows that option in the new decision (its reversible suggestion, or its safeOption). Any other
+ * point is not inherited and stays to be answered.
  */
 export function carriedAnswers(decision, settled) {
   const out = {};
   for (const point of decision?.parts ?? (decision ? [{ ...decision, id: '' }] : [])) {
     const was = settled.get(plain(point.question));
-    const option = was && point.options.find((o) => plain(o.label) === plain(was.label));
-    if (option) out[point.id] = { option: option.id, by: was.by, from: was.from, carried: true };
+    const option = was && point.options.find((o) => plain(o.label) === plain(was.label) && plain(o.consequence) === plain(was.consequence));
+    if (!option) continue;
+    const allowed = decision.reversible === true && point.suggestion?.option === option.id || point.safeOption === option.id;
+    if (was.by === 'owner' || allowed) out[point.id] = { option: option.id, by: was.by, from: was.from, carried: true };
   }
   return out;
 }
@@ -174,9 +178,8 @@ export const ownerProvenance = ({ decision = null, requestId = null, text: words
  * answer asked again), or as still open. An open point is the worker's to decide within the packet; an answered one is
  * settled and never asked again. The owner's own answers carry the supervisor's provenance line.
  */
-export function pointsGuidance(decision, answers, { words = null, decision: id = null, requestId = null, lead }) {
+export function pointsGuidance(decision, answers, { words = null, decision: id = null, requestId = null, lead, owner = false }) {
   const points = decision?.parts ?? (decision ? [{ ...decision, id: '' }] : []);
-  const owner = Object.values(answers).some((a) => a.by === 'owner' && !a.carried);
   const lines = points.map((point) => {
     const answer = answers[point.id], chosen = answer && point.options.find((o) => o.id === answer.option);
     const name = point.id ? `Part ${point.id}: ${point.question}` : `Question: ${point.question}`;
@@ -197,9 +200,10 @@ export function pointsGuidance(decision, answers, { words = null, decision: id =
 export function answerGuidance(decision, { option = null, text: words = null, auto = false, decision: id = null, requestId = null, answers = null }) {
   if (decision?.parts || answers) {
     const all = Object.values(answers ?? {});
-    return pointsGuidance(decision, answers ?? {}, { words, decision: id, requestId,
-      lead: all.length && all.every((a) => a.carried) ? 'This step asked again about points that were already answered. Their recorded answers apply; nothing new was asked of the owner.'
-        : all.some((a) => a.by === 'owner' && !a.carried) ? 'The owner answered the decision this step stopped for, point by point; a point the owner left open is still open.'
+    // The owner's own event decides attribution, never the parts it named: an answer in words alone is the owner's too.
+    return pointsGuidance(decision, answers ?? {}, { words, decision: id, requestId, owner: !auto,
+      lead: auto && all.length && all.every((a) => a.carried) ? 'This step asked again about points that were already answered. Their recorded answers apply; nothing new was asked of the owner.'
+        : !auto ? 'The owner answered the decision this step stopped for, point by point; a point the owner left open is still open.'
           : 'AIWorks answered the points of this decision it may answer itself, with the options that publish or disclose nothing new or the worker\'s reversible suggestions (AW-017). The owner can change any answer later.' });
   }
   const chosen = option ? decision?.options?.find((o) => o.id === option) : null;
@@ -282,7 +286,7 @@ export function recordedDecision(detail) {
 
 /** The guidance that replaces an earlier answer for the step's later builders and verifiers, within its bound authority. */
 export function changeGuidance(decision, { from = null, option, text: words = null, decision: id = null, requestId = null, answers = null }) {
-  if (decision?.parts) return pointsGuidance(decision, answers ?? {}, { words, decision: id, requestId,
+  if (decision?.parts) return pointsGuidance(decision, answers ?? {}, { words, decision: id, requestId, owner: true,
     lead: 'The owner changed or added answers to parts of a decision this step stopped for. These answers replace the earlier ones; follow them from now on. Keep committed work and history: build on them, never rewrite, reset or force-push them, and never repeat or undo an action that published, disclosed, deployed or spent something.' });
   const label = (key) => decision?.options?.find((o) => o.id === key);
   const before = label(from), chosen = label(option);
