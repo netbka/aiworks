@@ -55,7 +55,8 @@ export function relativeTo(text, roots = []) {
     if (parts.length < 2) continue;
     const sep = '[\\\\/]+';
     const escaped = parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(sep);
-    const pattern = new RegExp(`(?<![\\w.-])${/^[A-Za-z]:$/.test(parts[0]) ? '' : '[\\\\/]'}${escaped}${`${sep}[\\w.$~-]+`.repeat(depth)}${sep}`, 'gi');
+    // A worktree folder may carry `+` (git.mjs workspaceName); a remainder that climbs out with `..` is not cut.
+    const pattern = new RegExp(`(?<![\\w.-])${/^[A-Za-z]:$/.test(parts[0]) ? '' : '[\\\\/]'}${escaped}${`${sep}(?!\\.\\.?[\\\\/])[\\w.$~+-]+`.repeat(depth)}${sep}(?!\\.\\.)`, 'gi');
     value = value.replace(pattern, '');
   }
   return value;
