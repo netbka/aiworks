@@ -142,7 +142,8 @@ export const BASE_READ_FAILURES = Object.freeze(['fetch-timeout', 'fetch-failed'
 // owner's request for changes to a finished result (OWNER_UI_V2 WP4).
 const REPAIR_FINDINGS = new Set(['integration-conflict', 'ci-failure', OWNER_CHANGES]);
 // aiworks#8: a verified task whose publication text fails the privacy check gets at most this many correction rounds
-// (within maxRepairRounds) before it stalls; nothing of the refused text is sent.
+// before it stalls (a refused report also within maxRepairRounds; a refused verification alone is not a repair round);
+// nothing of the refused text is sent.
 const PUBLICATION_REPAIRS = 2;
 // A repair round's name in the words of a stop or a refusal.
 const REPAIR_WORDS = Object.freeze({ ci: 'CI', integration: 'integration', 'owner-changes': 'requested-changes' });
@@ -4078,15 +4079,20 @@ export class Controller {
    * A refused publication of a verified task. The verified report, its digest and the verification stay in the task row and
    * the run evidence; the journal records categories only. Generated text gets a correction round under the existing
    * authority: a refused report goes back to its implementer, a refused verification alone to a fresh verifier of the same
-   * head. Past PUBLICATION_REPAIRS or maxRepairRounds, or when the supervisor's own text is refused, the task stalls.
+   * head. Past PUBLICATION_REPAIRS, past maxRepairRounds for a refused report, or when the supervisor's own text is
+   * refused, the task stalls.
    */
   publicationRefused(ctx, decl, spec, task, { findings, sources }) {
     const now = this.now(), limits = effectiveLimits(this.store, decl);
     const reportDigest = createHash('sha256').update(String(task.result?.report ?? ''), 'utf8').digest('hex');
     const earlier = this.store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'publication-refused'", ctx.id)
       .filter((row) => row.detail?.task === task.task_id && row.detail.repair).length;
+    // A refused verification alone is rewritten by a fresh verifier of the same head: no code changes, so it is not a
+    // repair round and maxRepairRounds does not apply; PUBLICATION_REPAIRS bounds those runs. A head that passed its last
+    // repair round is otherwise lost to a stray path in the verifier's own words.
+    const textOnly = sources.length > 0 && !sources.includes('report');
     const repairable = sources.length > 0 && earlier < PUBLICATION_REPAIRS &&
-      !(limits.maxRepairRounds !== null && task.repair_rounds >= limits.maxRepairRounds);
+      (textOnly || !(limits.maxRepairRounds !== null && task.repair_rounds >= limits.maxRepairRounds));
     const what = sources.length ? sources.join(' and ') : 'supervisor';
     const reason = `publication refused: the ${what} text of verified ${task.verified_sha} contains ${findings.join(', ')}; nothing was pushed or published`;
     const rewrite = sources.includes('report')
@@ -4101,7 +4107,7 @@ export class Controller {
       ? { state: sources.includes('report') ? 'pending' : 'implemented', findings: repair ? [finding, repair] : [finding] } : {};
     this.store.journal(ctx.id, 'publication-refused', { task: task.task_id, sha: task.verified_sha, reportDigest, findings, sources, repair: repairable }, now);
     this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version, repairable
-      ? { ...correction, repair_rounds: task.repair_rounds + 1, failures: {}, retry_at: null, last_error: `publish: ${reason}` }
+      ? { ...correction, repair_rounds: task.repair_rounds + (textOnly ? 0 : 1), failures: {}, retry_at: null, last_error: `publish: ${reason}` }
       : { ...correction, retry_at: null, last_error: `publish: ${reason}`, blocked: { class: 'stalled', reason, at: now } }, now);
     if (!repairable) {
       this.enqueue(ctx.id, `${ctx.id}:${task.task_id}:publication-refused:${task.verified_sha}`, decl,
