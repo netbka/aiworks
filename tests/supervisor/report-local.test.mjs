@@ -24,6 +24,9 @@ test('a report-local campaign posts its verified report nowhere on GitHub and ke
   assert.equal(tasks[0].state, 'done');
   assert.ok(tasks[0].report, 'the verified report is readable through the report route');
   assert.equal(h.env.comments().filter((c) => c.issue === '437').length, 0, 'nothing posted to the task issue');
+  // Its notes (published, ready, blocked) quote the step and stay on this computer: none is ever bound for GitHub.
+  const notes = h.store.all('SELECT state FROM outbox WHERE campaign_id = ?', h.id);
+  assert.ok(notes.length > 0 && notes.every((note) => note.state === 'local'), 'every note of the campaign stays local');
   assert.ok(!h.env.comments().some((c) => String(c.body ?? '').includes(tasks[0].report)), 'the report text is in no GitHub comment');
 });
 
