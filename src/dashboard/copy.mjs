@@ -716,6 +716,7 @@ export const COMMANDS = {
     stale: 'This decision changed or is no longer open. Nothing was recorded. Refresh the page to see the current one.',
     answered: 'This decision was already answered. Nothing was recorded twice.',
     notOption: 'Choose one of the options shown, or write your own answer.',
+    notPart: 'Choose an answer for at least one part. Parts you leave open stay open.',
     noted: 'You already said this decision did not need you.',
     // Changing a recorded answer (HOME_V2 2.1): the earlier answer stays in the record either way.
     changed: 'Changed. No run has used the earlier answer yet; the step’s runs follow your new answer.',

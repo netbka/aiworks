@@ -16,19 +16,30 @@ export const MAX_CITES = 4;
 // A structured owner decision (OWNER_UI_V2 WP2): optional on both results, so a result without it is valid as before. The
 // dashboard serves these fields only after this schema validated them, never the worker's free text around them.
 const DECISION_TEXT = { type: 'string', maxLength: 500 };
+const DECISION_ID = { type: 'string', pattern: '^[a-z][a-z0-9-]{0,31}$' };
+const DECISION_OPTIONS = {
+  type: 'array', minItems: 2, maxItems: 4,
+  items: {
+    type: 'object', additionalProperties: false, required: ['id', 'label', 'consequence'],
+    properties: { id: DECISION_ID, label: { type: 'string', maxLength: 120 }, consequence: DECISION_TEXT },
+  },
+};
+const DECISION_SUGGESTION = { type: 'object', additionalProperties: false, required: ['option', 'reason'], properties: { option: DECISION_ID, reason: DECISION_TEXT } };
 export const DECISION_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['question', 'options'],
+  type: 'object', additionalProperties: false, required: ['question'],
   properties: {
     question: DECISION_TEXT,
-    options: {
-      type: 'array', minItems: 2, maxItems: 4,
+    options: DECISION_OPTIONS,
+    suggestion: DECISION_SUGGESTION,
+    // aiworks-work #2: a decision of several separate points lists them as parts instead of whole options; the owner may
+    // answer some and leave the rest open. A decision has options or parts, never both (decisions.mjs structuredDecision).
+    parts: {
+      type: 'array', minItems: 1, maxItems: 6,
       items: {
-        type: 'object', additionalProperties: false, required: ['id', 'label', 'consequence'],
-        properties: { id: { type: 'string', pattern: '^[a-z][a-z0-9-]{0,31}$' }, label: { type: 'string', maxLength: 120 }, consequence: DECISION_TEXT },
+        type: 'object', additionalProperties: false, required: ['id', 'question', 'options'],
+        properties: { id: DECISION_ID, question: DECISION_TEXT, options: DECISION_OPTIONS, suggestion: DECISION_SUGGESTION, safeOption: DECISION_ID },
       },
     },
-    suggestion: { type: 'object', additionalProperties: false, required: ['option', 'reason'],
-      properties: { option: { type: 'string', pattern: '^[a-z][a-z0-9-]{0,31}$' }, reason: DECISION_TEXT } },
     continues: DECISION_TEXT,
     unanswered: DECISION_TEXT,
     // AW-016: true only when acting on the suggestion changes nothing outside the step's own work and a later round can
@@ -40,7 +51,7 @@ export const DECISION_SCHEMA = {
 };
 // AW-017: AIWorks, not the owner, answers a decision, with the worker's suggestion; without one the step comes back once to
 // decide within the packet. Workers never stop for the owner.
-export const DECISION_RULE = 'AIWorks answers this decision itself with your suggestion; the owner is not asked, so decide every routine or implementation choice within the packet yourself and stop only for a choice the packet leaves open. Add decision = { question, options: 2 to 4 of { id (lowercase, a-z0-9-), label, consequence }, suggestion: { option (one of the ids), reason }, continues (what goes on meanwhile), unanswered (what happens without an answer), reversible, safeOption }. Always give options and a suggestion: without one the step comes back to you once to decide within the packet. Set reversible to true only when choosing the suggestion changes nothing outside this step\'s own work and a later round can undo it: no spending, credentials, deleted data, publishing, disclosure, or access and permission changes. Set safeOption to the id of the option that publishes, discloses and spends nothing new, and never to an option that publishes or discloses. AIWorks answers with your suggestion only when it is marked reversible, otherwise with safeOption; with neither, the step ends as not done and a follow-up is recorded. The owner can change the answer later. An answer never widens the packet.';
+export const DECISION_RULE = 'AIWorks answers this decision itself with your suggestion; the owner is not asked, so decide every routine or implementation choice within the packet yourself and stop only for a choice the packet leaves open. Add decision = { question, options: 2 to 4 of { id (lowercase, a-z0-9-), label, consequence }, suggestion: { option (one of the ids), reason }, continues (what goes on meanwhile), unanswered (what happens without an answer), reversible, safeOption }. When the choice is really several separate points, give parts instead of options: parts = 1 to 6 of { id, question, options (2 to 4, as above), suggestion, safeOption }, so each point is answered on its own. Never ask again about a point an earlier answer on this step settled. Always give options (or parts) and a suggestion: without one the step comes back to you once to decide within the packet. Set reversible to true only when choosing the suggestion changes nothing outside this step\'s own work and a later round can undo it: no spending, credentials, deleted data, publishing, disclosure, or access and permission changes. Set safeOption to the id of the option that publishes, discloses and spends nothing new, and never to an option that publishes or discloses. AIWorks answers with your suggestion only when it is marked reversible, otherwise with safeOption; with neither, the step ends as not done and a follow-up is recorded. The owner can change the answer later. An answer never widens the packet.';
 
 // Acceptance evidence (OWNER_UI_V2 WP4): optional on a verifier result, so a result without it is valid as before. One
 // entry per acceptance criterion of the packet, by its 1-based position; what was checked and the evidence, in words the

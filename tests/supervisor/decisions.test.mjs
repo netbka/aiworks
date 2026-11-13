@@ -7,8 +7,9 @@ import { randomUUID } from 'node:crypto';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
+import { carriedAnswers, settledPoints } from '../../src/supervisor/decisions.mjs';
 import { decisionInstructions, pendingInstructions } from '../../src/supervisor/instructions.mjs';
-import { applyAnswerChange, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
+import { applyAnswerChange, applyDecision, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { declaration, environment } from './helpers.mjs';
 
@@ -98,6 +99,63 @@ test('a changed answer replaces the earlier one in every later run under the sam
   assert.equal(decisionInstructions(store, { ...c, authorization_version: c.authorization_version + 1 }, 'T1').length, 0, 'another authority inherits nothing');
   assert.equal(decisionInstructions(store, c, 'T2').length, 0, 'nor does another step');
   assert.equal(store.task(campaignId, 'T1').blocked, null, 'a change clears and sets no stop');
+});
+
+test('a part the owner answered reaches the worker as the owner\'s, the rest stays open, and a point asked again is answered from the record', (t) => {
+  const env = environment();
+  const store = new Store(join(env.dataDir, 'supervisor.db'));
+  t.after(() => { store.close(); env.cleanup(); });
+  const d = declaration(); campaignStart(store, d);
+  const controller = new Controller({ store, config: env.config, dataDir: env.dataDir, fault: null });
+  const ctx = () => ({ id: d.campaignId, generation: store.acquireLease(d.campaignId, controller.instanceId, Date.now(), 60_000).generation });
+  const stop = (at, parts) => {
+    const task = store.task(d.campaignId, 'T1');
+    store.patch('tasks', { campaign_id: d.campaignId, task_id: 'T1' }, task.version, { blocked: { class: 'B3', reason: 'owner-reserved: release choices', at,
+      decision: { question: 'Release choices', parts } } }, Date.now());
+  };
+  // Neither part is reversible nor has a safeOption: AIWorks may not answer them itself.
+  const palette = (id) => ({ id, question: 'Which palette?', options: [{ id: 'brand', label: 'Brand', consequence: 'Two contrast fixes.' }, { id: 'plain', label: 'Neutral', consequence: 'Plainer.' }] });
+  const font = { id: 'font', question: 'Which font?', options: [{ id: 'serif', label: 'Serif', consequence: 'Classic.' }, { id: 'sans', label: 'Sans', consequence: 'Modern.' }] };
+  stop(1000, [palette('palette'), font]);
+
+  const shown = () => supervisorSnapshot(env.dataDir).campaigns[0].tasks.find((item) => item.id === 'T1').decision;
+  assert.deepEqual(shown().parts.map((p) => p.id), ['palette', 'font']);
+  const c = store.campaign(d.campaignId), requestId = randomUUID();
+  const bind = { requestId, campaignId: c.id, taskId: 'T1', taskVersion: store.task(c.id, 'T1').version, version: c.version,
+    authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest, decision: shown().id };
+  assert.throws(() => applyDecision(env.dataDir, 'answer', { ...bind, parts: { palette: 'other' } }), (error) => error.status === 400);
+  applyDecision(env.dataDir, 'answer', { ...bind, parts: { palette: 'brand' } });
+  controller.processEvents(ctx());
+
+  // The worker's packet gets the owner's part, recorded as the owner's from this very request; the font stays open.
+  const answered = () => store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'decision-answered' ORDER BY seq", d.campaignId).map((row) => row.detail);
+  const parts = (detail) => Object.fromEntries(Object.entries(detail.answers).map(([part, a]) => [part, [a.option, a.by, Boolean(a.carried)]]));
+  assert.deepEqual(parts(answered().at(-1)), { palette: ['brand', 'owner', false] });
+  const texts = () => decisionInstructions(store, store.campaign(d.campaignId), 'T1').map((item) => item.payload.text);
+  assert.ok(texts().at(-1).includes(requestId), 'the packet carries the provenance of the owner\'s request');
+  assert.equal(store.task(d.campaignId, 'T1').blocked, null);
+
+  // The worker stops again and asks the palette again under another id, beside the open font: the palette is answered
+  // from the owner's record, nothing reaches the owner, and the font stays the worker's to decide.
+  stop(2000, [palette('colours'), font]);
+  controller.answerSuggested(ctx());
+  assert.equal(store.task(d.campaignId, 'T1').blocked, null, 'the step goes on without asking anyone');
+  assert.equal(shown(), null, 'no open decision is shown to the owner');
+  assert.deepEqual(parts(answered().at(-1)), { colours: ['brand', 'owner', true] });
+
+  // Asked again with an option of the same name that now does something else: the owner's answer is not carried to it.
+  const risky = palette('colours'); risky.options[0].consequence = 'Publishes the palette to production.';
+  stop(3000, [risky, font]);
+  controller.answerSuggested(ctx());
+  assert.equal(answered().length, 2, 'no answer is recorded for a point whose consequence changed');
+
+  // An answer AIWorks gave itself is carried only while its AW-017 rule still allows it: asked again in a decision that
+  // is neither reversible nor names it as safeOption, it is not carried.
+  const settled = settledPoints([{ seq: 1, detail: { decision: 'a'.repeat(32), auto: true, option: 'go', question: 'Proceed?',
+    options: [{ id: 'go', label: 'Yes', consequence: 'Local branch only.' }, { id: 'stop', label: 'No', consequence: 'Nothing.' }] } }]);
+  const asked = { question: 'Proceed?', options: [{ id: 'go', label: 'Yes', consequence: 'Local branch only.' }, { id: 'stop', label: 'No', consequence: 'Nothing.' }] };
+  assert.deepEqual(carriedAnswers(asked, settled), {});
+  assert.equal(carriedAnswers({ ...asked, safeOption: 'go' }, settled)['']?.option, 'go');
 });
 
 test('only the owner\'s own session changes an answer: a program AIWorks started is refused and nothing is written', async (t) => {
