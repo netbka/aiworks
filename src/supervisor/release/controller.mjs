@@ -494,7 +494,12 @@ async function releaseSteps(c) {
     launch(c, ctx, row, repo); return;
   }
   if (c.config.release?.enabled !== true || maintenance(c)) return;
+  // Only a campaign with a merge can own its project's newest merge, the one thing either path below releases. The
+  // others (report-only and unmerged campaigns, most of a long history) are skipped before their lease and grant are
+  // read: visiting each of them cost a pass minutes (work item 82).
+  const merging = new Set(c.store.all("SELECT DISTINCT campaign_id FROM journal WHERE kind = 'merged'").map((row) => row.campaign_id));
   for (const campaign of c.store.all("SELECT * FROM campaigns WHERE control IN ('registered', 'finished') ORDER BY created_at DESC")) {
+    if (!merging.has(campaign.id)) continue;
     const key = 'campaign:' + campaign.id;
     if ((c.releaseNextAt.get(key) ?? 0) > c.now()) continue;
     c.releaseNextAt.set(key, c.now() + POLL_MS);
