@@ -55,9 +55,13 @@ export function relativeTo(text, roots = []) {
     if (parts.length < 2) continue;
     const sep = '[\\\\/]+';
     const escaped = parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(sep);
-    // A worktree folder may carry `+` (git.mjs workspaceName); a remainder that climbs out with `..` is not cut.
-    const pattern = new RegExp(`(?<![\\w.-])${/^[A-Za-z]:$/.test(parts[0]) ? '' : '[\\\\/]'}${escaped}${`${sep}(?!\\.\\.?[\\\\/])[\\w.$~+-]+`.repeat(depth)}${sep}(?!\\.\\.)`, 'gi');
-    value = value.replace(pattern, '');
+    // A worktree folder may carry `+` (git.mjs workspaceName). A path with any `..` folder after the prefix may leave the
+    // root, so it keeps its prefix, whole, for the privacy check to refuse.
+    const pattern = new RegExp(`(?<![\\w.-])${/^[A-Za-z]:$/.test(parts[0]) ? '' : '[\\\\/]'}${escaped}${`${sep}(?!\\.\\.?[\\\\/])[\\w.$~+-]+`.repeat(depth)}${sep}`, 'gi');
+    value = value.replace(pattern, (match, offset, whole) => {
+      const rest = /^[^\s'"`<>()|,;]*/.exec(whole.slice(offset + match.length))[0];
+      return /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(rest) ? match : '';
+    });
   }
   return value;
 }
