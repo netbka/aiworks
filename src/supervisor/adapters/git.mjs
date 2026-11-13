@@ -546,6 +546,12 @@ export function isAncestor({ git, path, ancestor, descendant }) {
   return exec(git, ['merge-base', '--is-ancestor', ancestor, descendant], { cwd: path }).ok;
 }
 
+/** The commits on the first-parent line of `to` after `from`, newest first; null when unreadable. Local, never fetches. */
+export function firstParentSince({ git, path, from, to }) {
+  const result = exec(git, ['rev-list', '--first-parent', `${from}..${to}`], { cwd: path });
+  return result.ok ? result.stdout.split(/\s+/).filter(Boolean) : null;
+}
+
 /**
  * Heads of the remote branches matching `pattern` (for example `refs/heads/campaign/<id>/*`), or null when unreadable or
  * not read within `timeoutMs`. A network read, so asynchronous and bounded (execBounded): await it before the fence.
