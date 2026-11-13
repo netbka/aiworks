@@ -194,7 +194,12 @@ const SUBJECT = 'subject';
 export function subjectLabel(declaration, taskId) {
   const target = declaration?.target?.repository ?? declaration?.target?.projectId ?? null;
   if (!target || typeof declaration?.purpose !== 'string' || !declaration.purpose.trim()) return null;
-  const digest = createHash('sha256').update(JSON.stringify([target, declaration.purpose.trim(), taskId]), 'utf8').digest('hex').slice(0, 24);
+  // The step's own title and goal too, so unrelated campaigns that reuse a generic purpose and step id never share a
+  // subject. A retry whose goal differs gets its own item: more items, never a wrong close.
+  const task = (declaration.tasks ?? []).find((t) => t?.id === taskId);
+  if (!task || typeof task.goal !== 'string' || !task.goal.trim()) return null;
+  const digest = createHash('sha256').update(JSON.stringify([target, declaration.purpose.trim(), taskId, task.title ?? null, task.goal.trim()]), 'utf8')
+    .digest('hex').slice(0, 24);
   return `${SUBJECT}:${digest}`;
 }
 

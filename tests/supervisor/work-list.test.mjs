@@ -54,7 +54,7 @@ test('secret-like text is refused and nothing is stored', (t) => {
 
 test('a retry of the same work shares one not-done item, and only a clean finish of that work closes it', (t) => {
   const { store } = rig(t);
-  const decl = { purpose: 'Analyse request 7', target: { repository: 'example/app' } };
+  const decl = { purpose: 'Analyse request 7', target: { repository: 'example/app' }, tasks: [{ id: 'ANALYZE', title: 'Analyse', goal: 'Analyse request 7.' }] };
   const subject = subjectLabel(decl, 'ANALYZE');
   const notDone = (campaignId, extra = {}) => followUp(store, { campaignId, taskId: 'ANALYZE', key: 'not-done', subject, now: NOW,
     title: 'Finish ANALYZE', body: 'Not done.', fallback: 'Not done.', ...extra });
@@ -70,4 +70,5 @@ test('a retry of the same work shares one not-done item, and only a clean finish
   assert.equal(item(store, other.number).state, 'open', 'other work stays open');
   assert.equal(item(store, defects.number).state, 'open', 'known defects are not shown fixed by a later pass');
   assert.equal(subjectLabel({ target: { repository: 'example/app' } }, 'ANALYZE'), null, 'no purpose, no subject');
+  assert.notEqual(subjectLabel({ ...decl, tasks: [{ id: 'ANALYZE', title: 'Analyse', goal: 'Another goal.' }] }, 'ANALYZE'), subject, 'another goal under a reused purpose is other work');
 });

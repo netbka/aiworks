@@ -4310,7 +4310,12 @@ export class Controller {
         status = 'ready';
         control = 'finished';
         // A step done without known defects settles the not-done follow-ups other campaigns left for the same work.
-        for (const task of tasks) if (task.state === 'done' && !defectsOf(task)?.length) settleSubject(this.store, { subject: subjectLabel(decl, task.task_id), campaignId: ctx.id, taskId: task.task_id, now });
+        for (const task of tasks) {
+          if (task.state !== 'done' || defectsOf(task)?.length) continue;
+          // Settling is bookkeeping: a refused comment never keeps the campaign from finishing.
+          try { settleSubject(this.store, { subject: subjectLabel(decl, task.task_id), campaignId: ctx.id, taskId: task.task_id, now }); }
+          catch (error) { if (!(error instanceof WorkListError)) throw error; this.store.journal(ctx.id, 'follow-up-settle-refused', { task: task.task_id, code: error.code }, now); }
+        }
         const reportsOnly = decl.tasks.every((task) => task.deliverable === 'report');
         // AW-017: steps AIWorks finished by itself are said as they are, never as passed.
         const notDone = tasks.filter((task) => task.state === 'cancelled' && /^not done:/.test(task.last_error ?? '')).length;
