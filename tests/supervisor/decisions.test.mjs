@@ -8,7 +8,7 @@ import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart } from '../../src/supervisor/api.mjs';
 import { Controller } from '../../src/supervisor/controller.mjs';
 import { decisionInstructions, pendingInstructions } from '../../src/supervisor/instructions.mjs';
-import { applyAnswerChange, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
+import { applyAnswerChange, applyDecision, supervisorSnapshot } from '../../src/dashboard/supervisor.mjs';
 import { createDashboardServer } from '../../src/dashboard/server.mjs';
 import { declaration, environment } from './helpers.mjs';
 
@@ -98,6 +98,52 @@ test('a changed answer replaces the earlier one in every later run under the sam
   assert.equal(decisionInstructions(store, { ...c, authorization_version: c.authorization_version + 1 }, 'T1').length, 0, 'another authority inherits nothing');
   assert.equal(decisionInstructions(store, c, 'T2').length, 0, 'nor does another step');
   assert.equal(store.task(campaignId, 'T1').blocked, null, 'a change clears and sets no stop');
+});
+
+test('a part the owner answered reaches the worker as the owner\'s, the rest stays open, and a point asked again is answered from the record', (t) => {
+  const env = environment();
+  const store = new Store(join(env.dataDir, 'supervisor.db'));
+  t.after(() => { store.close(); env.cleanup(); });
+  const d = declaration(); campaignStart(store, d);
+  const controller = new Controller({ store, config: env.config, dataDir: env.dataDir, fault: null });
+  const ctx = () => ({ id: d.campaignId, generation: store.acquireLease(d.campaignId, controller.instanceId, Date.now(), 60_000).generation });
+  const stop = (at, parts) => {
+    const task = store.task(d.campaignId, 'T1');
+    store.patch('tasks', { campaign_id: d.campaignId, task_id: 'T1' }, task.version, { blocked: { class: 'B3', reason: 'owner-reserved: release choices', at,
+      decision: { question: 'Release choices', parts } } }, Date.now());
+  };
+  // Neither part is reversible nor has a safeOption: AIWorks may not answer them itself.
+  const palette = (id) => ({ id, question: 'Which palette?', options: [{ id: 'brand', label: 'Brand', consequence: 'Two contrast fixes.' }, { id: 'plain', label: 'Neutral', consequence: 'Plainer.' }] });
+  const font = { id: 'font', question: 'Which font?', options: [{ id: 'serif', label: 'Serif', consequence: 'Classic.' }, { id: 'sans', label: 'Sans', consequence: 'Modern.' }] };
+  stop(1000, [palette('palette'), font]);
+
+  const shown = () => supervisorSnapshot(env.dataDir).campaigns[0].tasks.find((item) => item.id === 'T1').decision;
+  assert.deepEqual(shown().parts.map((p) => p.id), ['palette', 'font']);
+  const c = store.campaign(d.campaignId), requestId = randomUUID();
+  const bind = { requestId, campaignId: c.id, taskId: 'T1', taskVersion: store.task(c.id, 'T1').version, version: c.version,
+    authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest, decision: shown().id };
+  assert.throws(() => applyDecision(env.dataDir, 'answer', { ...bind, parts: { palette: 'other' } }), (error) => error.status === 400);
+  applyDecision(env.dataDir, 'answer', { ...bind, parts: { palette: 'brand' } });
+  controller.processEvents(ctx());
+
+  // The worker's packet gets the owner's part with the supervisor's provenance, and the unanswered part as open.
+  const texts = () => decisionInstructions(store, store.campaign(d.campaignId), 'T1').map((item) => item.payload.text);
+  const first = texts().at(-1);
+  assert.match(first, /Part palette: Which palette\? Settled, the owner's answer: Brand \(brand\)/);
+  assert.match(first, new RegExp(`owner request ${requestId}`));
+  assert.match(first, /Part font: Which font\? Still open/);
+  assert.equal(store.task(d.campaignId, 'T1').blocked, null);
+
+  // The worker stops again and asks the palette again under another id, beside the open font: the palette is answered
+  // from the owner's record, nothing reaches the owner, and the font stays the worker's to decide.
+  stop(2000, [palette('colours'), font]);
+  controller.answerSuggested(ctx());
+  assert.equal(store.task(d.campaignId, 'T1').blocked, null, 'the step goes on without asking anyone');
+  assert.equal(shown(), null, 'no open decision is shown to the owner');
+  const again = texts().at(-1);
+  assert.match(again, /Part colours: Which palette\? Settled, already answered by the owner: Brand \(brand\)/);
+  assert.match(again, /Part font: Which font\? Still open/);
+  assert.equal(store.all("SELECT 1 FROM journal WHERE campaign_id = ? AND kind = 'decision-reasked'", d.campaignId).length, 1);
 });
 
 test('only the owner\'s own session changes an answer: a program AIWorks started is refused and nothing is written', async (t) => {

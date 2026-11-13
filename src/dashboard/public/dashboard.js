@@ -2565,9 +2565,29 @@ function itemDecision(item) {
  */
 let landedAll = false;
 
+/**
+ * A decision's sub-questions (aiworks-work #2), one group of options each. Any part may stay unchosen: an answer sends
+ * only the parts chosen, and the others stay open. `chosen` is { partId: optionId }; `className` styles each option.
+ */
+function partGroups(d, name, chosen, { onchange = null, disabled = false, className = 'home-option', suggested = true, by = null } = {}) {
+  return d.parts.map((p) => el('fieldset', { class: 'home-options', 'data-part': p.id },
+    el('legend', {}, p.question, by?.[p.id] ? el('span', { class: 'home-note' }, ` · ${by[p.id] === 'owner' ? 'your answer' : 'AIWorks answered'}`) : null),
+    ...p.options.map((o) => {
+      const input = el('input', { type: 'radio', name: `${name}-${p.id}`, value: o.id, onchange, disabled });
+      input.checked = chosen?.[p.id] === o.id;
+      return el('label', { class: className }, input, el('span', { class: 'home-option-body' },
+        el('strong', {}, o.label, suggested && p.suggestion?.option === o.id ? el('span', { class: 'badge done' }, 'Suggested') : null),
+        o.consequence ? el('span', { class: 'home-note' }, o.consequence) : null));
+    })));
+}
+/** The parts chosen in a form: { partId: optionId }, only those with a choice. */
+const chosenParts = (form, d, name) => Object.fromEntries(d.parts
+  .map((p) => [p.id, form.querySelector(`input[name="${name}-${p.id}"]:checked`)?.value]).filter(([, option]) => option));
+
 /** One waiting decision with two to four options as selectable cards and one Answer button. */
 function homeDecisionCard(c, task) {
   const d = task.decision, address = current.address, key = `decision:${d.id}`, off = decisionBusy || commandsOff();
+  if (d.parts?.length) return homePartsCard(c, task);
   const deferred = task.risk?.level === 'high' && onPhone();
   const draft = drafts.get(address, key) ?? { option: null, text: '', feedback: '' };
   const radios = `home-option-${d.id}`, heading = `home-question-${d.id}`;
@@ -2598,6 +2618,30 @@ function homeDecisionCard(c, task) {
   return form;
 }
 
+/** A waiting decision with sub-questions: answer any of them now; the ones left unchosen stay open. */
+function homePartsCard(c, task) {
+  const d = task.decision, address = current.address, key = `decision:${d.id}`, off = decisionBusy || commandsOff();
+  const deferred = task.risk?.level === 'high' && onPhone();
+  const draft = drafts.get(address, key) ?? { parts: {} }, name = `home-part-${d.id}`, heading = `home-question-${d.id}`;
+  const error = el('p', { class: 'validation-error', role: 'alert', hidden: true }, COMMANDS.decision.notPart);
+  const form = el('form', { novalidate: true, class: 'home-card', 'data-decision': d.id, 'data-focus-scope': `home/decision/${d.id}`,
+    onsubmit: (event) => {
+      event.preventDefault();
+      if (off || deferred) return;
+      const parts = chosenParts(form, d, name);
+      error.hidden = Object.keys(parts).length > 0;
+      if (!error.hidden) { form.querySelector('input[type="radio"]')?.focus(); return; }
+      void sendDecision('answer', c, task, { parts }, { address, done: () => drafts.delete(address, key) });
+    } },
+  el('h2', { id: heading, class: 'home-question' }, d.question),
+  el('p', { class: 'home-note' }, 'Answer the parts you want to decide. Parts you leave open are decided by AIWorks within the approved plan, and you can still answer them later.'),
+  ...partGroups(d, name, draft.parts, { disabled: deferred, onchange: () => drafts.set(address, key, { parts: chosenParts(form, d, name) }) }), error,
+  deferred ? el('p', { class: 'home-note' }, 'Answer this on a computer.')
+    : el('div', { class: 'home-answer' }, el('button', { class: 'button', type: 'submit', disabled: off }, 'Answer')),
+  d.unanswered ? el('p', { class: 'home-note' }, `If you do not answer: ${d.unanswered}`) : null);
+  return form;
+}
+
 /*
  * Change a decided answer on Home (HOME_V2 2.1): Change opens the decision's options in place, with the answer in force
  * chosen. The request binds that very answer, so the server refuses it when the answer or its step moved on; a step that
@@ -2606,9 +2650,26 @@ function homeDecisionCard(c, task) {
 let changingDecision = null;
 function decidedChange(d) {
   const c = campaignById(d.campaignId), task = c?.tasks.find((item) => item.id === d.taskId);
-  if (!c || !task || !d.decision || !d.answer || !(d.options?.length > 1)) return null;
+  if (!c || !task || !d.decision || !d.answer || !(d.options?.length > 1 || d.parts?.length)) return null;
   const off = decisionBusy || commandsOff();
-  if (changingDecision !== d.decision) return el('button', { class: 'button link', type: 'button', disabled: off, onclick: () => { changingDecision = d.decision; render(); } }, 'Change');
+  if (changingDecision !== d.decision) return el('button', { class: 'button link', type: 'button', disabled: off, onclick: () => { changingDecision = d.decision; render(); } },
+    d.parts?.some((p) => !p.option) ? 'Answer or change' : 'Change');
+  if (d.parts?.length) {
+    // Parts: the answers in force are chosen; only the parts the owner changes or newly answers are sent.
+    const name = `home-change-${d.decision}`, inForce = Object.fromEntries(d.parts.filter((p) => p.option).map((p) => [p.id, p.option]));
+    const form = el('form', { novalidate: true, class: 'home-card', 'data-focus-scope': `home/change/${d.decision}`,
+      onsubmit: (event) => {
+        event.preventDefault();
+        const parts = Object.fromEntries(Object.entries(chosenParts(form, d, name)).filter(([part, option]) => inForce[part] !== option ||
+          d.parts.find((p) => p.id === part)?.by !== 'owner'));
+        if (off || !Object.keys(parts).length) return;
+        void sendAnswerChange(c, task, d, null, { parts });
+      } },
+    ...partGroups(d, name, inForce, { suggested: false, by: Object.fromEntries(d.parts.filter((p) => p.by).map((p) => [p.id, p.by])) }),
+    el('div', { class: 'home-answer' }, el('button', { class: 'button', type: 'submit', disabled: off }, 'Save answers'), ' ',
+      el('button', { class: 'button secondary', type: 'button', onclick: () => { changingDecision = null; render(); } }, 'Keep them')));
+    return form;
+  }
   const radios = `home-change-${d.decision}`;
   const options = d.options.map((o) => {
     const input = el('input', { type: 'radio', name: radios, value: o.id });
@@ -2629,10 +2690,10 @@ function decidedChange(d) {
 }
 
 const CHANGE_WORDS = { changed: 'changed', 'changed-later': 'changedLater', 'follow-up': 'followUp' };
-async function sendAnswerChange(c, task, d, option, { address = current.address } = {}) {
+async function sendAnswerChange(c, task, d, option, { address = current.address, parts = null } = {}) {
   c = campaignById(c.id) ?? c; task = c.tasks.find((item) => item.id === task.id) ?? task;
   const payload = { requestId: crypto.randomUUID(), campaignId: c.id, taskId: task.id, taskVersion: task.version, version: c.version,
-    authorizationVersion: c.authorizationVersion, scopeDigest: c.scopeDigest, decision: d.decision, answer: d.answer, option };
+    authorizationVersion: c.authorizationVersion, scopeDigest: c.scopeDigest, decision: d.decision, answer: d.answer, ...(parts ? { parts } : { option }) };
   decisionBusy = true; render();
   const attempt = async () => {
     try {
@@ -3074,10 +3135,11 @@ function decisionPanel(c, task, { more } = {}) {
   const deferred = task.risk?.level === 'high' && onPhone();
   const address = current.address, key = `decision:${d.id}`, off = decisionBusy || commandsOff();
   if (d.answered) {
-    const chosen = d.options.find((o) => o.id === d.answered.option);
+    const chosen = d.parts?.length ? d.parts.map((p) => p.options.find((o) => o.id === d.answered.parts?.[p.id])?.label ?? 'left open').join('; ')
+      : d.options.find((o) => o.id === d.answered.option)?.label;
     return el('div', { class: 'instruction-list', 'data-decision': d.id, 'data-focus-scope': `decision/${d.id}` },
       el('h3', { class: 'section-title' }, 'Your answer'),
-      el('p', { role: 'status' }, `Answered at ${clock(d.answered.at)}${chosen ? `: ${chosen.label}` : ''}. AIWorks continues the step with your answer.`));
+      el('p', { role: 'status' }, `Answered at ${clock(d.answered.at)}${chosen ? `: ${chosen}` : ''}. AIWorks continues the step with your answer.`));
   }
   const draft = drafts.get(address, key) ?? { option: null, text: '', feedback: '' };
   // Every control is named for this decision: two decisions on one page (Needs you) never share an id, a radio group or a draft.
@@ -3088,7 +3150,11 @@ function decisionPanel(c, task, { more } = {}) {
   const feedback = el('textarea', { id: `decision-feedback-${d.id}`, rows: 2, maxlength: 2000, oninput: save });
   feedback.value = draft.feedback ?? '';
   const choice = el('span', { id: `decision-choice-error-${d.id}`, class: 'validation-error', role: 'alert', hidden: true }, COMMANDS.decision.notOption);
-  const options = d.structured && deferred ? el('div', {}, el('p', {}, el('strong', {}, d.question)),
+  const partName = `decision-part-${d.id}`;
+  const options = d.parts?.length ? el('div', {}, el('p', {}, el('strong', {}, d.question)),
+    el('p', { class: 'subtext' }, 'Answer the parts you want to decide; any part may stay open. Open parts are decided by AIWorks within the approved plan, and you can still answer them later.'),
+    ...partGroups(d, partName, draft.parts, { disabled: deferred, className: 'choice', onchange: () => drafts.set(address, key, { ...(drafts.get(address, key) ?? {}), parts: chosenParts(form, d, partName) }) }), choice)
+    : d.structured && deferred ? el('div', {}, el('p', {}, el('strong', {}, d.question)),
     el('ul', {}, ...d.options.map((o) => el('li', {}, `${o.label}${d.suggestion?.option === o.id ? ' (suggested)' : ''}`, el('div', { class: 'subtext' }, o.consequence)))))
     : d.structured ? el('fieldset', {}, el('legend', {}, d.question),
     ...d.options.map((o) => {
@@ -3116,9 +3182,10 @@ function decisionPanel(c, task, { more } = {}) {
       event.preventDefault();
       if (off || !validateForm(form)) return;
       const option = form.querySelector(`input[name="${radios}"]:checked`)?.value;
-      choice.hidden = Boolean(option || words.value.trim());
-      if (!choice.hidden) { form.querySelector(`input[name="${radios}"]`)?.focus(); return; }
-      void sendDecision('answer', c, task, { ...(option ? { option } : {}), ...(words.value.trim() ? { text: words.value } : {}) },
+      const parts = d.parts?.length ? chosenParts(form, d, partName) : null;
+      choice.hidden = Boolean(option || parts && Object.keys(parts).length || words.value.trim());
+      if (!choice.hidden) { form.querySelector('input[type="radio"]')?.focus(); return; }
+      void sendDecision('answer', c, task, { ...(option ? { option } : {}), ...(parts && Object.keys(parts).length ? { parts } : {}), ...(words.value.trim() ? { text: words.value } : {}) },
         { address, done: () => drafts.delete(address, key) });
     } },
     el('h3', { class: 'section-title' }, d.structured ? 'Your decision' : 'Your answer'),

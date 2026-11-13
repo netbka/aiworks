@@ -31,7 +31,7 @@ import { ANCHOR, MAX_DOCUMENT_BYTES, parseReference, resolveSection } from './re
 import { MAX_CITES, productDefectsOf } from './adapters/claude.mjs';
 import { runnerIdentified, stopOwnedRun, readJsonIfExists, readTextIfExists, writeAtomic } from './proc.mjs';
 import { pendingInstructions, attachInstructions, decisionInstructions } from './instructions.mjs';
-import { answerGuidance, answersItself, autoOption, decideGuidance, decisionId, isDecision, sendsBack, structuredDecision } from './decisions.mjs';
+import { answerGuidance, answersItself, autoOption, autoParts, carriedAnswers, decideGuidance, decisionId, isDecision, sendsBack, settledPoints, structuredDecision } from './decisions.mjs';
 import { deliverableWithDefects, mergedHead, OWNER_CHANGES, ownerChangesFinding } from './result-review.mjs';
 import { POLICY as ROUTING_POLICY, autoReceipt, indicators, policyInputs, priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
 import { roleCatalog } from './governance.mjs';
@@ -1010,12 +1010,28 @@ export class Controller {
         ? { trigger: 'auto-decision', probe: 'decision', pass: true, detail: `AIWorks answered decision ${payload.decision.slice(0, 12)} with its reversible suggestion`, at: now }
         : { trigger: 'owner-decision', probe: 'decision', pass: true, detail: `owner answer to decision ${payload.decision.slice(0, 12)}`, at: now }, now);
     }
+    // Answers point by point (aiworks-work #2): the parts of a decision, or a whole decision asked again. The owner's parts
+    // come from the owner's own event; AIWorks's from its own rules; an earlier answer asked again keeps who gave it.
+    const d = structuredDecision({ decision: task.blocked.decision });
+    const owned = payload.auto ? {} : Object.fromEntries(Object.entries(payload.parts ?? {})
+      .filter(([part, option]) => d?.parts?.find((p) => p.id === part)?.options.some((o) => o.id === option))
+      .map(([part, option]) => [part, { option, by: 'owner', from: payload.decision }]));
+    const answers = d?.parts || payload.answers ? { ...(payload.answers ?? (payload.auto ? autoParts(d) : {})), ...owned } : null;
     this.store.addEvent(ctx.id, 'agent-instruction', { taskId: task.task_id, role: 'implement',
-      text: answerGuidance(task.blocked.decision, payload), authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest },
+      text: answerGuidance(d ?? task.blocked.decision, { ...payload, answers }), authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest },
     `instruction:decision:${ctx.id}:${payload.decision}`, now);
-    // An answer AIWorks gave itself keeps the question, options and reason, so the owner can read and change it later.
-    this.store.journal(ctx.id, 'decision-answered', { task: task.task_id, decision: payload.decision, option: payload.option ?? null,
-      ...(payload.auto ? { auto: true, question: task.blocked.decision.question, options: task.blocked.decision.options, suggestion: task.blocked.decision.suggestion } : {}) }, now);
+    // Every structured answer keeps the question and options it answered: the owner can read and change it later, and a
+    // later stop of the step that asks an answered point again is answered from it (decisions.mjs settledPoints).
+    const option = answers ? answers['']?.option ?? null : payload.option ?? null;
+    this.store.journal(ctx.id, 'decision-answered', { task: task.task_id, decision: payload.decision, option,
+      ...(payload.auto ? { auto: true } : {}), ...(answers ? { answers } : {}),
+      ...(d ? { question: d.question, ...(d.parts ? { parts: d.parts } : { options: d.options }), ...(d.suggestion ? { suggestion: d.suggestion } : {}) } : {}) }, now);
+  }
+
+  /** The points this step's earlier decisions settled (decisions.mjs settledPoints). */
+  settledFor(ctx, taskId) {
+    return settledPoints(this.store.all("SELECT seq, kind, detail FROM journal WHERE campaign_id = ? AND kind IN ('decision-answered', 'decision-changed') AND json_extract(detail, '$.task') = ?",
+      ctx.id, taskId));
   }
 
   /**
@@ -1038,6 +1054,20 @@ export class Controller {
         const answers = this.store.all("SELECT kind, detail FROM journal WHERE campaign_id = ? AND kind IN ('decision-answered', 'decision-sent-back')", ctx.id)
           .filter((row) => row.detail?.task === fresh.task_id && (row.kind === 'decision-sent-back' || row.detail?.auto === true));
         const within = answers.length < NO_PROGRESS_LIMIT;
+        // A point the step already settled is answered from the record, never asked of anyone again (aiworks-work #2);
+        // the other parts get AIWorks's own answers where its rules allow, and the rest stay open for the worker.
+        const decision = within && fresh.blocked.class === 'B3' ? structuredDecision({ decision: fresh.blocked.decision }) : null;
+        const carried = decision ? carriedAnswers(decision, this.settledFor(ctx, fresh.task_id)) : {};
+        const own = decision?.parts ? { ...autoParts(decision), ...carried } : null;
+        if (decision && Object.keys(carried).length && (decision.parts || carried[''])) {
+          const key = `auto-decision:${ctx.id}:${fresh.task_id}:${campaign.authorization_version}:${answers.length}`;
+          if (!this.store.addEvent(ctx.id, 'auto-decision', { taskId: fresh.task_id, authorizationVersion: campaign.authorization_version }, key, now)) return;
+          this.store.run('UPDATE events SET processed_at = ? WHERE dedup_key = ?', now, key);
+          this.answerDecision(ctx, { taskId: fresh.task_id, decision: decisionId(ctx.id, fresh.task_id, fresh.blocked), option: carried['']?.option ?? null,
+            answers: own ?? carried, authorizationVersion: campaign.authorization_version, scopeDigest: campaign.scope_digest, auto: true }, now);
+          this.store.journal(ctx.id, 'decision-reasked', { task: fresh.task_id, points: Object.keys(carried).length }, now);
+          return;
+        }
         if (within && answersItself(fresh)) {
           const key = `auto-decision:${ctx.id}:${fresh.task_id}:${campaign.authorization_version}:${answers.length}`;
           if (!this.store.addEvent(ctx.id, 'auto-decision', { taskId: fresh.task_id, authorizationVersion: campaign.authorization_version }, key, now)) return;

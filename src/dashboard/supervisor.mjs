@@ -8,7 +8,7 @@ import { campaignStatus, campaignPause, campaignCancel, campaignRecheck, campaig
 import { DEFAULTS } from '../supervisor/controller.mjs';
 import { safeText } from './roadmap.mjs';
 import { pendingInstructions } from '../supervisor/instructions.mjs';
-import { answerChange, changeGuidance, changeKey, decisionId, isDecision, recordedDecision, structuredDecision } from '../supervisor/decisions.mjs';
+import { answerChange, answersOf, changeGuidance, changeKey, decisionId, isDecision, MAX_PARTS, recordedDecision, structuredDecision } from '../supervisor/decisions.mjs';
 import { followUp } from '../supervisor/work-list.mjs';
 import { criterionEvidence, MAX_FEEDBACK, OWNER_CHANGES, passedCheck, reviewRecords, unresolvedOf, verifiedReview } from '../supervisor/result-review.mjs';
 import { acceptanceMode, effectiveLimits, projectLimitsOf } from '../supervisor/project-settings.mjs';
@@ -897,6 +897,10 @@ export const decisionFeedback = (store, campaignId) =>
  * a stop without them is a free-text decision (`structured: false`) answered in the owner's own words. `id` binds every
  * answer, snooze and "did not need me" to this one stop. The owner's own words are never served back.
  */
+const partView = (p) => ({ id: p.id, question: safeText(p.question, 500),
+  options: p.options.map((o) => ({ id: o.id, label: safeText(o.label, 120), consequence: safeText(o.consequence, 500) })),
+  suggestion: p.suggestion ? { option: p.suggestion.option, reason: safeText(p.suggestion.reason, 500) } : null });
+
 export function decisionView(campaignId, task, feedback, now) {
   if (!isDecision(task)) return null;
   const id = decisionId(campaignId, task.task_id, task.blocked);
@@ -909,9 +913,11 @@ export function decisionView(campaignId, task, feedback, now) {
   const asked = !d && /^owner-reserved: /.test(String(task.blocked.reason ?? '')) ? safeText(String(task.blocked.reason).slice('owner-reserved: '.length), 500) || null : null;
   return { id, structured: Boolean(d), question: d ? safeText(d.question, 500) : null, asked,
     options: d ? d.options.map((o) => ({ id: o.id, label: safeText(o.label, 120), consequence: safeText(o.consequence, 500) })) : [],
+    // Sub-questions (aiworks-work #2): the owner may answer some and leave the others open.
+    parts: d?.parts ? d.parts.map(partView) : null,
     suggestion: d?.suggestion ? { option: d.suggestion.option, reason: safeText(d.suggestion.reason, 500) } : null,
     continues: d?.continues ? safeText(d.continues, 500) : null, unanswered: d?.unanswered ? safeText(d.unanswered, 500) : null,
-    answered: answer ? { at: answer.received_at, option: answer.payload.option ?? null } : null,
+    answered: answer ? { at: answer.received_at, option: answer.payload.option ?? null, parts: answer.payload.parts ?? null } : null,
     snoozedUntil: until > now ? until : null, notNeeded: mine.some((event) => event.kind === 'decision-not-needed') };
 }
 
@@ -941,7 +947,18 @@ export function autoAnswers(store, campaignId, taskRows) {
  */
 function autoAnswer(row) {
   const detail = row.detail ?? {}, changed = row.kind === 'decision-changed';
-  const d = detail.auto || changed ? recordedDecision(detail) : null;
+  // A decision with parts is listed whoever answered it, so the owner can still answer the parts left open.
+  const d = detail.auto || changed || detail.parts ? recordedDecision(detail) : null;
+  if (d?.parts) {
+    // A decision answered part by part: each part with its answer in force and who gave it, or open.
+    const answers = answersOf(detail);
+    const parts = d.parts.map((p) => {
+      const chosen = p.options.find((o) => o.id === answers[p.id]?.option);
+      return { ...partView(p), option: chosen?.id ?? null, chosen: chosen ? safeText(chosen.label, 120) : null, by: chosen ? answers[p.id].by : null };
+    });
+    return { taskId: detail.task, at: row.at, question: safeText(d.question, 500), chosen: parts.filter((p) => p.chosen).map((p) => p.chosen).join('; ') || 'Left open',
+      reason: null, others: [], changed, decision: typeof detail.decision === 'string' ? detail.decision : null, answer: row.seq ?? null, option: null, options: [], parts };
+  }
   const chosen = d?.options.find((o) => o.id === detail.option);
   if (!chosen) return null;
   return { taskId: detail.task, at: row.at, question: safeText(d.question, 500), chosen: safeText(chosen.label, 120),
@@ -1585,7 +1602,12 @@ export function applyScopedControl(dataDir, input, now = Date.now(), { provenanc
 }
 
 const SNOOZE = { '1h': 3_600_000, '4h': 4 * 3_600_000, '1d': 86_400_000 };
-const DECISION_KEYS = ['requestId', 'campaignId', 'taskId', 'taskVersion', 'version', 'authorizationVersion', 'scopeDigest', 'decision', 'option', 'text', 'snooze'];
+const DECISION_KEYS = ['requestId', 'campaignId', 'taskId', 'taskVersion', 'version', 'authorizationVersion', 'scopeDigest', 'decision', 'option', 'parts', 'text', 'snooze'];
+
+/** A request's answers to parts of a decision (aiworks-work #2): `{ partId: optionId }`, at least one, or undefined when absent. */
+const partsInput = (value) => value === undefined ? undefined
+  : value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length >= 1 && Object.keys(value).length <= MAX_PARTS &&
+    Object.entries(value).every(([part, option]) => /^[a-z][a-z0-9-]{0,31}$/.test(part) && /^[a-z][a-z0-9-]{0,31}$/.test(option ?? '')) ? value : null;
 
 /**
  * Answer, snooze or "this did not need me" on one decision (OWNER_UI_V2 WP2; `action` comes from the address). The
@@ -1602,10 +1624,11 @@ export function applyDecision(dataDir, action, input, now = Date.now()) {
       !Number.isSafeInteger(input.version) || input.version < 1 || !Number.isSafeInteger(input.authorizationVersion) ||
       !/^[a-f0-9]{64}$/.test(input.scopeDigest ?? '') || !/^[a-f0-9]{32}$/.test(input.decision ?? '') ||
       input.option !== undefined && (action !== 'answer' || !/^[a-z][a-z0-9-]{0,31}$/.test(input.option)) ||
+      input.parts !== undefined && (action !== 'answer' || input.option !== undefined || partsInput(input.parts) === null) ||
       input.text !== undefined && (action === 'snooze' || typeof input.text !== 'string' || !input.text.trim() || input.text.length > 2000 ||
         /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(input.text)) ||
       (input.snooze !== undefined) !== (action === 'snooze') || action === 'snooze' && !Object.hasOwn(SNOOZE, input.snooze) ||
-      action === 'answer' && input.option === undefined && input.text === undefined) {
+      action === 'answer' && input.option === undefined && input.parts === undefined && input.text === undefined) {
     throw fail(400, 'Invalid dashboard command.');
   }
   if (input.text !== undefined && safeText(input.text, 2000) !== input.text) {
@@ -1617,7 +1640,7 @@ export function applyDecision(dataDir, action, input, now = Date.now()) {
     return store.tx(() => {
       const id = input.campaignId;
       const payload = { taskId: input.taskId, decision: input.decision, action, taskVersion: input.taskVersion, version: input.version,
-        authorizationVersion: input.authorizationVersion, scopeDigest: input.scopeDigest, option: input.option ?? null,
+        authorizationVersion: input.authorizationVersion, scopeDigest: input.scopeDigest, option: input.option ?? null, ...(input.parts ? { parts: input.parts } : {}),
         // The receipt binds the owner's words by digest: they are kept once, in the decision's own event.
         text: input.text === undefined ? null : createHash('sha256').update(input.text, 'utf8').digest('hex'), snooze: input.snooze ?? null };
       const dedup = `dashboard:${input.requestId}`;
@@ -1642,7 +1665,11 @@ export function applyDecision(dataDir, action, input, now = Date.now()) {
       if (action === 'answer') {
         const d = structuredDecision({ decision: task.blocked.decision });
         if (input.option !== undefined && !d?.options.some((o) => o.id === input.option)) throw fail(400, COMMANDS.decision.notOption);
-        store.addEvent(id, 'decision-answer', { ...event, option: input.option ?? null, text: input.text ?? null,
+        // Parts are answered one by one: any of them now, the rest left open (aiworks-work #2).
+        if (input.parts !== undefined && (!d?.parts || Object.entries(input.parts).some(([part, option]) => !d.parts.find((p) => p.id === part)?.options.some((o) => o.id === option)))) {
+          throw fail(400, COMMANDS.decision.notOption);
+        }
+        store.addEvent(id, 'decision-answer', { ...event, option: input.option ?? null, ...(input.parts ? { parts: input.parts } : {}), text: input.text ?? null,
           authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest }, answered, now);
       } else if (action === 'snooze') {
         store.addEvent(id, 'decision-snooze', { ...event, until: now + SNOOZE[input.snooze] }, null, now);
@@ -1658,7 +1685,7 @@ export function applyDecision(dataDir, action, input, now = Date.now()) {
   } finally { store.close(); }
 }
 
-const CHANGE_KEYS = ['requestId', 'campaignId', 'taskId', 'taskVersion', 'version', 'authorizationVersion', 'scopeDigest', 'decision', 'answer', 'option', 'text'];
+const CHANGE_KEYS = ['requestId', 'campaignId', 'taskId', 'taskVersion', 'version', 'authorizationVersion', 'scopeDigest', 'decision', 'answer', 'option', 'parts', 'text'];
 const CHANGE_REFUSED = { unanswered: [409, 'changeStale'], stale: [409, 'changeStale'], 'not-recorded': [409, 'notRecorded'], 'not-option': [400, 'notOption'], same: [409, 'sameAnswer'] };
 
 /**
@@ -1679,7 +1706,8 @@ export function applyAnswerChange(dataDir, input, now = Date.now()) {
       !/^[0-9a-f-]{36}$/i.test(input.requestId ?? '') || !identifier.test(input.campaignId ?? '') || !identifier.test(input.taskId ?? '') ||
       !Number.isSafeInteger(input.taskVersion) || !Number.isSafeInteger(input.version) || input.version < 1 ||
       !Number.isSafeInteger(input.authorizationVersion) || !/^[a-f0-9]{64}$/.test(input.scopeDigest ?? '') || !/^[a-f0-9]{32}$/.test(input.decision ?? '') ||
-      !Number.isSafeInteger(input.answer) || input.answer < 1 || !/^[a-z][a-z0-9-]{0,31}$/.test(input.option ?? '') ||
+      !Number.isSafeInteger(input.answer) || input.answer < 1 ||
+      (input.parts === undefined ? !/^[a-z][a-z0-9-]{0,31}$/.test(input.option ?? '') : input.option !== undefined || partsInput(input.parts) === null) ||
       input.text !== undefined && (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 2000 ||
         /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(input.text))) {
     throw fail(400, 'Invalid dashboard command.');
@@ -1693,7 +1721,7 @@ export function applyAnswerChange(dataDir, input, now = Date.now()) {
     return store.tx(() => {
       const id = input.campaignId, words = input.text ?? null;
       const wordsDigest = words === null ? null : createHash('sha256').update(words, 'utf8').digest('hex');
-      const payload = { action: 'change', taskId: input.taskId, decision: input.decision, answer: input.answer, option: input.option, taskVersion: input.taskVersion,
+      const payload = { action: 'change', taskId: input.taskId, decision: input.decision, answer: input.answer, option: input.option, ...(input.parts ? { parts: input.parts } : {}), taskVersion: input.taskVersion,
         version: input.version, authorizationVersion: input.authorizationVersion, scopeDigest: input.scopeDigest, text: wordsDigest };
       const dedup = `dashboard:${input.requestId}`;
       const previous = store.get('SELECT campaign_id, payload FROM events WHERE dedup_key = ?', dedup);
@@ -1719,14 +1747,21 @@ export function applyAnswerChange(dataDir, input, now = Date.now()) {
       const verdict = answerChange({ task, history, input, ranSince });
       if (verdict.refused) { const [status, key] = CHANGE_REFUSED[verdict.refused]; throw fail(status, COMMANDS.decision[key]); }
       // One change per answer in force: a second change bound to the same answer is stale, even under another request id.
-      const change = { taskId: task.task_id, decision: input.decision, from: current.seq, option: input.option, text: words, requestId: input.requestId,
+      const d = verdict.decision;
+      // A decision with parts: the owner's answers replace those parts' answers; every other part keeps its answer in force.
+      const answers = d.parts ? { ...answersOf(current.detail), ...Object.fromEntries(Object.entries(input.parts).map(([part, option]) => [part, { option, by: 'owner', from: input.decision }])) } : null;
+      const change = { taskId: task.task_id, decision: input.decision, from: current.seq, option: input.option ?? null, ...(answers ? { parts: input.parts } : {}), text: words, requestId: input.requestId,
         authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest };
       if (!store.addEvent(id, 'decision-change', change, `decision-change:${id}:${input.decision}:${current.seq}`, now)) throw fail(409, COMMANDS.decision.changeStale);
-      const d = verdict.decision, label = (key) => d.options.find((o) => o.id === key)?.label ?? key;
+      const pointLabel = (part, key) => (part ? d.parts.find((p) => p.id === part) : d)?.options.find((o) => o.id === key)?.label ?? key ?? 'open';
+      const label = (key) => pointLabel(null, key);
+      const was = answersOf(current.detail);
+      const summary = answers ? Object.entries(input.parts).map(([part, option]) => `"${d.parts.find((p) => p.id === part).question}" from "${pointLabel(part, was[part]?.option)}" to "${pointLabel(part, option)}"`).join('; ')
+        : `"${d.question}" from "${label(current.detail.option)}" to "${label(input.option)}"`;
       // Written for a step that already used the answer too: it starts nothing, and a step reopened later (requested
       // changes, an integration repair) follows the owner's latest answer, under the same authority and scope.
       store.addEvent(id, 'agent-instruction', { taskId: task.task_id, role: 'implement',
-        text: changeGuidance(d, { from: current.detail.option ?? null, option: input.option, text: words, decision: input.decision, requestId: input.requestId }),
+        text: changeGuidance(d, { from: current.detail.option ?? null, option: input.option, answers, text: words, decision: input.decision, requestId: input.requestId }),
         authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest,
         provenance: { by: 'owner', via: 'dashboard', decision: input.decision, requestId: input.requestId, wordsDigest, replaces: current.seq } },
       changeKey(id, input.decision, input.requestId), now);
@@ -1735,15 +1770,15 @@ export function applyAnswerChange(dataDir, input, now = Date.now()) {
         const used = verdict.outcome === 'follow-up';
         item = followUp(store, { campaignId: id, taskId: task.task_id, key: `answer-${input.decision.slice(0, 8)}-${current.seq}`, now,
           title: `Apply a changed answer in ${task.task_id}`.slice(0, 256),
-          body: [`The owner changed the answer to "${d.question}" from "${label(current.detail.option)}" to "${label(input.option)}".`,
+          body: [`The owner changed the answer to ${summary}.`,
             used ? 'The step had already used the earlier answer. Its runs, checks and results are kept as they are; nothing was reopened, rewritten or done again.'
               : 'A run of the step already worked under the earlier answer, and its only later run may be a check that passes that work. What it did is kept; nothing was undone or done again.',
             'Check the step\'s result against the new answer, and plan new, bounded work under the existing authority if it still needs a change.'].join('\n'),
           fallback: 'The owner changed a recorded answer after work had used it. The earlier work is kept as it is; nothing was undone or done again. The question and both answers are in the step\'s records.' });
       }
-      store.journal(id, 'decision-changed', { task: task.task_id, decision: input.decision, from: current.seq, previous: current.detail.option ?? null, option: input.option,
+      store.journal(id, 'decision-changed', { task: task.task_id, decision: input.decision, from: current.seq, previous: current.detail.option ?? null, option: input.option ?? null,
         by: 'owner', requestId: input.requestId, wordsDigest, outcome: verdict.outcome, item: item?.number ?? null,
-        question: d.question, options: d.options, ...(d.suggestion ? { suggestion: d.suggestion } : {}) }, now);
+        question: d.question, ...(answers ? { parts: d.parts, answers } : { options: d.options }), ...(d.suggestion ? { suggestion: d.suggestion } : {}) }, now);
       store.addEvent(id, 'dashboard-command', payload, dedup, now);
       store.journal(id, 'dashboard-command', { action: 'decision-change', task: task.task_id, requestId: input.requestId }, now);
       return { accepted: true, duplicate: false, action: 'change', outcome: verdict.outcome === 'follow-up' ? 'follow-up' : verdict.followUp ? 'changed-later' : 'changed' };

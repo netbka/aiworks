@@ -9,18 +9,47 @@ import { createHash } from 'node:crypto';
 const OPTION = /^[a-z][a-z0-9-]{0,31}$/;
 const text = (value, max) => typeof value === 'string' && value.trim() && value.length <= max ? value : null;
 
-/** The validated decision fields of a worker result, or null. Options must be unique and a suggestion must name one. */
+/** Two to four validated, unique options, or null. */
+function optionsOf(list) {
+  if (!Array.isArray(list) || list.length < 2 || list.length > 4) return null;
+  const options = list.map((o) => OPTION.test(o?.id ?? '') && text(o.label, 120) && text(o.consequence, 500) ? { id: o.id, label: o.label, consequence: o.consequence } : null);
+  return options.includes(null) || new Set(options.map((o) => o.id)).size !== options.length ? null : options;
+}
+const suggestionOf = (s, options) => s && options.some((o) => o.id === s.option) && text(s.reason, 500) ? { option: s.option, reason: s.reason } : null;
+
+/**
+ * The validated sub-questions of a decision (aiworks-work #2), or null: one to six parts, each with its own id, question,
+ * options, optional suggestion and safeOption. The owner may answer some parts and leave the rest open.
+ */
+function partsOf(list) {
+  if (!Array.isArray(list) || list.length < 1 || list.length > MAX_PARTS) return null;
+  const parts = list.map((p) => {
+    const options = OPTION.test(p?.id ?? '') && text(p.question, 500) ? optionsOf(p.options) : null;
+    if (!options) return null;
+    const suggestion = suggestionOf(p.suggestion, options);
+    return { id: p.id, question: p.question, options, ...(suggestion ? { suggestion } : {}),
+      ...(typeof p.safeOption === 'string' && options.some((o) => o.id === p.safeOption) ? { safeOption: p.safeOption } : {}) };
+  });
+  return parts.includes(null) || new Set(parts.map((p) => p.id)).size !== parts.length ? null : parts;
+}
+export const MAX_PARTS = 6;
+
+/**
+ * The validated decision fields of a worker result, or null. A decision has either whole options (two to four, unique,
+ * a suggestion must name one) or parts, its sub-questions; never both. A decision with parts has `options: []`.
+ */
 export function structuredDecision(value) {
   const d = value?.decision;
-  if (!d || typeof d !== 'object' || Array.isArray(d) || !text(d.question, 500) || !Array.isArray(d.options) || d.options.length < 2 || d.options.length > 4) return null;
-  const options = d.options.map((o) => OPTION.test(o?.id ?? '') && text(o.label, 120) && text(o.consequence, 500) ? { id: o.id, label: o.label, consequence: o.consequence } : null);
-  if (options.includes(null) || new Set(options.map((o) => o.id)).size !== options.length) return null;
-  const suggestion = d.suggestion && options.some((o) => o.id === d.suggestion.option) && text(d.suggestion.reason, 500)
-    ? { option: d.suggestion.option, reason: d.suggestion.reason } : null;
-  return { question: d.question, options, ...(suggestion ? { suggestion } : {}),
+  if (!d || typeof d !== 'object' || Array.isArray(d) || !text(d.question, 500)) return null;
+  const parts = d.parts === undefined ? null : partsOf(d.parts);
+  const options = parts ? [] : optionsOf(d.options);
+  if (d.parts !== undefined && (!parts || d.options !== undefined && (!Array.isArray(d.options) || d.options.length))) return null;
+  if (!parts && !options) return null;
+  const suggestion = parts ? null : suggestionOf(d.suggestion, options);
+  return { question: d.question, options, ...(parts ? { parts } : {}), ...(suggestion ? { suggestion } : {}),
     ...(text(d.continues, 500) ? { continues: d.continues } : {}), ...(text(d.unanswered, 500) ? { unanswered: d.unanswered } : {}),
     ...(d.reversible === true ? { reversible: true } : {}),
-    ...(typeof d.safeOption === 'string' && options.some((o) => o.id === d.safeOption) ? { safeOption: d.safeOption } : {}) };
+    ...(!parts && typeof d.safeOption === 'string' && options.some((o) => o.id === d.safeOption) ? { safeOption: d.safeOption } : {}) };
 }
 
 /** Whether a task's stop is an owner decision the dashboard may answer (the same rule as the "needs-decision" copy). */
@@ -46,6 +75,7 @@ export function decisionId(campaignId, taskId, blocked) {
  * otherwise only the option the worker marked as the safe one (safeOption: publishes or discloses nothing new). Never a guess.
  */
 export function autoOption(decision) {
+  if (decision?.parts) return null;
   const ids = new Set((decision?.options ?? []).map((o) => o.id));
   if (decision?.reversible === true && decision.suggestion && ids.has(decision.suggestion.option)) return decision.suggestion.option;
   return decision?.safeOption && ids.has(decision.safeOption) ? decision.safeOption : null;
@@ -54,7 +84,68 @@ export function autoOption(decision) {
 // A "verifier still rejects" stall at the repair limit is not answered: answering it would raise the repair limit, so the
 // controller settles it instead (settleStopped: delivered with known defects, or ended as not done).
 export const answersItself = (task) => isDecision(task) && task.blocked.class === 'B3' &&
-  autoOption(task.blocked.decision) !== null;
+  (autoOption(task.blocked.decision) !== null || Object.keys(autoParts(structuredDecision({ decision: task.blocked.decision }))).length > 0);
+
+/**
+ * The parts AIWorks answers on its own, by the same rule as autoOption: a part's suggestion when the worker marked the
+ * decision reversible, otherwise the part's safeOption. A part with neither stays open for the worker to decide.
+ */
+export function autoParts(decision) {
+  const out = {};
+  for (const part of decision?.parts ?? []) {
+    const option = decision.reversible === true && part.suggestion ? part.suggestion.option : part.safeOption ?? null;
+    if (option) out[part.id] = { option, by: 'aiworks' };
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Answered points stay answered (aiworks-work #2). Every recorded answer and change keeps the decision it answered, so a
+// later stop of the same step that asks an answered point again is answered from the record instead of reaching the
+// owner again. Points are matched by their question and option wording, never by a worker's ids alone.
+
+const plain = (value) => String(value ?? '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+/** The answers in force of one journaled answer or change: { partId, or '' for a whole decision: { option, by, from } }. */
+export function answersOf(detail) {
+  if (detail?.answers && typeof detail.answers === 'object') return detail.answers;
+  return detail?.option ? { '': { option: detail.option, by: detail.auto ? 'aiworks' : 'owner', from: detail.decision ?? null } } : {};
+}
+
+/**
+ * Every point a step's earlier decisions settled, from its journal rows (`decision-answered`, `decision-changed`, any
+ * order): plain question wording -> { question, label, by, from }. A later record of the same decision replaces an earlier one.
+ */
+export function settledPoints(rows) {
+  const latest = new Map();
+  for (const row of [...rows].sort((a, b) => a.seq - b.seq)) if (row.detail?.decision) latest.set(row.detail.decision, row.detail);
+  const out = new Map();
+  for (const detail of latest.values()) {
+    const d = recordedDecision(detail);
+    if (!d) continue;
+    for (const [part, answer] of Object.entries(answersOf(detail))) {
+      const point = part ? d.parts?.find((p) => p.id === part) : d.parts ? null : d;
+      const chosen = point?.options.find((o) => o.id === answer.option);
+      if (chosen) out.set(plain(point.question), { question: point.question, label: chosen.label, by: answer.by, from: answer.from ?? detail.decision });
+    }
+  }
+  return out;
+}
+
+/**
+ * The answers a new decision inherits from points its step already settled: for a whole decision `{ '': answer }`, for a
+ * decision with parts one entry per part asked again. An option is matched by its wording; a point whose options no
+ * longer hold the settled answer is not inherited and stays to be answered.
+ */
+export function carriedAnswers(decision, settled) {
+  const out = {};
+  for (const point of decision?.parts ?? (decision ? [{ ...decision, id: '' }] : [])) {
+    const was = settled.get(plain(point.question));
+    const option = was && point.options.find((o) => plain(o.label) === plain(was.label));
+    if (option) out[point.id] = { option: option.id, by: was.by, from: was.from, carried: true };
+  }
+  return out;
+}
 
 /** AW-017: a worker's owner-reserved stop AIWorks cannot answer: no usable suggestion, or one neither marked reversible nor backed by a safeOption. It goes back to its step once, to decide within the packet. */
 export const sendsBack = (task) => isDecision(task) && task.blocked.class === 'B3' && /^owner-reserved:/.test(String(task.blocked.reason ?? '')) && !answersItself(task);
@@ -78,8 +169,39 @@ export const ownerProvenance = ({ decision = null, requestId = null, text: words
   decision ? `decision ${String(decision).slice(0, 32)}` : null, requestId ? `owner request ${String(requestId).slice(0, 36)}` : null,
   words ? `owner's words sha256 ${sha256(words)}` : null].filter(Boolean).join(', ');
 
+/**
+ * The guidance of a decision answered point by point: each point with who answered it (the owner, AIWorks, or an earlier
+ * answer asked again), or as still open. An open point is the worker's to decide within the packet; an answered one is
+ * settled and never asked again. The owner's own answers carry the supervisor's provenance line.
+ */
+export function pointsGuidance(decision, answers, { words = null, decision: id = null, requestId = null, lead }) {
+  const points = decision?.parts ?? (decision ? [{ ...decision, id: '' }] : []);
+  const owner = Object.values(answers).some((a) => a.by === 'owner' && !a.carried);
+  const lines = points.map((point) => {
+    const answer = answers[point.id], chosen = answer && point.options.find((o) => o.id === answer.option);
+    const name = point.id ? `Part ${point.id}: ${point.question}` : `Question: ${point.question}`;
+    if (!chosen) return `${name} Still open: decide it yourself within the packet and record the choice and why in your report; do not stop for the owner about it.`;
+    const who = answer.carried ? (answer.by === 'owner' ? 'already answered by the owner' : 'already answered by AIWorks')
+      : answer.by === 'owner' ? 'the owner\'s answer' : 'AIWorks\'s answer';
+    return `${name} Settled, ${who}: ${chosen.label} (${chosen.id}). Consequence: ${chosen.consequence}`;
+  });
+  return [lead, decision?.parts ? `Question: ${decision.question}` : null, ...lines, words ? `The owner's words: ${words}` : null,
+    owner ? `Recorded by the supervisor from the owner's dashboard (${ownerProvenance({ decision: id, requestId, text: words })}).` : null,
+    Object.values(answers).some((a) => a.carried && a.by === 'owner')
+      ? `An answer marked as already answered by the owner was recorded by the supervisor from the owner's dashboard for an earlier stop of this step (${[...new Set(Object.values(answers).filter((a) => a.carried && a.by === 'owner').map((a) => `decision ${String(a.from ?? '').slice(0, 32)}`))].join(', ')}); it is the owner's answer.` : null,
+    'Settled points are final for this step: apply them within the packet and never ask about them again. If you must stop again, ask only about a point that is still open or new, and say which part of an answer you could not use and why. If an answer conflicts with the approved acceptance or permissions, identify the exact amendment needed; it does not silently widen authority.']
+    .filter(Boolean).join(' ');
+}
+
 /** Durable decision context for the step's builders and verifiers, within its bound authority. */
-export function answerGuidance(decision, { option = null, text: words = null, auto = false, decision: id = null, requestId = null }) {
+export function answerGuidance(decision, { option = null, text: words = null, auto = false, decision: id = null, requestId = null, answers = null }) {
+  if (decision?.parts || answers) {
+    const all = Object.values(answers ?? {});
+    return pointsGuidance(decision, answers ?? {}, { words, decision: id, requestId,
+      lead: all.length && all.every((a) => a.carried) ? 'This step asked again about points that were already answered. Their recorded answers apply; nothing new was asked of the owner.'
+        : all.some((a) => a.by === 'owner' && !a.carried) ? 'The owner answered the decision this step stopped for, point by point; a point the owner left open is still open.'
+          : 'AIWorks answered the points of this decision it may answer itself, with the options that publish or disclose nothing new or the worker\'s reversible suggestions (AW-017). The owner can change any answer later.' });
+  }
   const chosen = option ? decision?.options?.find((o) => o.id === option) : null;
   const provenance = auto ? null : ownerProvenance({ decision: id, requestId, text: words });
   return [auto ? 'AIWorks answered the decision this step stopped for with the option that publishes or discloses nothing new, as the owner decided (AW-017). The owner can change the answer later.'
@@ -137,19 +259,31 @@ export function answerChange({ task, history, input, ranSince = false }) {
   if (!task || current.seq !== input?.answer || current.detail?.task !== task.task_id) return { refused: 'stale' };
   const recorded = recordedDecision(current.detail);
   if (!recorded) return { refused: 'not-recorded' };
-  if (!recorded.options.some((o) => o.id === input.option)) return { refused: 'not-option' };
-  if (input.option === current.detail.option && !input.text) return { refused: 'same' };
+  if (recorded.parts) {
+    // Parts are answered one by one: the change names only the parts it answers; the others keep the answer in force.
+    const given = input.parts && typeof input.parts === 'object' && !Array.isArray(input.parts) ? Object.entries(input.parts) : [];
+    if (!given.length || input.option != null) return { refused: 'not-option' };
+    if (given.some(([part, option]) => !recorded.parts.find((p) => p.id === part)?.options.some((o) => o.id === option))) return { refused: 'not-option' };
+    const before = answersOf(current.detail);
+    if (given.every(([part, option]) => before[part]?.option === option && before[part]?.by === 'owner' && !before[part]?.carried) && !input.text) return { refused: 'same' };
+  } else {
+    if (input.parts !== undefined || !recorded.options.some((o) => o.id === input.option)) return { refused: 'not-option' };
+    if (input.option === current.detail.option && !input.text) return { refused: 'same' };
+  }
   if (CONSUMED.has(task.state)) return { outcome: 'follow-up', decision: recorded, current };
   return { outcome: 'superseded', followUp: ranSince === true, decision: recorded, current };
 }
 
 /** The validated question and options a journaled answer or change kept, or null. */
 export function recordedDecision(detail) {
-  return detail ? structuredDecision({ decision: { question: detail.question, options: detail.options, suggestion: detail.suggestion } }) : null;
+  return detail?.question ? structuredDecision({ decision: { question: detail.question, ...(detail.parts ? { parts: detail.parts } : { options: detail.options }),
+    ...(detail.suggestion ? { suggestion: detail.suggestion } : {}) } }) : null;
 }
 
 /** The guidance that replaces an earlier answer for the step's later builders and verifiers, within its bound authority. */
-export function changeGuidance(decision, { from = null, option, text: words = null, decision: id = null, requestId = null }) {
+export function changeGuidance(decision, { from = null, option, text: words = null, decision: id = null, requestId = null, answers = null }) {
+  if (decision?.parts) return pointsGuidance(decision, answers ?? {}, { words, decision: id, requestId,
+    lead: 'The owner changed or added answers to parts of a decision this step stopped for. These answers replace the earlier ones; follow them from now on. Keep committed work and history: build on them, never rewrite, reset or force-push them, and never repeat or undo an action that published, disclosed, deployed or spent something.' });
   const label = (key) => decision?.options?.find((o) => o.id === key);
   const before = label(from), chosen = label(option);
   return ['The owner changed the answer to a decision this step stopped for. This answer replaces the earlier one; follow it from now on.',
