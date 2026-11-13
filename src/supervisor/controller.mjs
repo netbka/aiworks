@@ -2481,7 +2481,7 @@ export class Controller {
       const spec = specOf(this.store, ctx.id, fresh.task_id, decl), title = spec?.title ? `${fresh.task_id}: ${spec.title}` : fresh.task_id;
       const item = followUp(this.store, { campaignId: ctx.id, taskId: fresh.task_id, key: `unpublished-${repaired.slice(0, 12)}`, now,
         title: `Compare the unpublished repair of ${title}`.slice(0, 256),
-        body: `${fresh.pr_url} was merged at \`${sha}\` while AIWorks verified its integration repair \`${repaired}\`; that repair was never pushed. Compare it with the base and plan again only what the base still lacks.`,
+        body: `${fresh.pr_url} was merged at \`${sha}\` while AIWorks verified its integration repair \`${repaired}\`; that repair was never pushed and stays on the local task branch \`${gitA.branchName(ctx.id, fresh.task_id)}\`. Compare it with the base and plan again only what the base still lacks.`,
         fallback: 'The pull request was merged while AIWorks verified its integration repair; that repair was never pushed. Compare it with the base and plan again only what the base still lacks.' });
       this.store.journal(ctx.id, 'integration-repair-superseded', { task: fresh.task_id, merged: sha, repair: repaired, item: item.number }, now);
     }
@@ -3854,9 +3854,10 @@ export class Controller {
     const proof = task.verification?.codeEvidence;
     const rewriteBase = proof ? await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository, { fresh: true }) : null;
     // A verified integration repair whose PR is gone may have lost a race with a merge of the head it repairs: the base
-    // is read before the fence so endMergedRepair can tell (aiworks#207).
+    // is read before the fence so endMergedRepair can tell (aiworks#207). Fresh, not the pass's shared read: a merge
+    // after that read would leave its merge commit outside the base and stall the step.
     const repairBase = spec.deliverable === 'commit' && this.integrationFinding(task)
-      ? await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository) : null;
+      ? await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository, { fresh: true }) : null;
     // What the PR and the push publish is the change from the commit the task started from to the verified head.
     // A task that never recorded the commit it started from is compared with its merge-base with the remote base; when
     // that cannot be read either, the guard refuses (fail closed).
