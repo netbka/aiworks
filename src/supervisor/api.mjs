@@ -480,14 +480,14 @@ export function waitReason(task, { store, campaign: c, tasks, open, held = new M
     { ceiling: hostCeiling(config), pressure: pressure ? { signal: pressure.reason } : null, accountFull: () => (kind ? accountFull(store, config, kind) : null),
       integrated: (campaignId, row, declaration) => isLocalTarget(declaration) || merged(campaignId, row),
       gateOnly: (declaration) => trustsLocalMain(selfHostingSettings(config), declaration.target.repository) });
-  if (!refusal) {
-    // The controller also reads the fetched base, which status does not: its last write-domain refusal for this step
-    // (controller.recordDomainRefusals) says who holds the area when status's own rows see no holder.
-    const recorded = store.get("SELECT reason FROM capacity WHERE scope = 'domain-refusal' AND id = ?", `${c.id}/${task.task_id}`);
-    const holders = recorded ? parseHolders(recorded.reason) : null;
-    if (holders?.length) return admissionReason(store, { reason: 'write-domain', detail: { holders } });
-  }
-  return admissionReason(store, refusal ?? { reason: null });
+  // The controller also reads the fetched base, which status does not: its last write-domain refusal for this step
+  // (controller.recordDomainRefusals) says who holds the area. It is the only judge of published work merged outside
+  // AIWorks, which status's rows still count as unmerged: with no refusal recorded, such holders are not shown.
+  const recorded = store.get("SELECT reason FROM capacity WHERE scope = 'domain-refusal' AND id = ?", `${c.id}/${task.task_id}`);
+  const holders = recorded ? parseHolders(recorded.reason) : null;
+  const publishedOnly = refusal?.reason === 'write-domain' && refusal.detail.holders.every((holder) => holder.reason === 'published-unmerged');
+  if (!refusal || publishedOnly) return admissionReason(store, holders?.length ? { reason: 'write-domain', detail: { holders } } : { reason: null });
+  return admissionReason(store, refusal);
 }
 
 function parseHolders(text) {

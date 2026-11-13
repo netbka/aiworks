@@ -154,6 +154,7 @@ test('one release pass over many finished campaigns of a repository reads its ba
   await releasePass(r.c);
   assert.equal(r.c.releaseJob?.campaignId, one.id, 'the pass still reaches the campaign whose merge is the newest');
   assert.equal(reads, 1, 'one network read of the base for the whole pass');
+  for (let n = 0; n < 4; n++) assert.equal(r.store.lease(`later-${n}`), null, 'a campaign without a merge is not leased by the release pass');
   await r.c.releaseJob.promise;
 });
 
