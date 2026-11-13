@@ -142,7 +142,8 @@ export const BASE_READ_FAILURES = Object.freeze(['fetch-timeout', 'fetch-failed'
 // owner's request for changes to a finished result (OWNER_UI_V2 WP4).
 const REPAIR_FINDINGS = new Set(['integration-conflict', 'ci-failure', OWNER_CHANGES]);
 // aiworks#8: a verified task whose publication text fails the privacy check gets at most this many correction rounds
-// (within maxRepairRounds) before it stalls; nothing of the refused text is sent.
+// before it stalls (a refused report also within maxRepairRounds; a refused verification alone is not a repair round);
+// nothing of the refused text is sent.
 const PUBLICATION_REPAIRS = 2;
 // A repair round's name in the words of a stop or a refusal.
 const REPAIR_WORDS = Object.freeze({ ci: 'CI', integration: 'integration', 'owner-changes': 'requested-changes' });
