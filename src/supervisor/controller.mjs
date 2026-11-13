@@ -544,6 +544,8 @@ export class Controller {
     this.repairCheckedAt = new Map();
     // When each campaign's not-done steps were last checked for a head merged outside AIWorks (memory only).
     this.notDoneCheckedAt = new Map();
+    // The base commit and items each campaign's not-done steps were last checked against: an unmoved base is not read again.
+    this.notDoneCheckedBase = new Map();
     const commands = config.commands ?? {};
     this.cmd = { codex: commands.codex, cursor: commands.cursor, agy: commands.agy, chrome: commands.chrome,
       claude: commands.claude ?? ['claude'], git: commands.git ?? ['git'], gh: commands.gh ?? ['gh'] };
@@ -2511,7 +2513,8 @@ export class Controller {
    * journalled; the step itself stays cancelled.
    *
    * The heads are the verified one (a published head, also the start of a repair round) and the last implemented one.
-   * The commit the step was built on is no work of it and never counts, unless it is the verified head.
+   * A head the step was built on, or any earlier base commit (a worker can report a newer base commit as its head), is no
+   * work of it and never counts, unless it is the verified head.
    */
   async settleMergedNotDoneSteps(ctx) {
     if (!this.notDoneDue(ctx.id)) return;
@@ -2529,12 +2532,24 @@ export class Controller {
     if (resolveCheckout(this.store, this.config, decl.target.repository)?.conflict) return;
     const repo = this.repo(decl), baseSha = (await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository)).sha;
     if (!valid(baseSha)) return;
+    const checked = `${baseSha}:${steps.map(({ number }) => number).join(',')}`;
+    if (this.notDoneCheckedBase.get(ctx.id) === checked) return;
+    const isAncestor = (ancestor, descendant) => gitA.isAncestor({ git: this.cmd.git, path: repo.path, ancestor, descendant });
+    // A head on the base's own first-parent line since the step was dispatched is a base commit, not a branch merged in: a
+    // fast-forward merge is then left open, which is safe.
+    const own = (task, head) => {
+      if (head === task.verified_sha) return true;
+      if (!valid(task.base_sha) || isAncestor(head, task.base_sha)) return false;
+      const line = gitA.firstParentSince({ git: this.cmd.git, path: repo.path, from: task.base_sha, to: baseSha });
+      return line !== null && !line.includes(head);
+    };
     this.fenced(ctx, () => {
       if (!this.authorityHolds(ctx.id, c)) { this.notDoneCheckedAt.delete(ctx.id); return; }
+      this.notDoneCheckedBase.set(ctx.id, checked);
       for (const { number, task } of steps) {
         const fresh = this.store.task(ctx.id, task.task_id);
         if (fresh?.state !== 'cancelled') continue;
-        const sha = heads(fresh).find((head) => gitA.isAncestor({ git: this.cmd.git, path: repo.path, ancestor: head, descendant: baseSha }));
+        const sha = heads(fresh).find((head) => isAncestor(head, baseSha) && own(fresh, head));
         if (!sha) continue;
         const now = this.now();
         if (!settleMergedNotDone(this.store, { number, sha, baseBranch: decl.target.baseBranch, baseSha, now })) continue;

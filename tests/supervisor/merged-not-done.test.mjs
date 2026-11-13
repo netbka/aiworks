@@ -20,16 +20,17 @@ const git = (cwd, ...args) => {
 const step = (id, issue) => ({ id, issue, title: `step ${id}`, deliverable: 'commit', goal: `Add ${id}.txt.`,
   dependsOn: [], acceptance: [`${id}.txt exists`], references: ['AGENTS.md'] });
 
-test('a not-done step whose head is merged later closes its follow-up; an unmerged one keeps it open', async (t) => {
+test('a not-done step whose head is merged later closes its follow-up; an unmerged one, or one whose head is only a base commit, keeps it open', async (t) => {
   const env = environment();
   const store = new Store(join(env.dataDir, 'supervisor.db'));
   let now = Date.now();
   const controller = new Controller({ store, config: env.config, dataDir: env.dataDir, now: () => now, fault: null });
   controller.launch = async () => {}; // the test plays the worker; nothing is spawned
   t.after(() => { controller.release(); store.close(); env.cleanup(); });
-  const camps = { M: 'camp-merged', K: 'camp-kept' };
+  const camps = { M: 'camp-merged', K: 'camp-kept', B: 'camp-base-head' };
   campaignStart(store, declaration({ campaignId: camps.M, tasks: [step('M1', 601)] }));
   campaignStart(store, declaration({ campaignId: camps.K, tasks: [step('K1', 602)] }));
+  campaignStart(store, declaration({ campaignId: camps.B, tasks: [step('B1', 603)] }));
   await controller.tick();
 
   const heads = {};
@@ -37,9 +38,21 @@ test('a not-done step whose head is merged later closes its follow-up; an unmerg
     const ctx = { id, generation: controller.held.get(id) };
     const [op] = store.openOperations(id);
     assert.equal(op?.kind, 'implement');
-    writeFileSync(join(op.workspace, `${key}.txt`), `${key}\n`);
-    git(op.workspace, 'add', '-A'); git(op.workspace, 'commit', '-qm', `work for ${key}`);
-    heads[key] = git(op.workspace, 'rev-parse', 'HEAD');
+    if (key === 'B') {
+      // The worker does no work of its own: it moves onto a newer base commit and reports that as its head.
+      git(env.repo, 'fetch', '-q', 'origin', 'main');
+      git(env.repo, 'checkout', '-q', '--detach', 'FETCH_HEAD');
+      writeFileSync(join(env.repo, 'later.txt'), 'later\n');
+      git(env.repo, 'add', '-A'); git(env.repo, 'commit', '-qm', 'a later base commit');
+      git(env.repo, 'push', '-q', 'origin', 'HEAD:refs/heads/main');
+      heads[key] = git(env.repo, 'rev-parse', 'HEAD');
+      git(env.repo, 'checkout', '-q', 'main');
+      git(op.workspace, 'reset', '-q', '--hard', heads[key]);
+    } else {
+      writeFileSync(join(op.workspace, `${key}.txt`), `${key}\n`);
+      git(op.workspace, 'add', '-A'); git(op.workspace, 'commit', '-qm', `work for ${key}`);
+      heads[key] = git(op.workspace, 'rev-parse', 'HEAD');
+    }
     controller.applyOutcome(ctx, op, { class: 'result', receipt: { sessionId: op.session_id },
       value: { result: 'resolved', summary: 'implemented', headSha: heads[key], report: `# Report for ${key}` } });
     // AIWorks gives up on the step before it is verified: it ends as not done with a follow-up item.
@@ -48,7 +61,7 @@ test('a not-done step whose head is merged later closes its follow-up; an unmerg
     assert.equal(store.task(id, `${key}1`).head_sha, heads[key]);
   }
   const itemOf = (id) => store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'step-not-done'", id)[0].detail.item;
-  const items = { M: itemOf(camps.M), K: itemOf(camps.K) };
+  const items = { M: itemOf(camps.M), K: itemOf(camps.K), B: itemOf(camps.B) };
   now += controller.config.integrationPollMs + 1;
   await controller.tick();
   assert.equal(store.campaign(camps.M).control, 'finished');
@@ -66,4 +79,5 @@ test('a not-done step whose head is merged later closes its follow-up; an unmerg
   assert.deepEqual(store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind = 'not-done-merged'", camps.M).map((row) => row.detail.sha), [heads.M], 'recorded once');
   assert.equal(store.task(camps.M, 'M1').state, 'cancelled', 'the step itself is not rewritten');
   assert.equal(item(store, items.K).state, 'open', 'the unmerged step keeps its follow-up');
+  assert.equal(item(store, items.B).state, 'open', 'a base commit reported as the head is no work of the step');
 });
