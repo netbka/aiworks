@@ -58,12 +58,14 @@ function currentPointer(controller, declaration) {
 }
 const samePointer = (a, b) => Boolean(a && b) && a.project === b.project && a.repository === b.repository && a.source === b.source && a.approval === b.approval;
 
-export async function readProjectGrant(controller, ctx, declaration, repo, { fetch = true } = {}) {
+export async function readProjectGrant(controller, ctx, declaration, repo, { fetch = true, fresh = true } = {}) {
   const pointer = projectReleasePointer(controller, declaration);
   if (!pointer) return { reason: 'No standing release grant is registered for this project', absent: true };
-  // Fresh: the release job runs beside the controller's passes, and the base it reads authorizes a deploy. The read is
-  // bounded and runs before the fence (aiworks#140); a failed one authorizes nothing.
-  const base = fetch ? (await controller.fetchBase(repo.path, declaration.target.baseBranch, declaration.target.repository, { fresh: true })).sha : null;
+  // Fresh by default: the release job runs beside the controller's passes, and the base it reads authorizes a deploy. The
+  // release pass passes fresh: false and takes the base its pass shares, since it only plans a release, and the job reads
+  // the grant afresh before it deploys. The read is bounded and runs before the fence (aiworks#140); a failed one
+  // authorizes nothing.
+  const base = fetch ? (await controller.fetchBase(repo.path, declaration.target.baseBranch, declaration.target.repository, { fresh })).sha : null;
   if (fetch && !base) return { reason: 'The release base could not be fetched' };
   // The read was awaited: the registered pointer is resolved again, and a pointer removed, made ambiguous or changed
   // meanwhile authorizes nothing now; the next pass starts again from the current one.

@@ -137,6 +137,26 @@ test('the production continuation releases two finished projects exactly once an
     'the accepted successor delivers included work from an earlier campaign');
 });
 
+test('one release pass over many finished campaigns of a repository reads its base once, so it never holds the tick', { skip: skipWithoutSqlite }, async (t) => {
+  const r = rig(t), one = r.project('sample-one'); r.c = r.controller();
+  // Newer finished campaigns of the same repository are visited first; each of them used to fetch the base for itself.
+  for (let n = 0; n < 4; n++) {
+    r.clock += 1000;
+    const later = declaration({ campaignId: `later-${n}`, tasks: [{ id: 'T0', issue: 10 + n, title: 'later work', deliverable: 'commit',
+      goal: 'Later work', dependsOn: [], acceptance: ['artifact works'], references: ['AGENTS.md'] }] });
+    later.target = { ...one.decl.target };
+    campaignStart(r.store, later, r.clock);
+    r.store.run("UPDATE campaigns SET control='finished' WHERE id=?", later.campaignId);
+  }
+  let reads = 0;
+  const readBase = r.c.readBase.bind(r.c);
+  r.c.readBase = (...args) => { reads++; return readBase(...args); };
+  await releasePass(r.c);
+  assert.equal(r.c.releaseJob?.campaignId, one.id, 'the pass still reaches the campaign whose merge is the newest');
+  assert.equal(reads, 1, 'one network read of the base for the whole pass');
+  await r.c.releaseJob.promise;
+});
+
 test('ordinary worker changes cannot amend standing release authority and grant versions cannot regress or revive', (t) => {
   const r = rig(t), p = r.project('sample-grant'); r.c = r.controller();
   writeFileSync(join(p.repo, 'deploy/AGENTS.md'), JSON.stringify({ ...p.record, version: 2 }));
