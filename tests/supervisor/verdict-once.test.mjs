@@ -75,3 +75,21 @@ test('publication-text recovery retains one code gate and refuses stale head, ba
   assert.doesNotMatch(JSON.stringify([env.prs(), env.comments()]), /synthetic-owner/);
   assert.equal(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ops[2].workspace, encoding: 'utf8', windowsHide: true }).stdout.trim(), originalHead);
 });
+
+test('a refused verification text is rewritten by a fresh verifier even at the repair limit, and the head publishes', { skip: skipWithoutSqlite }, async (t) => {
+  const { Store } = await import('../../src/supervisor/store.mjs');
+  const { Controller } = await import('../../src/supervisor/controller.mjs');
+  const { campaignStart } = await import('../../src/supervisor/api.mjs');
+  const env = environment({ scenario: { implement: ['commit'], verify: ['accept-leak', 'accept'] } });
+  const store = new Store(join(env.dataDir, 'supervisor.db'));
+  const controller = new Controller({ store, config: env.config, dataDir: env.dataDir });
+  t.after(() => { controller.release(); store.close(); env.cleanup(); });
+  const decl = declaration({ tasks: [declaration().tasks[0]], limits: { maxRepairRounds: 0 } }), id = decl.campaignId;
+  campaignStart(store, decl);
+  await runUntil(controller, store, id, () => ['done', 'cancelled'].includes(store.task(id, 'T1').state) || store.task(id, 'T1').blocked);
+  const task = store.task(id, 'T1');
+  assert.equal(task.state, 'done', `published, not stopped: ${task.last_error}`);
+  assert.ok(task.pr_url);
+  const runs = store.all("SELECT kind FROM operations WHERE campaign_id = ? ORDER BY created_at", id).map((op) => op.kind);
+  assert.deepEqual(runs, ['implement', 'verify', 'verify'], 'one fresh verifier, no implementer run');
+});
