@@ -2454,20 +2454,37 @@ export class Controller {
    * the merged one is not merged. Then the task is recorded as the merge gate records a PR it finds already merged
    * (`merged`, reconciled, no merge call), its round's finding closes and it is done, so dependants proceed. Inside
    * fenced(). Returns whether the round ended.
+   *
+   * Once the round's repair is verified, the verified head is the repair, which was never pushed; the PR can still have
+   * been merged at the head the round started from (the finding's `verified`, the head the PR carried) while the repair
+   * was being verified. That head is checked too: the task is then done at the merged head, and the verified repair,
+   * never published, goes to a follow-up item instead of ending the merged step as not done.
    */
   endMergedRepair(ctx, decl, task, repoPath, baseSha, { read = true } = {}) {
-    const fresh = this.store.task(ctx.id, task.task_id), sha = fresh.verified_sha;
-    if (!this.integrationFinding(fresh) || fresh.state === 'done' || !fresh.pr_url || !/^[0-9a-f]{40}$/.test(sha ?? '') ||
-      !/^[0-9a-f]{40}$/.test(baseSha ?? '')) return false;
-    const inBase = (commit) => /^[0-9a-f]{40}$/.test(commit ?? '') &&
+    const fresh = this.store.task(ctx.id, task.task_id), finding = this.integrationFinding(fresh), repaired = fresh.verified_sha;
+    const valid = (commit) => /^[0-9a-f]{40}$/.test(commit ?? '');
+    if (!finding || fresh.state === 'done' || !fresh.pr_url || !valid(repaired) || !valid(baseSha)) return false;
+    const inBase = (commit) => valid(commit) &&
       gitA.isAncestor({ git: this.cmd.git, path: repoPath, ancestor: commit, descendant: baseSha });
-    const mergeCommit = read ? this.integratedAt(decl, fresh.pr_url, sha) : null;
-    if (!inBase(sha) && !inBase(mergeCommit)) return false;
+    let sha = null, mergeCommit = null;
+    for (const head of new Set([repaired, ...(valid(finding.verified) ? [finding.verified] : [])])) {
+      const merged = read ? this.integratedAt(decl, fresh.pr_url, head) : null;
+      if (inBase(head) || inBase(merged)) { sha = head; mergeCommit = merged; break; }
+    }
+    if (!sha) return false;
     const now = this.now();
     this.store.patch('tasks', { campaign_id: ctx.id, task_id: fresh.task_id }, fresh.version,
-      { state: 'done', findings: [], failures: {}, retry_at: null, last_error: null }, now);
+      { state: 'done', verified_sha: sha, findings: [], failures: {}, retry_at: null, last_error: null }, now);
     this.store.journal(ctx.id, 'merged', { task: fresh.task_id, sha, url: fresh.pr_url, mergeCommit, reconciled: true, requested: false }, now);
     this.mergeWaits.delete(`${ctx.id}:${fresh.task_id}:${sha}`);
+    if (sha !== repaired) {
+      const spec = specOf(this.store, ctx.id, fresh.task_id, decl), title = spec?.title ? `${fresh.task_id}: ${spec.title}` : fresh.task_id;
+      const item = followUp(this.store, { campaignId: ctx.id, taskId: fresh.task_id, key: `unpublished-${repaired.slice(0, 12)}`, now,
+        title: `Compare the unpublished repair of ${title}`.slice(0, 256),
+        body: `${fresh.pr_url} was merged at \`${sha}\` while AIWorks verified its integration repair \`${repaired}\`; that repair was never pushed and stays on the local task branch \`${gitA.branchName(ctx.id, fresh.task_id)}\`. Compare it with the base and plan again only what the base still lacks.`,
+        fallback: 'The pull request was merged while AIWorks verified its integration repair; that repair was never pushed. Compare it with the base and plan again only what the base still lacks.' });
+      this.store.journal(ctx.id, 'integration-repair-superseded', { task: fresh.task_id, merged: sha, repair: repaired, item: item.number }, now);
+    }
     this.log(`merged ${ctx.id}/${fresh.task_id} out of band: ${fresh.pr_url} at ${sha}; its integration repair round ends`);
     return true;
   }
@@ -3836,6 +3853,11 @@ export class Controller {
     const repo = this.repo(decl);
     const proof = task.verification?.codeEvidence;
     const rewriteBase = proof ? await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository, { fresh: true }) : null;
+    // A verified integration repair whose PR is gone may have lost a race with a merge of the head it repairs: the base
+    // is read before the fence so endMergedRepair can tell (aiworks#207). Fresh, not the pass's shared read: a merge
+    // after that read would leave its merge commit outside the base and stall the step.
+    const repairBase = spec.deliverable === 'commit' && this.integrationFinding(task)
+      ? await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository, { fresh: true }) : null;
     // What the PR and the push publish is the change from the commit the task started from to the verified head.
     // A task that never recorded the commit it started from is compared with its merge-base with the remote base; when
     // that cannot be read either, the guard refuses (fail closed).
@@ -3886,6 +3908,7 @@ export class Controller {
             return;
           }
           const existing = github.findOpenPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, branch });
+          if (!existing && integration && repairBase?.ok && this.endMergedRepair(ctx, decl, fresh, repo.path, repairBase.sha)) return;
           if (!existing) {
             const now = this.now();
             this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, fresh.version, { retry_at: null,

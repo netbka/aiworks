@@ -190,3 +190,27 @@ test('a newer head after an out-of-band merge of an older one keeps its repair r
   assert.equal(r.implementRuns(B), runs + 1);
   assert.deepEqual(r.mergeCalls(), [], 'the synthetic gh saw no merge call');
 });
+
+test('a PR merged at its published head while the repair is verified ends the step merged, never not done, and pushes nothing', async (t) => {
+  const r = rig(t);
+  const { b, mergedA, url } = await repairRoundOpen(r);
+  const repaired = r.implement(B, (dir) => {
+    assert.notEqual(tryGit(dir, 'merge', '-q', mergedA).status, 0);
+    writeFileSync(join(dir, 'shared.txt'), RESOLVED);
+    git(dir, 'add', '-A'); git(dir, 'commit', '-q', '--no-edit');
+  }, { commit: false });
+  await r.tick();
+  // While the repair is being verified, the owner merges the PR at the head it carries: GitHub closes it as merged.
+  const merged = r.ownerMerge(mergeB(b));
+  r.markMergedAt(b, merged);
+  r.verify(B);
+  await r.tick();
+  const done = r.store.task(B, 'B1');
+  assert.equal(done.state, 'done');
+  assert.equal(done.verified_sha, b, 'done at the head that was merged');
+  assert.deepEqual(r.journal(B, 'merged'), [{ task: 'B1', sha: b, url, mergeCommit: merged, reconciled: true, requested: false }]);
+  assert.deepEqual(r.journal(B, 'integration-repair-unpublished'), []);
+  assert.equal(r.journal(B, 'integration-repair-superseded')[0]?.repair, repaired, 'the unpublished repair goes to a follow-up');
+  assert.equal(r.env.remoteHead(branchName(B, 'B1')), b, 'the repair was never pushed');
+  assert.deepEqual(r.mergeCalls(), [], 'the synthetic gh saw no merge call');
+});
