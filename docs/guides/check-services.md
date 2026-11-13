@@ -46,6 +46,7 @@ A service of kind `remote-gate-http` must provide the following.
 | `GET /v1/jobs/<jobId>/result` | the result described below, once the state is terminal |
 | `GET /v1/jobs/<jobId>/artifacts/stdout.log` | the gate's output as text |
 | `POST /v1/jobs/<jobId>/cancel` with `{}` | cancels a pending or running job of this caller |
+| `POST /v1/sources` with a git bundle (only for a service configured with `"sources": true`) | `{ sourceId, projectId, commitSha, sizeBytes, sha256 }`; see [Unpublished commits as a bundle](#unpublished-commits-as-a-bundle) |
 
 States: `pending` (queued; `waiting.reason` may say why, such as too little free memory), `running`, then one terminal state: `passed`, `test_failure`, `environment_failure`, `cancelled` or `interrupted`.
 
@@ -154,20 +155,20 @@ When `serve` starts it checks the entries and puts the accepted ones in its own 
 
 ## Still open
 
-- A verifier gate of a commit that is not yet on origin, and a merge-refresh gate, cannot be offered. The service fetches only from origin. The bundle protocol below is a proposal, not built.
+- A commit that is not yet on origin can be offered only to a service configured with `"sources": true`, as a bundle (below).
 - Nothing in AIWorks calls `runOnService` automatically. An authorized caller that reads services and broker from the controller's `config.json`, offers commits and records receipts is a separate change.
 - Authentication schemes other than `bearer` and a named `header` are not supported.
 
-## Proposal: unpublished commits as a bundle
+## Unpublished commits as a bundle
 
-Status: proposal only, for separate review by both the service and AIWorks. Nothing here is implemented, and the client refuses every route not listed under [Routes](#routes).
+A service checks a commit that is not on origin yet (a verifier gate before publication, or a merge-refresh result) without write access to anything and without AIWorks's working tree. It is off unless the operator sets `"sources": true` on that service in `config.json`; the operator decides that the service may see the project's unpublished commits. A service without it is never sent a bundle: the gate runs on this computer.
 
-Goal: let a service check an exact commit that is not on origin yet (a verifier gate before publication, or a merge-refresh result) without giving the service write access or AIWorks's working tree.
+1. AIWorks (`bundleOf` in `src/supervisor/check-services.mjs`) bundles only a checkout whose `HEAD` is the exact commit, never a working tree: `git bundle create <file> HEAD --not --remotes=origin`. The bundle holds that one head and only the commits no origin branch has, at most 64 MiB.
+2. `POST /v1/sources` sends it as `application/x-git-bundle` with headers `X-Project-Id` and `X-Commit-Sha` and the same authentication as every other route.
+3. The service fetches origin into its own clone, runs `git bundle verify` there (every prerequisite must already be on origin), requires exactly one head equal to `X-Commit-Sha`, fetches it into a quarantine ref (`refs/aiworks-sources/<sourceId>`, never a branch, never pushed) and answers `{ sourceId, projectId, commitSha, sizeBytes, sha256 }`, with `sha256` the digest of the bytes it received. The same caller, project and commit give the same `sourceId`.
+4. AIWorks compares the receipt with what it sent: commit, project, size and digest. On any difference it submits no job and moves on.
+5. `POST /v1/jobs` names `sourceId`. The service accepts it only from the caller that uploaded it, for the same project and commit, and never for a custom profile. Everything else in the job, result and acceptance rules is unchanged: `requestedSha` and `commitSha` must still equal the commit.
+6. The service drops a source and its quarantine ref after seven days.
 
-1. `POST /v1/sources` with a body of `application/x-git-bundle`, created by `git bundle create - <base>..<sha>` where `<base>` is a commit the service already has from origin (the configured base branch tip), and headers `X-Commit-Sha: <sha>`, `X-Base-Sha: <base>`, `X-Project-Id: <projectId>`. The same authentication as every other route.
-2. The service verifies the bundle (`git bundle verify` against its own clone of origin), fetches it into a quarantine ref, checks that `<sha>` exists, that its history reaches `<base>`, and that the bundle holds no other refs. It answers `{ sourceId, commitSha, baseSha, sizeBytes, sha256 }`, with `sha256` the digest of the bundle bytes it received. AIWorks compares that digest and both commits with what it sent, and stops on any difference.
-3. `POST /v1/jobs` takes `sourceId` in place of fetching from origin. Everything else in the job, result and acceptance rules is unchanged: `requestedSha` and `commitSha` must still equal `<sha>`.
-4. Limits: a bundle size cap stated by the service (for example 64 MiB), one source per idempotency key, and deletion of the source with the job's workspace. A source never becomes a branch on any remote; the service never pushes.
-5. AIWorks side: build the bundle from the exact verified head only (never a working tree), record its digest in the receipt next to the job id, and never send a bundle for a repository the service does not list.
+A merge-refresh result is a local merge commit: its bundle carries every commit origin lacks, so both parents arrive with it.
 
-Open questions for that review: whether a bundle may contain commits that are not yet public under the project's disclosure rules; how long a service keeps a source; and whether a merge-refresh result (a merge commit created locally) needs both parents in the bundle.
