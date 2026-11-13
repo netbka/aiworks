@@ -4736,6 +4736,14 @@ export class Controller {
         key, campaignId, workLink(decl.target.trackingIssue), body, now);
       return;
     }
+    // A campaign that keeps its reports local (campaign.mjs reportPublication) keeps its notes local too: a blocker note
+    // quotes the step's own findings, which may carry the change request's text, and its caller reads state over the
+    // campaign API. The rows stay `local`, which drainOutbox never sends; gh is never called for them.
+    if (decl.reportPublication === 'local') {
+      this.store.run("INSERT OR IGNORE INTO outbox (key, campaign_id, target, body, state, attempts, updated_at) VALUES (?, ?, ?, ?, 'local', 0, ?)",
+        key, campaignId, `${decl.target.repository}#${decl.target.trackingIssue}`, body, now);
+      return;
+    }
     if (this.config.github?.comments === false) return;
     this.store.run("INSERT OR IGNORE INTO outbox (key, campaign_id, target, body, state, attempts, updated_at) VALUES (?, ?, ?, ?, 'pending', 0, ?)",
       key, campaignId, `${decl.target.repository}#${decl.target.trackingIssue}`, body, now);

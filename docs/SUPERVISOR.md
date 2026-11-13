@@ -1382,8 +1382,9 @@ no CORS answer; every other dashboard route retains its Host, Origin, CSRF and c
 - **Reports kept local.** A declaration may set `"reportPublication": "local"` (`campaign.mjs`; part of the immutable
   scope, so it cannot be dropped by an amendment without a new scope). The controller then posts none of the campaign's
   verified reports to the task issue: the task's own stored result is the only copy, read through the report route,
-  and the task's `prUrl` reads `aiworks-report:<campaignId>/<taskId>`. The short "passed independent verification"
-  note on the tracking issue still names the task, never the report text. Use it when a report quotes material that
+  and the task's `prUrl` reads `aiworks-report:<campaignId>/<taskId>`. The campaign's notes (published, ready,
+  blocked, base red) stay on this computer too, as `local` outbox rows that are never sent: nothing of the campaign is
+  posted to the tracking issue, since a blocker note can quote the request. Use it when a report quotes material that
   must not reach GitHub, such as a change request's own text. Critical test: `tests/supervisor/report-local.test.mjs`.
 - **Its own listener for a tunnel.** `config.json` `campaignApi.port` (1024..65535, read when the dashboard starts)
   starts a second listener in the dashboard process, on `127.0.0.1:<port>`, that serves the three campaign routes and
