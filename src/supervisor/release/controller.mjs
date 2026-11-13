@@ -453,7 +453,20 @@ function launch(c, ctx, row, repo) {
 }
 
 /** Called every tick, including after a campaign has finished implementation. */
+/**
+ * The release pass visits every registered and finished campaign. Without a shared read each of them fetched its base
+ * from the network for itself, so with hundreds of finished campaigns one pass took up to an hour and held the whole
+ * tick (the coordinator, leases, every campaign step) behind it (2026-11-13). The pass now shares one fetch per checkout
+ * and base, as the campaign passes do (Controller.fetchBase), its grant reads included; the release job reads the grant
+ * afresh before it deploys.
+ */
 export async function releasePass(c) {
+  const own = !c.baseFetches;
+  if (own) c.baseFetches = new Map();
+  try { return await releaseSteps(c); } finally { if (own) c.baseFetches = null; }
+}
+
+async function releaseSteps(c) {
   if (c.releaseJob || c.unmergedRevision()) return;
   c.releaseNextAt ??= new Map();
   for (const activity of c.store.all('SELECT * FROM release_activity')) {
@@ -498,7 +511,7 @@ export async function releasePass(c) {
         if (row) { launch(c, ctx, row, repo); return; }
         continue;
       }
-      const grant = await readProjectGrant(c, ctx, decl, repo);
+      const grant = await readProjectGrant(c, ctx, decl, repo, { fresh: false });
       if (grant.reason) { waiting(c, ctx, null, null, grant.reason); continue; }
       const newest = newestMerge(c, decl.target.projectId, repo, grant.base);
       if (newest?.campaign_id !== campaign.id) continue;
