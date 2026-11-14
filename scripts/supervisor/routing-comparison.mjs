@@ -24,7 +24,11 @@ const ratio = (a, b) => (b ? a / b : null);
 function measures(outcomes) {
   const reportedRuns = outcomes.reduce((sum, item) => sum + ((item.usage?.reportedRuns ?? 0) - (item.usage?.partialRuns ?? 0)), 0);
   const unknownRuns = outcomes.reduce((sum, item) => sum + ((item.usage?.unknownRuns ?? 0) + (item.usage?.partialRuns ?? 0)), 0);
-  const reported = outcomes.reduce((sum, item) => sum + (item.usage?.total ?? 0), 0);
+  const subtotals = outcomes.map(({ usage }) => {
+    if (!usage || usage.reportedRuns === usage.partialRuns) return 0;
+    return usage.completeTotal ?? (usage.partialRuns ? null : usage.total);
+  });
+  const reported = subtotals.includes(null) ? null : subtotals.reduce((sum, n) => sum + n, 0);
   const repairs = outcomes.filter((item) => Number.isFinite(item.repairRounds));
   return {
     accepted: outcomes.length,
@@ -34,7 +38,7 @@ function measures(outcomes) {
     repairRoundsPerAccepted: ratio(repairs.reduce((sum, item) => sum + item.repairRounds, 0), repairs.length),
     medianMsToVerified: median(outcomes.map((item) => item.msToVerified).filter(Number.isFinite)),
     // Over the runs that reported complete totals only; the unknown share travels with any claim.
-    tokensPerCompleteRun: reportedRuns ? reported / reportedRuns : null,
+    tokensPerCompleteRun: reported !== null ? ratio(reported, reportedRuns) : null,
     unknownTotalShare: ratio(unknownRuns, reportedRuns + unknownRuns),
     models: [...new Set(outcomes.map((item) => `${item.implementer ?? 'unknown'} ${item.model ?? 'unknown'}`))].sort(),
   };

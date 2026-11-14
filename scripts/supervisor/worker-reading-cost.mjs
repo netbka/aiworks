@@ -99,16 +99,16 @@ export function summarise(sessions) {
 /** Reported tokens of first runs and of repeated runs (a task's second and later implement or verify run). */
 export function repeatTokens(operations) {
   const seen = new Set();
-  const cost = { first: null, repeat: null, unknownRuns: 0 };
+  const totals = { first: null, repeat: null, unknownRuns: 0 };
   for (const op of [...operations].sort((a, b) => a.created_at - b.created_at)) {
     const key = `${op.campaign_id}/${op.task_id}/${op.kind}`;
-    const tokens = operationUsage({ ...op, outcome: JSON.parse(op.outcome || '{}') }).total;
+    const usage = operationUsage({ ...op, outcome: JSON.parse(op.outcome || '{}') });
     const bucket = seen.has(key) ? 'repeat' : 'first';
-    if (tokens === null) cost.unknownRuns++;
-    else cost[bucket] = (cost[bucket] ?? 0) + tokens;
+    if (usage.unknownRuns || usage.partialRuns) totals.unknownRuns++;
+    if (usage.total !== null) totals[bucket] = (totals[bucket] ?? 0) + usage.total;
     seen.add(key);
   }
-  return cost;
+  return totals;
 }
 
 function transcriptFinder(directory) {
@@ -145,7 +145,7 @@ function print(report) {
     console.log(`${role}: ${r.sessions} sessions; whole-file re-reads ${pct(r.rereads, r.chars)}, whole-file reads over 20 KB ${pct(r.bigReads, r.chars)}, full diffs ${pct(r.fullDiffs, r.chars)}`);
   }
   const { first, repeat, unknownRuns } = report.tokens;
-  console.log(`First-run tokens: ${first ?? 'unreported'}, repeated-run tokens: ${repeat ?? 'unreported'}, runs without a total: ${unknownRuns}`);
+  console.log(`First-run tokens: ${first ?? 'unreported'}, repeated-run tokens: ${repeat ?? 'unreported'}, runs without a complete total: ${unknownRuns}`);
 }
 
 async function main(argv) {

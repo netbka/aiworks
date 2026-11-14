@@ -288,7 +288,8 @@ export function formatTokensSummary(tokens) {
   if (tokens.cacheRead != null && tokens.cacheRead > 0) parts.push(`${tokens.cacheRead.toLocaleString()} cached`);
   if (tokens.cacheCreation != null) parts.push(`${tokens.cacheCreation.toLocaleString()} cache writes`);
   if (tokens.reasoning != null) parts.push(`${tokens.reasoning.toLocaleString()} reasoning`);
-  return [tokens.total == null ? 'total unreported' : `${tokens.total.toLocaleString()} tokens`, ...parts].join(', ');
+  const lowerBound = tokens.coverage && tokens.coverage.total < tokens.runs ? 'at least ' : '';
+  return [tokens.total == null ? 'total unreported' : `${lowerBound}${tokens.total.toLocaleString()} tokens`, ...parts].join(', ');
 }
 
 /**

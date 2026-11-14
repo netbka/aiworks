@@ -65,7 +65,7 @@ export function runIdentity(op) {
 
 const nullCounts = () => Object.fromEntries(fields.map((field) => [field, null]));
 const emptyCounts = () => ({ runs: 0, reportedRuns: 0, unknownRuns: 0, partialRuns: 0, total: null });
-export const emptyUsage = () => ({ ...emptyCounts(), models: [] });
+export const emptyUsage = () => ({ ...emptyCounts(), completeTotal: null, models: [] });
 
 function addFields(target, source) {
   for (const field of fields) if (source?.[field] != null) target[field] = (target[field] ?? 0) + source[field];
@@ -115,7 +115,9 @@ export function addOperation(summary, op) {
   }
   // A provider-wide total covers its model rows. Never add the aggregate and the rows to each other.
   const total = aggregate?.total ?? sum;
-  record(summary, Boolean(aggregate) || reported, aggregate?.total ?? (complete ? total : null));
+  const completeTotal = aggregate?.total ?? (complete ? total : null);
+  record(summary, Boolean(aggregate) || reported, completeTotal);
+  if (completeTotal !== null) summary.completeTotal = (summary.completeTotal ?? 0) + completeTotal;
   if (total !== null) summary.total = (summary.total ?? 0) + total;
   return summary;
 }
@@ -123,6 +125,7 @@ export function addOperation(summary, op) {
 export function mergeUsage(target, source) {
   if (!source) return target;
   addCounts(target, source);
+  if (source.completeTotal != null) target.completeTotal = (target.completeTotal ?? 0) + source.completeTotal;
   if (source.total !== null) target.total = (target.total ?? 0) + source.total;
   for (const row of source.models) {
     const { executor, model, tier, effort, role } = row;

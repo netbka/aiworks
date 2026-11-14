@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
 import { campaignStart, campaignStatus } from '../../src/supervisor/api.mjs';
 import { baselineReport } from '../../src/supervisor/baseline.mjs';
-import { launchMetadata, operationUsage, providerTokens } from '../../src/supervisor/token-usage.mjs';
+import { addOperation, launchMetadata, operationUsage, providerTokens } from '../../src/supervisor/token-usage.mjs';
 import { declaration } from './helpers.mjs';
 
 test('a restart preserves model attribution and partial counters without recharging retries or overlapping token categories', (t) => {
@@ -19,6 +19,8 @@ test('a restart preserves model attribution and partial counters without recharg
     usage: { input: 100, output: 10, total: 110 }, partialFields: ['input', 'output', 'total'] }] } } });
   assert.deepEqual([partial.total, partial.partialRuns, partial.unknownRuns, partial.models[0].coverage.input, partial.models[0].model],
     [110, 1, 0, 0, 'test[1m]']);
+  addOperation(partial, { executor_kind: 'codex-cli', outcome: { receipt: { usage: { total: 500 } } } });
+  assert.deepEqual([partial.total, partial.completeTotal], [610, 500]);
   const decl = declaration();
   campaignStart(store, decl, 1000);
   let seq = 0;
