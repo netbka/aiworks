@@ -1,5 +1,7 @@
 # Home v2: goals, steps and what landed
 
+[AW-021](../DECISIONS.md#aw-021---measure-model-usage-in-tokens) supersedes the historical monetary accounting in this design. Current usage is measured in tokens by model, tier, effort and role.
+
 **Privacy boundary:** this is a design, not an installation record. Every project, goal, step, amount and time below is fictional.
 
 **Status:** the data (part 1) is built in source: `GET /api/v2/home` and the `home` part of `/api/state` carry it. The screen (part 2) is built in source: `public/home.mjs` and `homeScreen()`, with answer changes (2.1) and goal links (2.2). Its check (part 3) was done on 11 November 2026.

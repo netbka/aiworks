@@ -1,3 +1,4 @@
+import { launchMetadata, operationUsage } from './token-usage.mjs';
 // AIWorks campaign controller. Deterministic code owns leases, timers, dispatch,
 // reconciliation and publication; models are called only as bounded workers/verifiers.
 // Idle ticks do not call models. Explicit integration gates refresh read-only Git refs at bounded intervals.
@@ -20,7 +21,7 @@ import { currentSettings, effectiveLimits, projectOf, protectedAreasFor, protect
 import { authorityChange, authorityPaths } from './release/authority-path.mjs';
 import { drainReleases, releasePass } from './release/controller.mjs';
 import { autoApplyPass } from './release/owner-apply.mjs';
-import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accountOf, accountWait, buildTaskSignature, clearAccountWait, formatSignatureLines, formatTokensUsage, includedOnlyRecord, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
+import { ACCOUNT_SCOPED, PROFILE_RECHECK_MS, accountAfterRun, accountFull, accountOf, accountWait, operationSignature, taskSignature, clearAccountWait, formatSignatureLines, includedOnlyRecord, laterWait, profileWaits, profilesEnabled, selectProfile, setAccountWait } from './accounts.mjs';
 import { BEYOND_RULE, beyondConstraint, domainOf, outsideWrites, recordedRemoteMerge, writeDomainConstraint } from './work-ownership.mjs';
 import { adjustFanout, admissionCheck, classifyRun, fanoutBound, hostCeiling, hostPressure, orderCandidates, schedulerEnabled, thrashing } from './scheduler.mjs';
 import { gatePauseOn, hostSamplerFor, pressureThresholds } from './host.mjs';
@@ -33,7 +34,7 @@ import { runnerIdentified, stopOwnedRun, readJsonIfExists, readTextIfExists, wri
 import { pendingInstructions, attachInstructions, decisionInstructions } from './instructions.mjs';
 import { answerGuidance, answersItself, autoOption, autoParts, carriedAnswers, decideGuidance, decisionId, isDecision, sendsBack, settledPoints, structuredDecision } from './decisions.mjs';
 import { deliverableWithDefects, mergedHead, OWNER_CHANGES, ownerChangesFinding } from './result-review.mjs';
-import { POLICY as ROUTING_POLICY, autoReceipt, indicators, policyInputs, priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
+import { AUTO_POLICIES, autoReceipt, indicators, policyInputs, priorAttempt, receiptInputs, staticReceipt } from './router.mjs';
 import { roleCatalog } from './governance.mjs';
 import { ACCEPT_TASK, PLAN_TASK, admitAmendment, settleAmendment, specOf as storedSpecOf, specsOf as storedSpecsOf, verifyChain } from './plan.mjs';
 import { ConflictError, FencedError } from './store.mjs';
@@ -366,7 +367,7 @@ const REVISION_CHECK_MS = 60_000;
 const ANCESTOR_LIST_LIMIT = 200_000;
 // How often stray Docker stacks of docker.cleanup repositories are looked for (host-safety.mjs), besides after one of their runs ends.
 const SWEEP_MS = 10 * 60_000;
-// routing-policy/1 history window (MODEL_ROUTING 5.3): the most recent attempts of one candidate and class, at most 90 days old.
+// automatic routing policy history window (MODEL_ROUTING 5.3): the most recent attempts of one candidate and class, at most 90 days old.
 const HISTORY_ATTEMPTS = 200;
 const HISTORY_MS = 90 * 24 * 60 * 60_000;
 const NOT_QUALITY = new Set(['quota', 'auth', 'spawn-failed', 'unavailable', 'admission-blocked', 'lost']);
@@ -1847,7 +1848,6 @@ export class Controller {
           detail: `operation ${op.id} finished under confirmed containment`, operation: op.id, at: now }, now);
       }
       const campaign = this.store.campaign(ctx.id);
-      if (verdict.receipt?.costUsd) this.store.patch('campaigns', { id: ctx.id }, campaign.version, { cost_usd: campaign.cost_usd + verdict.receipt.costUsd }, now);
       if (verdict.refunded) {
         const c = this.store.campaign(ctx.id);
         this.store.patch('campaigns', { id: ctx.id }, c.version, { runs_used: Math.max(0, c.runs_used - 1) }, now);
@@ -1884,7 +1884,7 @@ export class Controller {
         terminal: verdict.class === 'result' ? verdict.value?.result ?? verdict.value?.verdict ?? null : null,
         blocking: verdict.class === 'result' && Array.isArray(verdict.value?.findings) ? verdict.value.findings.filter((f) => f.severity === 'blocking').length : null,
         nativeSession: verdict.receipt?.nativeSessionId ?? null,
-        costUsd: verdict.receipt?.costUsd ?? null, usage: verdict.receipt?.usage ?? null,
+        usage: verdict.receipt?.usage ?? null,
       }, now);
       if (change.blocked) {
         this.enqueue(ctx.id, `${ctx.id}:${task.task_id}:blocked:${op.id}`, campaign.declaration,
@@ -1927,9 +1927,8 @@ export class Controller {
       }
       this.store.updateOperation(op.id, { state: 'finished', outcome: verdict }, now);
       const campaign = this.store.campaign(ctx.id);
-      if (verdict.receipt?.costUsd) this.store.patch('campaigns', { id: ctx.id }, campaign.version, { cost_usd: campaign.cost_usd + verdict.receipt.costUsd }, now);
       this.store.journal(ctx.id, 'operation-finished', { op: op.id, executor: fresh.executor_kind, class: verdict.class, detail: verdict.detail ?? null,
-        session: verdict.receipt?.sessionId ?? null, costUsd: verdict.receipt?.costUsd ?? null }, now);
+        session: verdict.receipt?.sessionId ?? null, usage: verdict.receipt?.usage ?? null }, now);
       // The PLAN row exists only for a planning step that a trigger dispatched (slice E5).
       const row = this.store.task(ctx.id, PLAN_TASK);
       if (row && verdict.class === 'result') {
@@ -2097,14 +2096,7 @@ export class Controller {
         // A report deliverable is bound to the revision it was produced against.
         const spec = specOf(this.store, ctx.id, task.task_id, decl);
         const head = spec.deliverable === 'commit' ? value.headSha : op.base_sha;
-        const chosenModel = op.routing?.decision?.chosen?.model ?? decl.executor?.model ?? op.executor_kind;
-        const effort = op.routing?.decision?.chosen?.effort ?? (decl.routing?.risk === 'high' || spec?.routing?.risk === 'high' ? 'high' : 'standard');
-        const signature = buildTaskSignature({
-          model: chosenModel,
-          executorKind: op.executor_kind,
-          effort,
-          usage: v.receipt?.usage,
-        });
+        const signature = operationSignature({ ...op, outcome: v });
         return { state: 'implemented', head_sha: head, result: value, signature, retry_at: null, last_error: null, failures: {} };
       }
       if (value.result === 'blocked-owner-reserved') {
@@ -2114,17 +2106,8 @@ export class Controller {
       return retry('evidence-unavailable', value.tried || value.summary, 'pending');
     }
     if (value.verdict === 'accepted') {
-      const spec = specOf(this.store, ctx.id, task.task_id, decl);
-      const verifierModel = op.routing?.decision?.chosen?.model ?? decl.executor?.model ?? op.executor_kind;
-      const verifierEffort = op.routing?.decision?.chosen?.effort ?? (decl.routing?.risk === 'high' || spec?.routing?.risk === 'high' ? 'high' : 'standard');
-      const verifierSig = buildTaskSignature({
-        model: verifierModel,
-        executorKind: op.executor_kind,
-        effort: verifierEffort,
-        usage: v.receipt?.usage,
-      });
-      const existingSig = task.signature ? (typeof task.signature === 'string' ? JSON.parse(task.signature) : task.signature) : null;
-      const signature = existingSig ? { ...existingSig, verifier: verifierSig } : { ...verifierSig, verifier: verifierSig };
+      const verifierSig = operationSignature({ ...op, outcome: v });
+      const signature = { ...taskSignature(this.store, task), verifier: verifierSig };
       return { state: 'verified', verified_sha: op.target_sha, verification: value, signature, retry_at: null, last_error: null, failures: {} };
     }
     if (value.verdict === 'rejected') {
@@ -2146,7 +2129,7 @@ export class Controller {
   /**
    * One more run on another declared provider for a step about to stop (#39): only in a chain, only when every counted
    * failure is an unusable result (invalid, exit without result, evidence unavailable), none a denial, all on the provider
-   * that just failed, while the campaign's run and cost limits allow another run, and once per step and head (journal
+   * that just failed, while the campaign's run limit allow another run, and once per step and head (journal
    * `worker-fallback`). The pin (`failures.fallback`) holds the next choice off that provider until one more attempt of
    * the step has finished. Returns the task change, or null to stop as before.
    */
@@ -2796,8 +2779,8 @@ export class Controller {
       this.fenced(ctx, () => {
         const c = this.store.campaign(ctx.id);
         this.store.patch('campaigns', { id: ctx.id }, c.version, { blocker: null }, this.now());
-        const { project, ...budget } = admissionBudget(this.store, c, this.now());
-        this.store.journal(ctx.id, 'blocker-cleared', { kind: 'budget', ...budget, projectBudgetVersion: project.version }, this.now());
+        const budget = admissionBudget(this.store, c);
+        this.store.journal(ctx.id, 'blocker-cleared', { kind: 'budget', ...budget }, this.now());
         const record = this.oi && c.blocker.fingerprint ? this.store.blocker(c.blocker.fingerprint) : null;
         if (record && record.status !== 'resolved') this.resolveBlocker(ctx, record, { trigger: 'state-change', probe: 'deterministic', pass: true,
           detail: `budget available under authorization v${c.authorization_version}`, at: this.now() }, this.now());
@@ -2823,8 +2806,7 @@ export class Controller {
     if (!ready) return;
     if (campaign.blocker) return;
     const budget = admissionBudget(this.store, campaign, now);
-    // Open runs are reserved against a cost ceiling while they last: with work still running, an exhausted budget is a
-    // wait for those results, not yet the owner's budget decision (the one-slot path never gets here with a run open).
+    // An open run can still finish or be refunded before the run cap needs a decision.
     if (this.sched && budget.exhausted && this.store.openOperations(ctx.id).length) return;
     if (this.sched && !budget.exhausted) {
       // Settle only: every runnable task without an open operation becomes a candidate; admit() starts at most one.
@@ -2839,11 +2821,8 @@ export class Controller {
       this.fenced(ctx, () => this.raiseBlocker(ctx, decl, {
         kind: 'budget', class: 'B3',
         reason: `${budget.exhausted} under authorization v${campaign.authorization_version}`,
-        requestedAction: budget.project.exhausted && budget.exhausted === budget.project.exhausted
-          ? `Decide whether to raise or remove the ${budget.exhausted.startsWith('monthly') ? 'monthly ' : ''}budget in this project's settings${budget.exhausted.startsWith('monthly') ? ', or wait for the next month' : ''}; work resumes by itself when it fits`
-          : 'Decide whether to raise limits.maxWorkerRuns or limits.maxCostUsd; if yes, start the campaign again with authorization.version + 1 and the new limits',
-      }, this.now(), { identity: budget.exhausted === budget.project.exhausted
-        ? `project:v${budget.project.version}:${budget.exhausted.split(' (')[0]}` : `v${campaign.authorization_version}:${budget.exhausted.split(' (')[0]}` }));
+        requestedAction: 'Increase limits.maxWorkerRuns in a new authorization version to allow more worker runs.',
+      }, this.now(), { identity: `v${campaign.authorization_version}:worker-run cap` }));
       return;
     }
     await this.dispatch(ctx, campaign, ready, opKind(ready));
@@ -3223,7 +3202,7 @@ export class Controller {
    * failed remains the fallback when it is the only eligible provider. Denials and rejections are not routed around:
    * this only reorders between providers the owner already authorized.
    *
-   * A campaign whose routing.mode is "auto" gets the routing-policy/1 decision instead (MODEL_ROUTING, slice R5): the
+   * A campaign whose routing.mode is "auto" gets the automatic routing policy decision instead (MODEL_ROUTING, slice R5): the
    * provider entry with the chosen candidate's model. Only dispatch passes `history` (read once per dispatch, never on an
    * idle tick), `session` (the new verifier session) and `hostUnavailable` (filter 5, run before the choice); the
    * fallback and admission calls decide eligibility only.
@@ -3275,7 +3254,7 @@ export class Controller {
     { identity: 'no-role-support' });
   }
 
-  /** The routing-policy/1 choice of executorChoice: the facts observed here once, routeAuto deciding from them alone. */
+  /** The automatic routing policy choice of executorChoice: the facts observed here once, routeAuto deciding from them alone. */
   routedChoice(decl, task, now, { facts, waits, session, history, hostUnavailable }) {
     const stage = task.state === 'implemented' ? 'verify' : 'implement';
     const spec = specOf(this.store, decl.campaignId, task.task_id, decl);
@@ -3373,16 +3352,16 @@ export class Controller {
   /**
    * Aggregated history of routed attempts on this host (MODEL_ROUTING 5.2 and 5.3): per candidate and class, the most recent
    * HISTORY_ATTEMPTS counted attempts at most HISTORY_MS old, across all campaigns. Refunded runs and operations without a
-   * routing-policy/1 receipt (no recorded class) are not counted, nor outcomes that are never a quality signal (5.4: a
+   * automatic routing policy receipt (no recorded class) are not counted, nor outcomes that are never a quality signal (5.4: a
    * limit, a login, a launch or host failure, a lost run, a denial). The dispatching task's own attempts are left out too:
    * they drive its escalation, and counting them here as well would move it up after one poor result instead of two.
-   * Only Claude reports dollars; other costs stay unknown.
+   * Only complete token totals enter comparisons.
    */
   routingHistory(candidates, classes, now, { campaignId, taskId }) {
     const rows = this.store.all(`SELECT id, campaign_id, task_id, kind, executor_kind, outcome, routing, base_sha, target_sha, created_at, updated_at
       FROM operations WHERE state = 'finished' AND kind IN ('implement', 'verify') AND routing IS NOT NULL AND created_at >= ?
       AND NOT (campaign_id = ? AND task_id = ?) ORDER BY created_at DESC, id DESC`, now - HISTORY_MS, campaignId, taskId)
-      .filter((op) => op.routing?.policy === ROUTING_POLICY && op.routing.decision?.chosen && op.outcome && !op.outcome.refunded &&
+      .filter((op) => AUTO_POLICIES.includes(op.routing?.policy) && op.routing.decision?.chosen && op.outcome && !op.outcome.refunded &&
         !NOT_QUALITY.has(op.outcome.class) && !priorAttempt(op).denied);
     const reviews = new Map();
     const accepted = (op) => {
@@ -3402,10 +3381,10 @@ export class Controller {
           op.routing.decision.chosen.model === candidate.model && op.routing.decision.indicators?.risk === risk &&
           op.routing.decision.indicators?.complexity === complexity).slice(0, HISTORY_ATTEMPTS);
         if (!attempts.length) continue;
-        const known = candidate.kind === 'claude-cli' ? attempts.map((op) => op.outcome.receipt?.costUsd).filter(Number.isFinite) : [];
+        const known = attempts.map(operationUsage).filter((run) => !run.partialRuns && !run.unknownRuns && run.total !== null).map((run) => run.total);
         const times = attempts.map((op) => op.updated_at - op.created_at).sort((a, b) => a - b);
         out.push({ kind: candidate.kind, model: candidate.model, class: cls, attempts: attempts.length, accepted: attempts.filter(accepted).length,
-          cost: { unit: candidate.kind === 'claude-cli' ? 'usd-reported' : 'tokens', known: known.length, unknown: attempts.length - known.length,
+          cost: { unit: 'tokens', known: known.length, unknown: attempts.length - known.length,
             mean: known.length ? known.reduce((sum, n) => sum + n, 0) / known.length : null },
           medianMs: times[Math.floor(times.length / 2)], window: { fromOp: attempts.at(-1).id, toOp: attempts[0].id, to: attempts[0].updated_at } });
       }
@@ -3981,7 +3960,7 @@ export class Controller {
         id: opId, campaign_id: ctx.id, task_id: task.task_id, kind, seq, idempotency_key: opId, lease_generation: ctx.generation,
         state: 'recorded', session_id: sessionId, run_dir: runDir, workspace, base_sha: revision, target_sha: targetSha,
         report_digest: reportDigest, packet, packet_digest: digest, outcome: null, created_at: now, updated_at: now,
-        executor_kind: executor.kind, routing: choice.receipt, publication_rewrite: proof,
+        executor_kind: executor.kind, routing: { ...choice.receipt, launch: launchMetadata(invocation.argv, executor.kind) }, publication_rewrite: proof,
         verification_base_sha: kind === 'verify' && spec.deliverable === 'commit' ? baseSha : null,
         ...(profile ? { account_identity: profile.account } : {}),
       });
@@ -4528,7 +4507,7 @@ export class Controller {
       '### Independent verification',
       '',
       ...(verificationElsewhere ? ['Accepted. The full independent verification is posted as a separate supervisor comment on this issue (split to stay within the GitHub body limit).'] : this.verificationLines(task)),
-      ...(task.signature ? ['', ...formatSignatureLines(task.signature)] : []),
+      ...(task.signature ? ['', ...formatSignatureLines(taskSignature(this.store, task))] : []),
       '',
       'Generated by the AIWorks delivery supervisor.',
     ].join('\n');
@@ -4568,7 +4547,7 @@ export class Controller {
       '### Gate',
       '',
       ...this.gateLines(task),
-      ...(task.signature ? ['', ...formatSignatureLines(task.signature)] : []),
+      ...(task.signature ? ['', ...formatSignatureLines(taskSignature(this.store, task))] : []),
       '',
       `${local ? 'Recorded in the AIWorks work list' : 'Opened'} by the supervisor after independent verification. Not merged and not deployed: merge and release follow ${decl.target.repository}'s release gate.`,
       '',

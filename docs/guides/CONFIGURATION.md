@@ -53,7 +53,7 @@ The example's `permissionMode` is `dontAsk`, the only coordinator mode accepted.
 
 Sending `message` before enabling/configuring the coordinator still stores a receipt but does not cause it to be read. `messages` shows whether configuration is valid and whether a request is received, read or answered. The supervisor must be running from merged code to process it. Answers may be posted to GitHub, so do not put private customer data or secrets in messages.
 
-## Optional features and budgets
+## Optional features and run limits
 
 Do not enable every optional feature to follow the quickstart. CI repair, integration repair, notification delivery and release controls have separate contracts and rollout state in [the runbook](../SUPERVISOR.md) and [Status](../STATUS.md). The sections below cover the settings that are easy to confuse. A default in source is not evidence that an installation has a feature on; check your own `config.json` and status.
 
@@ -64,7 +64,7 @@ The scheduler is off unless `scheduler.enabled` is exactly `true`; an absent key
 | Field | Meaning |
 | --- | --- |
 | `scheduler.enabled` | `true` turns on admission by capacity, write domains and account waits. |
-| `scheduler.maxWorkers` | Whole number 1 to 32: most worker operations at once on this host. Without it the ceiling is `clamp(floor(cores / 4), 1, 4)`. It only delays work; it is not a run, cost or budget limit. |
+| `scheduler.maxWorkers` | Whole number 1 to 32: most worker operations at once on this host. Without it the ceiling is `clamp(floor(cores / 4), 1, 4)`. It only delays work; it is not a worker-run limit. |
 | `scheduler.pressure` | Optional overrides of the memory, CPU, disk, port, Docker and late-heartbeat thresholds (`maxPortShare` 0.5 of the TCP or UDP ephemeral ports, `maxContainers` 12 running containers, `probeStaleMs`, `pauseAtGates` 1: no new worker while that many runs of the gate helper hold a slot or wait for a web task run's browser session, counting implementers' affected-test runs and the supervisor's own base-check and refresh gates as well as full gates, each only while its lock was rewritten within two minutes and for at most two hours from its start; a gate waits at most 30 minutes for a web task run's browser session; 99 turns all of it off, as does the scheduler being off). A value that is not a positive number keeps its default. Pressure only refuses new admission. Ports and Docker are read by `serve` once a minute, outside the admission pass; Docker only when `docker.gate` is on. |
 | `docker.gate` | Windows, off by default. **Not ready to switch on:** the gate's named pipe cannot pass the end of a client's input, so `docker exec -i` or `docker run -i` with redirected input hangs through it. When on, `serve` starts the Docker gate (`cli.mjs docker-gate`, log in `<data>/docker-gate.log`) and sets `DOCKER_HOST` to its named pipe for every process it starts. The gate passes every Docker request on unchanged, except that a container start of a new Compose project, a Testcontainers session or a loose container, and a classic-builder image build (`POST /build`; BuildKit builds are not held), wait while `docker.slots` of them already run, for at most 10 minutes. Workers are never held: only their Docker work waits. The gate finds the engine through `docker.engine` (a `npipe://` address), an operator `DOCKER_HOST` naming a pipe, or the current Docker context; any other `DOCKER_HOST` keeps it off. A gate that does not start leaves Docker direct and is logged. |
 | `docker.slots` | Docker Compose projects (or loose containers and builds) that may run at once on the computer, 1 to 16, default 2. Containers of a project that already runs never wait. |
@@ -112,8 +112,8 @@ Only `script` (a repository-relative `.mjs`, `.cjs` or `.js` path) and optional 
 
 Telegram alerts take only references into your own secret store for the bot credential and the chat, never their values ([runbook section 10](../SUPERVISOR.md#10-owner-intervention-core)). Recording needs `ownerIntervention.enabled`; sending also needs `ownerIntervention.deliver` and a ready transport.
 
-### Budgets
+### Run limits
 
-The report example includes an **illustrative, explicit** run/retry budget for someone choosing a bounded first experiment. It is not a new product-wide default or a price quote. The product's default does not impose campaign run/cost ceilings. A dollar ceiling additionally requires the documented handling for unreported cost; a missing receipt is never free usage. Verify eligibility and compatibility before changing limits or providers on an existing campaign.
+The example sets an explicit worker-run and retry limit. Token usage is recorded independently of the admission limits.
 
 No configuration field in this guide grants Auto Release. Keep the project in Review only unless its separately accepted release workflow and destination-specific authorization actually permit otherwise.

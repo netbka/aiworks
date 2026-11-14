@@ -1,6 +1,6 @@
-// Cost and outcome baseline (docs/design/MODEL_ROUTING.md section 8, slice R1). Read-only: it only runs SELECTs on a
-// store the caller opened read-only, and makes no model, network or GitHub call. Costs stay in the unit each provider
-// reports: dollars, tokens, or unknown. Unknown is counted as unknown, never as zero, and units are never added together.
+// Read-only report over operation receipts and verification outcomes.
+import { addOperation, emptyUsage, hasReportedUsage, mergeUsage, planningUsage, runIdentity } from './token-usage.mjs';
+import { runNotCounted } from './adapters/executors.mjs';
 import { indicators } from './router.mjs';
 import { specOf } from './plan.mjs';
 
@@ -17,45 +17,7 @@ export function taskClass(task, { sensitivePaths = [] } = {}) {
   return { risk, complexity };
 }
 
-/**
- * What an operation recorded about its own routing (operations.routing, slice R2): the model of the provider its receipt
- * chose, when that is the provider that ran, and the class a routing-policy/1 receipt decided with. An operation recorded
- * before receipts, or whose receipt chose another provider, has neither.
- */
-function recordedRouting(op, kind) {
-  const decision = op.routing?.decision;
-  const chosen = decision?.chosen?.kind === kind ? decision.chosen : null;
-  const cls = decision?.indicators;
-  return { model: chosen ? { value: chosen.model ?? null } : null, cls: cls?.risk && cls?.complexity ? { risk: cls.risk, complexity: cls.complexity } : null };
-}
-
-/** The model an older operation ran with, from the executor declared when it was recorded: inferred, as it recorded none.
- * A provider without a declared model ran its CLI default (unknown). */
-function modelOf(executor, kind) {
-  const providers = executor?.kind === 'cli-chain' ? executor.providers ?? [] : [executor];
-  const provider = providers.find((item) => item?.kind === kind);
-  return provider?.model ?? null;
-}
-
-const MODEL_UNKNOWN = 'cli-default (unknown)';
-
-function emptyCost() {
-  return { usd: { reported: null, reportedRuns: 0, unknownRuns: 0 }, tokens: {} };
-}
-
-/** Adds one run's receipt to a cost record: dollars only when reported, tokens per provider, never mixed. */
-function addCost(cost, kind, receipt) {
-  if (Number.isFinite(receipt?.costUsd)) {
-    cost.usd.reported = (cost.usd.reported ?? 0) + receipt.costUsd;
-    cost.usd.reportedRuns += 1;
-  } else cost.usd.unknownRuns += 1;
-  const usage = receipt?.usage;
-  if (!usage) return;
-  const tokens = cost.tokens[kind] ??= { runs: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0, inputIncludesCacheReadRuns: 0 };
-  tokens.runs += 1;
-  for (const key of ['input', 'output', 'cacheRead', 'cacheCreation']) if (Number.isFinite(usage[key])) tokens[key] += usage[key];
-  if (usage.inputIncludesCacheRead) tokens.inputIncludesCacheReadRuns += 1;
-}
+const MODEL_UNKNOWN = 'unknown';
 
 const median = (values) => {
   if (!values.length) return null;
@@ -65,10 +27,7 @@ const median = (values) => {
 };
 
 export const CANNOT_MEASURE = [
-  'Dollars for codex-cli, cursor-cli and agy-cli: they report none, so their cost and any total that includes them is unknown.',
-  'Any cursor-cli usage: it reports nothing.',
-  'What the owner actually pays: dollars are as reported by the CLI, never "spent".',
-  'The model and class of an operation recorded before routing receipts: they are inferred from the declaration, executor-amended entries and the task spec.',
+  'Unreported token categories, models, tiers and effort remain unknown.',
   'Defects found after acceptance and defects a verifier missed: they are in GitHub, not in the store.',
   'Exact provider wait duration: the journal records only when a wait starts.',
 ];
@@ -80,31 +39,25 @@ export const CANNOT_MEASURE = [
 export function baselineReport(store, { since = null, now = Date.now() } = {}) {
   const from = since ?? 0;
   const campaigns = new Map(store.all('SELECT id, declaration FROM campaigns').map((row) => [row.id, row.declaration]));
-  const amendments = new Map();
-  for (const entry of store.all("SELECT campaign_id, at, detail FROM journal WHERE kind = 'executor-amended' ORDER BY seq")) {
-    if (!amendments.has(entry.campaign_id)) amendments.set(entry.campaign_id, []);
-    amendments.get(entry.campaign_id).push(entry);
-  }
-  // The executor in force when an operation was recorded: the `from` of the first later amendment, else today's.
-  const executorAt = (campaignId, at) => amendments.get(campaignId)?.find((entry) => entry.at > at)?.detail?.from
-    ?? campaigns.get(campaignId)?.executor;
   const taskDecl = (campaignId, taskId) => specOf(store, campaignId, taskId, campaigns.get(campaignId));
 
   const operations = store.all('SELECT * FROM operations WHERE created_at >= ? ORDER BY created_at, seq', from).map((op) => {
     const kind = op.executor_kind ?? 'claude-cli';
-    const recorded = recordedRouting(op, kind);
-    const model = recorded.model ? recorded.model.value : modelOf(executorAt(op.campaign_id, op.created_at), kind);
+    const recorded = op.routing?.decision?.indicators;
+    const recordedClass = recorded?.risk && recorded?.complexity ? { risk: recorded.risk, complexity: recorded.complexity } : null;
+    const identity = runIdentity(op);
+    const { model, tier, effort } = identity;
     const task = taskDecl(op.campaign_id, op.task_id);
-    const cls = recorded.cls ?? taskClass(task, { sensitivePaths: campaigns.get(op.campaign_id)?.routing?.sensitivePaths ?? [] });
+    const cls = recordedClass ?? taskClass(task, { sensitivePaths: campaigns.get(op.campaign_id)?.routing?.sensitivePaths ?? [] });
     const outcome = op.outcome ?? null;
     const value = outcome?.class === 'result' ? outcome.value ?? null : null;
     // The head an implement run produced; a report deliverable is bound to its base, as the controller does.
     const produced = op.kind === 'implement' && value?.result === 'resolved' ? task?.deliverable === 'commit' ? value.headSha ?? null : op.base_sha : null;
-    return { op, kind, model: model ?? MODEL_UNKNOWN, modelKnown: model !== null, modelRecorded: Boolean(recorded.model), classRecorded: Boolean(recorded.cls),
+    return { op, kind, tier, effort, model: model ?? MODEL_UNKNOWN, modelKnown: model !== null, modelRecorded: model !== null, classRecorded: Boolean(recordedClass),
       task, ...cls, outcome, value, produced };
   });
-  const counted = operations.filter((item) => item.op.state === 'finished' && !item.outcome?.refunded);
-  const refunded = operations.filter((item) => item.outcome?.refunded);
+  const counted = operations.filter((item) => item.op.state === 'finished' && !(item.outcome?.refunded || runNotCounted(item.outcome)));
+  const refunded = operations.filter((item) => item.op.state === 'finished' && (item.outcome?.refunded || runNotCounted(item.outcome)));
 
   // A verify run names the head it checked in target_sha; that links it to the implement run that produced the head.
   const verdicts = new Map();
@@ -121,10 +74,10 @@ export function baselineReport(store, { since = null, now = Date.now() } = {}) {
 
   const groups = new Map();
   for (const item of counted) {
-    const key = [item.op.kind, item.risk, item.complexity, item.kind, item.model].join('\0');
+    const key = [item.op.kind, item.risk, item.complexity, item.kind, item.model, item.tier, item.effort].join('\0');
     const group = groups.get(key) ?? { stage: item.op.kind, risk: item.risk, complexity: item.complexity, executor: item.kind,
-      model: item.model, modelKnown: item.modelKnown, modelRecordedRuns: 0, classRecordedRuns: 0, runs: 0, accepted: 0, rejected: 0, unusable: 0, unreviewed: 0,
-      failuresByClass: {}, runMs: [], ...emptyCost() };
+      model: item.model, tier: item.tier, effort: item.effort, modelKnown: item.modelKnown, modelRecordedRuns: 0, classRecordedRuns: 0, runs: 0, accepted: 0, rejected: 0, unusable: 0, unreviewed: 0,
+      failuresByClass: {}, runMs: [], usage: emptyUsage() };
     groups.set(key, group);
     group.runs += 1;
     group.modelRecordedRuns += item.modelRecorded ? 1 : 0;
@@ -134,7 +87,7 @@ export function baselineReport(store, { since = null, now = Date.now() } = {}) {
       : item.op.kind === 'implement' && item.value?.result !== 'resolved' ? item.value?.result ?? 'unknown' : null;
     if (failure) group.failuresByClass[failure] = (group.failuresByClass[failure] ?? 0) + 1;
     group.runMs.push(item.op.updated_at - item.op.created_at);
-    addCost(group, item.kind, item.outcome?.receipt);
+    addOperation(group.usage, item.op);
   }
 
   // Accepted outcomes: a task whose head a verifier accepted. Attributed to the class and to the run that produced the head.
@@ -153,19 +106,19 @@ export function baselineReport(store, { since = null, now = Date.now() } = {}) {
     if (!accept) continue;
     const implement = items.filter((item) => item.op.kind === 'implement');
     const producer = implement.findLast((item) => item.produced === accept.op.target_sha);
-    const cost = emptyCost();
-    for (const item of items) addCost(cost, item.kind, item.outcome?.receipt);
+    const usage = emptyUsage();
+    for (const item of items) addOperation(usage, item.op);
     const outcome = {
       campaignId: accept.op.campaign_id, taskId: accept.op.task_id, risk: accept.risk, complexity: accept.complexity,
       implementer: producer?.kind ?? null, model: producer?.model ?? null, verifiedSha: accept.op.target_sha,
       implementAttempts: implement.length, verifyRuns: items.filter((item) => item.op.kind === 'verify').length,
       firstPass: implement[0] === producer, repairRounds: taskRows.get(key)?.repair_rounds ?? null,
-      msToVerified: accept.op.updated_at - items[0].op.created_at, ...cost,
+      msToVerified: accept.op.updated_at - items[0].op.created_at, usage,
     };
     acceptedTasks.push(outcome);
     const groupKey = [outcome.risk, outcome.complexity, outcome.implementer, outcome.model].join('\0');
     const group = outcomeGroups.get(groupKey) ?? { risk: outcome.risk, complexity: outcome.complexity, implementer: outcome.implementer,
-      model: outcome.model, accepted: 0, firstPass: 0, implementAttempts: 0, verifyRuns: 0, repairRounds: 0, msToVerified: [], ...emptyCost() };
+      model: outcome.model, accepted: 0, firstPass: 0, implementAttempts: 0, verifyRuns: 0, repairRounds: 0, msToVerified: [], usage: emptyUsage() };
     outcomeGroups.set(groupKey, group);
     group.accepted += 1;
     group.firstPass += outcome.firstPass ? 1 : 0;
@@ -173,13 +126,14 @@ export function baselineReport(store, { since = null, now = Date.now() } = {}) {
     group.verifyRuns += outcome.verifyRuns;
     group.repairRounds += outcome.repairRounds ?? 0;
     group.msToVerified.push(outcome.msToVerified);
-    for (const item of items) addCost(group, item.kind, item.outcome?.receipt);
+    for (const item of items) addOperation(group.usage, item.op);
   }
 
-  const totals = emptyCost();
-  for (const item of counted) addCost(totals, item.kind, item.outcome?.receipt);
-  const refundedCost = emptyCost();
-  for (const item of refunded) addCost(refundedCost, item.kind, item.outcome?.receipt);
+  const totals = emptyUsage();
+  for (const item of counted) addOperation(totals, item.op);
+  const refundedUsage = emptyUsage();
+  for (const item of refunded) if (hasReportedUsage(item.op)) addOperation(refundedUsage, item.op);
+  mergeUsage(totals, refundedUsage);
 
   const waits = { fallbacks: {}, unavailable: {}, refundedRuns: 0 };
   for (const entry of store.all("SELECT kind, detail FROM journal WHERE at >= ? AND kind IN ('executor-fallback', 'executor-unavailable', 'run-refunded') ORDER BY seq", from)) {
@@ -192,30 +146,23 @@ export function baselineReport(store, { since = null, now = Date.now() } = {}) {
     } else waits.refundedRuns += 1;
   }
 
-  const coordinator = { runs: 0, usd: { reported: null, reportedRuns: 0, unknownRuns: 0 } };
-  for (const run of store.all('SELECT cost_usd FROM coordinator_runs WHERE created_at >= ?', from)) {
-    coordinator.runs += 1;
-    if (Number.isFinite(run.cost_usd)) {
-      coordinator.usd.reported = (coordinator.usd.reported ?? 0) + run.cost_usd;
-      coordinator.usd.reportedRuns += 1;
-    } else coordinator.usd.unknownRuns += 1;
-  }
+  const coordinator = planningUsage(store, { since: from });
 
   const reading = readingReport(store, { from, campaigns, operations, acceptedTasks });
 
   return {
-    report: 'aiworks-baseline/2',
+    report: 'aiworks-baseline/3',
     generatedAt: new Date(now).toISOString(),
     window: { since: since === null ? null : new Date(since).toISOString(), until: new Date(now).toISOString() },
     store: store.identity,
-    units: 'usd is as reported by the CLI, never spent; tokens are per provider; unknown is never zero; units are never added together',
+    units: 'provider-reported tokens; null means unreported; coverage gives the number of runs reporting each counter',
     operations: { counted: counted.length, refunded: refunded.length, open: operations.filter((item) => item.op.state !== 'finished' && item.op.state !== 'abandoned').length,
       abandoned: operations.filter((item) => item.op.state === 'abandoned').length },
     classes: [...groups.values()].map(({ runMs, ...group }) => ({ ...group, medianRunMs: median(runMs) })),
     acceptedOutcomes: [...outcomeGroups.values()].map(({ msToVerified, ...group }) => ({ ...group, medianMsToVerified: median(msToVerified) })),
     tasks: acceptedTasks,
     totals,
-    refunded: { runs: refunded.length, ...refundedCost },
+    refunded: { runs: refunded.length, usage: refundedUsage },
     waits,
     coordinator,
     reading,
@@ -223,7 +170,7 @@ export function baselineReport(store, { since = null, now = Date.now() } = {}) {
   };
 }
 
-// ---- Scoped reading (docs/design/SCOPED_READING.md section 8, slice READ3). Additive in aiworks-baseline/2. ----
+// ---- Scoped reading (docs/design/SCOPED_READING.md section 8, slice READ3). Additive in aiworks-baseline/3. ----
 
 export const MIN_COHORT_TASKS = 5;
 const READING_KINDS = ['reference-section-resolved', 'cite-covered', 'section-miss', 'unreferenced-doc', 'reading-guide-extended'];
@@ -242,24 +189,17 @@ export function mostlyAnchored(declaration) {
   return tasks.length > 0 && anchored.length * 2 > tasks.length;
 }
 
-/** One cohort's accepted outcomes: cost in its own units, and dollars and repair rounds per accepted outcome. */
+/** One cohort's accepted outcomes: reported tokens and repair rounds per accepted outcome. */
 function cohort(campaignIds, outcomes) {
   const finished = outcomes.filter((outcome) => campaignIds.has(outcome.campaignId));
-  const cost = emptyCost();
+  const usage = emptyUsage();
   let repairRounds = 0, repairKnown = 0;
   for (const outcome of finished) {
-    if (outcome.usd.reported !== null) cost.usd.reported = (cost.usd.reported ?? 0) + outcome.usd.reported;
-    cost.usd.reportedRuns += outcome.usd.reportedRuns;
-    cost.usd.unknownRuns += outcome.usd.unknownRuns;
-    for (const [kind, tokens] of Object.entries(outcome.tokens)) {
-      const sum = cost.tokens[kind] ??= { runs: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0, inputIncludesCacheReadRuns: 0 };
-      for (const key of Object.keys(sum)) sum[key] += tokens[key] ?? 0;
-    }
+    mergeUsage(usage, outcome.usage);
     if (Number.isFinite(outcome.repairRounds)) { repairRounds += outcome.repairRounds; repairKnown += 1; }
   }
-  return { campaigns: campaignIds.size, finishedTasks: finished.length, ...cost,
-    // Dollars per outcome only when every run reported dollars: one unknown run makes the whole figure unknown.
-    usdPerAcceptedOutcome: finished.length && cost.usd.unknownRuns === 0 && cost.usd.reported !== null ? cost.usd.reported / finished.length : null,
+  return { campaigns: campaignIds.size, finishedTasks: finished.length, usage,
+    tokensPerAcceptedOutcome: finished.length && !usage.unknownRuns && !usage.partialRuns && usage.total !== null ? usage.total / finished.length : null,
     repairRoundsPerTask: repairKnown ? repairRounds / repairKnown : null };
 }
 
@@ -320,13 +260,13 @@ function readingReport(store, { from, campaigns, operations, acceptedTasks }) {
   };
 }
 
-const usdText = (usd) => usd.reported === null ? 'unknown' : `$${usd.reported.toFixed(2)}${usd.unknownRuns ? ` + ${usd.unknownRuns} unknown` : ''}`;
+const tokenText = (usage) => `${usage.total ?? 'unknown'} (${usage.unknownRuns + usage.partialRuns} incomplete)`;
 
 /** The short table printed before the JSON report. */
 export function formatBaseline(report) {
-  const rows = [['stage', 'risk', 'size', 'executor', 'model', 'runs', 'accepted', 'rejected', 'unusable', 'reported usd']];
+  const rows = [['stage', 'risk', 'size', 'executor', 'model', 'tier', 'effort', 'runs', 'accepted', 'rejected', 'unusable', 'reported tokens']];
   for (const group of report.classes) {
-    rows.push([group.stage, group.risk, group.complexity, group.executor, group.model, group.runs, group.accepted, group.rejected, group.unusable, usdText(group.usd)]);
+    rows.push([group.stage, group.risk, group.complexity, group.executor, group.model, group.tier ?? 'unknown', group.effort ?? 'unknown', group.runs, group.accepted, group.rejected, group.unusable, tokenText(group.usage)]);
   }
   const widths = rows[0].map((_, column) => Math.max(...rows.map((row) => String(row[column]).length)));
   const lines = rows.map((row) => row.map((cell, column) => String(cell).padEnd(widths[column])).join('  ').trimEnd());
@@ -335,7 +275,7 @@ export function formatBaseline(report) {
     `Baseline ${report.window.since ?? 'all time'} to ${report.window.until} (store ${report.store?.path})`,
     ...lines,
     `${accepted} accepted outcomes; ${report.operations.counted} runs counted, ${report.refunded.runs} refunded runs excluded.`,
-    `Reported usd ${usdText(report.totals.usd)}; coordinator ${usdText(report.coordinator.usd)}. Reported, never spent.`,
+    `Reported tokens: workers ${tokenText(report.totals)}, coordinator ${tokenText(report.coordinator)}.`,
     ...readingLines(report.reading),
   ].join('\n');
 }
@@ -351,6 +291,6 @@ function readingLines(reading) {
   return [
     `Reading cohorts (${counts}):`,
     ...[['marked sections', anchored], ['whole documents', unanchored]].map(([name, item]) =>
-      `  ${name}: ${item.campaigns} campaigns, reported usd per accepted outcome ${item.usdPerAcceptedOutcome === null ? 'unknown' : `$${perOutcome(item.usdPerAcceptedOutcome, 2)}`}, repair rounds per task ${perOutcome(item.repairRoundsPerTask, 2)}`),
+      `  ${name}: ${item.campaigns} campaigns, reported tokens per accepted outcome ${perOutcome(item.tokensPerAcceptedOutcome, 1)}, repair rounds per task ${perOutcome(item.repairRoundsPerTask, 2)}`),
   ];
 }

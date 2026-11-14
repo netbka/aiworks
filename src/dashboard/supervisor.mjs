@@ -1,3 +1,4 @@
+import { addOperation, emptyUsage, hasReportedUsage, mergeUsage, planningUsage } from '../supervisor/token-usage.mjs';
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -141,7 +142,7 @@ function stepRisks(operations, declaration) {
 
 // The limits of a goal in force, numbers only (project-settings.mjs effectiveLimits: the declaration's, with repair rounds
 // from the project's settings or the default when it names none); null where none is set.
-const LIMIT_KEYS = ['slots', 'maxWorkerRuns', 'maxRepairRounds', 'maxRetriesPerTask', 'maxCostUsd', 'unknownRunCostUsd'];
+const LIMIT_KEYS = ['slots', 'maxWorkerRuns', 'maxRepairRounds', 'maxRetriesPerTask'];
 const limitsOf = (limits) => (limits && typeof limits === 'object' && !Array.isArray(limits)
   ? Object.fromEntries(LIMIT_KEYS.map((key) => [key, Number.isFinite(limits[key]) ? limits[key] : null])) : null);
 
@@ -272,80 +273,48 @@ function mergeWaits(store, campaignId, taskRows) {
   return waits;
 }
 
-const cents = (value) => Math.round(value * 10000) / 10000;
-const reportedCost = (outcome) => Number.isFinite(outcome?.receipt?.costUsd) && outcome.receipt.costUsd > 0 ? outcome.receipt.costUsd : 0;
-/**
- * What each step cost (OWNER_WORKSPACE §4.10, slice S7), from the cost each run's own receipt reported: the same receipts
- * the campaign total adds up, and the same rule as the budget for a run whose cost is not reported (a counted, finished
- * run without a positive cost). Runs still in progress have no cost yet and are counted apart. A refunded run (the
- * provider or executor refused before any work) is not a run of the step. Unknown stays unknown: it is never added as $0.
- */
-function stepCosts(operations) {
-  const costs = new Map(), of = (taskId) => {
-    if (!costs.has(taskId)) costs.set(taskId, { runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0, retries: 0 });
-    return costs.get(taskId);
-  };
-  for (const op of operations.filter((item) => ['finished', 'recorded', 'dispatched'].includes(item.state))) {
-    const step = of(op.task_id);
-    if (op.state !== 'finished') { step.runningRuns++; continue; }
-    // A reported cost counts even on a refunded run: the campaign total adds it too.
-    step.reportedUsd = cents(step.reportedUsd + reportedCost(op.outcome));
-    if (runNotCounted(op.outcome)) continue;
-    step.runs++;
-    if (!reportedCost(op.outcome)) step.unreportedRuns++;
-    // A counted run that ended without a result (failed, timed out, invalid): the step had to run again.
-    if (op.outcome?.class !== 'result') step.retries++;
+function runStats(operations) {
+  const tasks = new Map();
+  for (const op of operations) {
+    if (!['finished', 'recorded', 'dispatched'].includes(op.state)) continue;
+    const step = tasks.get(op.task_id) ?? { runs: 0, runningRuns: 0, retries: 0 };
+    tasks.set(op.task_id, step);
+    if (op.state !== 'finished') step.runningRuns++;
+    else if (!op.outcome?.refunded && !runNotCounted(op.outcome)) {
+      step.runs++;
+      if (op.outcome?.class !== 'result') step.retries++;
+    }
   }
-  return costs;
+  return tasks;
 }
 
-/** What a goal's runs that finished at or after `since` reported (HOME_V2.md): null, never 0, when none reported a cost. */
-function costSince(operations, since) {
-  let usd = 0, unreportedRuns = 0;
-  for (const op of operations.filter((item) => item.state === 'finished' && item.updated_at >= since)) {
-    usd = cents(usd + reportedCost(op.outcome));
-    if (!runNotCounted(op.outcome) && !reportedCost(op.outcome)) unreportedRuns++;
+function usageToday(operations, now) {
+  const start = new Date(now).setHours(0, 0, 0, 0);
+  const summary = emptyUsage();
+  for (const op of operations) {
+    if (op.state === 'finished' && op.updated_at >= start &&
+        (hasReportedUsage(op) || !(op.outcome?.refunded || runNotCounted(op.outcome)))) addOperation(summary, op);
   }
-  return { reportedUsd: usd > 0 ? usd : null, unreportedRuns };
+  return summary;
 }
-/** Local midnight of the day `now` falls on. */
-const startOfDay = (now) => new Date(now).setHours(0, 0, 0, 0);
 
-/**
- * Cost per project (OWNER_WORKSPACE §4.10, slice S7): today's per-campaign totals added up by repository, so a project's
- * total is exactly the sum of its campaigns' recorded cost. Runs that reported no cost and runs still in progress are
- * counted apart, never as $0.00. `by` is `project` for work in projects without GitHub (localRuns), added up by project. `reportedUsd` is null when nothing reported a cost; `empty` is the §7.1 copy when nothing ran.
- */
-export function projectCosts(campaigns, by = 'repository') {
+export function projectUsage(campaigns, by = 'repository') {
   const projects = new Map();
-  for (const c of campaigns) {
-    if (c[by] == null) continue;
-    const key = String(c[by]).toLowerCase();
-    const project = projects.get(key) ?? { [by]: c[by], works: 0, worksWithRuns: 0, runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0 };
-    project.works++;
-    // Pieces of work with counted runs, so the summary matches the breakdown's run counts (aiworks#11 review F14).
-    if (c.runsUsed > 0) project.worksWithRuns++;
-    project.runs += c.runsUsed;
-    project.reportedUsd = cents(project.reportedUsd + (c.cost.reportedUsd ?? 0));
-    project.unreportedRuns += c.cost.unreportedRuns;
-    project.runningRuns += c.cost.runningRuns;
+  for (const campaign of campaigns) {
+    if (!campaign[by]) continue;
+    const key = campaign[by].toLowerCase();
+    const project = projects.get(key) ?? { [by]: campaign[by], usage: emptyUsage() };
+    mergeUsage(project.usage, campaign.usage);
     projects.set(key, project);
   }
-  return [...projects.values()].map((project) => {
-    const empty = !project.runs && !project.runningRuns && !project.unreportedRuns && !(project.reportedUsd > 0) ? stateCopy('cost-empty') : null;
-    return { ...project, reportedUsd: project.reportedUsd > 0 ? project.reportedUsd : null, empty: empty && { title: empty.title, text: empty.text } };
-  });
+  return [...projects.values()];
 }
-
-// ---- Model, tier, cost by unit and why a step moved up (MODEL_ROUTING slice R6, dashboard half; build slice UI12). The
-// supervisor's status (MOD6) is the one source; this only narrows it to safe values. Units are never added together: dollars
-// stay dollars, tokens stay per provider, and runs without reported dollars are counted, never shown as $0.00. ----
 
 const TIERS = ['economy', 'standard', 'strongest'];
 const modelName = (value) => /^[a-z0-9][a-z0-9._:-]{0,79}$/i.test(value ?? '') ? value : null;
 const count = (value) => Number.isSafeInteger(value) && value >= 0 ? value : 0;
 /** One run's model: the provider, the model its receipt names (null when not recorded) and its tier name. */
-const modelUsed = (view) => view ? { executor: code(view.executor), model: modelName(view.model), tier: TIERS.includes(view.tierName) ? view.tierName : null } : null;
+const modelUsed = (view) => view ? { executor: code(view.executor), model: modelName(view.model), effort: modelName(view.effort), tier: TIERS.includes(view.tierName) ? view.tierName : null } : null;
 // The status reason is built from fixed labels only (MOD6). This keeps it to that shape, so no other text can reach the page.
 const MOVED_UP = /^Moved to the (?:economy|standard|strongest|tier \d+) model after (?:poor-quality results|(?:\w+ (?:rejected|unusable|timed-out|without evidence) (?:attempt|review)s?)(?: and \w+ (?:rejected|unusable|timed-out|without evidence) (?:attempt|review)s?)*)$/;
 /** Why a step moved to a stronger model, in the status's own words; a sentence of any other shape becomes the general one. */
@@ -355,16 +324,6 @@ function movedUp(escalation) {
   return { stage: escalation.stage === 'verify' ? 'verify' : 'implement', tier,
     reason: MOVED_UP.test(escalation.reason ?? '') ? escalation.reason : `Moved to ${tier ? `the ${tier}` : 'a stronger'} model after poor-quality results` };
 }
-/** A step's or a work program's cost by unit: reported dollars (null, never 0, when none), tokens per provider and unknown-cost runs. */
-export function costByUnit(cost) {
-  const reported = Number.isFinite(cost?.usd?.reported) && cost.usd.reported > 0 ? cost.usd.reported : null;
-  return { usd: reported, usdRuns: reported === null ? 0 : count(cost.usd.reportedRuns),
-    tokens: Object.entries(cost?.tokens ?? {}).filter(([kind]) => code(kind)).map(([executor, item]) => ({ executor, runs: count(item.runs),
-      input: count(item.input), output: count(item.output), cacheRead: count(item.cacheRead), cacheCreation: count(item.cacheCreation),
-      cachedInInput: count(item.runs) > 0 && count(item.inputIncludesCacheReadRuns) === count(item.runs) })),
-    unknownRuns: count(cost?.unknownCostRuns) };
-}
-/** A step's models and move up, from its status row. */
 export function stepRouting(row) {
   return { implement: modelUsed(row?.routing?.implement), verify: modelUsed(row?.routing?.verify), movedUp: movedUp(row?.routing?.escalation) };
 }
@@ -652,7 +611,7 @@ function publicNextAction(c, status, tasks, operations) {
   if (c.control === 'paused') return 'Paused; existing workers may finish';
   if (c.control === 'cancel-requested') return 'Cancellation requested; waiting for owned workers to stop';
   if (!status.controller.live) return 'Waiting for a live campaign controller';
-  if (c.blocker) return `Blocked: ${code(c.blocker.kind) ?? 'required recovery'}`;
+  if (status.blocker) return `Blocked: ${status.blocker.kind === 'budget' ? 'worker-run limit reached' : code(status.blocker.kind) ?? 'required recovery'}`;
   if (operations.length) return `${operations[0].kind === 'verify' ? 'Verify' : 'Implement'} ${operations[0].task_id}`;
   const next = tasks.find((task) => task.state !== 'done' && !task.blocked && c.declaration.tasks.find((s) => s.id === task.task_id).dependsOn.every((id) => tasks.find((t) => t.task_id === id)?.state === 'done'));
   if (next) return publicTaskWait(next, c.declaration.tasks.find((s) => s.id === next.task_id)) ?? `Next task: ${next.task_id}`;
@@ -1110,9 +1069,8 @@ function checkerVerdicts(ops) {
   return { rejections, acceptedAt };
 }
 
-/** A step's runs and the cost they reported (OWNER_WORKSPACE S7); null, never 0, when none reported one. */
-const stepCost = (costs, rejections, taskId) => (({ reportedUsd, ...rest }) => ({ ...rest, reportedUsd: reportedUsd > 0 ? reportedUsd : null,
-  checkerRejections: rejections.get(taskId) ?? 0 }))(costs.get(taskId) ?? { runs: 0, reportedUsd: 0, unreportedRuns: 0, runningRuns: 0, retries: 0 });
+const stepStats = (stats, rejections, taskId) => ({ ...(stats.get(taskId) ?? { runs: 0, runningRuns: 0, retries: 0 }),
+  checkerRejections: rejections.get(taskId) ?? 0 });
 
 /** Each AI worker a piece of work may use, in its order: whether it runs, waits or is unavailable and why, from status only. */
 function workProviders(status, taskRows, operations, now) {
@@ -1137,38 +1095,37 @@ function workProviders(status, taskRows, operations, now) {
 }
 
 /**
- * The runs of a piece of work in a project without GitHub (Overview's cost breakdown, Settings › AI workers and Usage),
+ * The runs of a piece of work in a project without GitHub (Overview's token breakdown, Settings › AI workers and Usage),
  * built from the same status, operations and per-step builders as a GitHub campaign's, each read once for all its steps.
- * `project` is the connected project's id (its route), `projectName` the owner's name of it. Only runs, cost, models and
+ * `project` is the connected project's id (its route), `projectName` the owner's name of it. Only runs, tokens, models and
  * AI workers: its plan, steps and results are work.mjs's (workView `local`), and it has no repository, issue or pull request.
  */
 function localRuns(store, c, now, config, projectOf) {
   const id = c.id, status = campaignStatus(store, id, now, { config, selfHostingConfig: null });
   const statusOf = new Map(status.tasks.map((item) => [item.id, item]));
   const taskRows = store.tasks(id), operations = store.openOperations(id);
-  const ops = store.all('SELECT id, task_id, kind, executor_kind, state, target_sha, outcome, created_at, updated_at FROM operations WHERE campaign_id = ? ORDER BY created_at DESC, seq DESC', id);
-  const { rejections } = checkerVerdicts(ops), costs = stepCosts(ops);
+  const ops = store.all('SELECT id, task_id, kind, executor_kind, state, target_sha, outcome, routing, created_at, updated_at FROM operations WHERE campaign_id = ? ORDER BY created_at DESC, seq DESC', id);
+  const { rejections } = checkerVerdicts(ops), stats = runStats(ops);
   const specs = new Map(c.declaration.tasks.map((task) => [task.id, task]));
   const owner = projectOf(c.declaration.target.projectId);
   return { id, project: owner?.id ?? null, projectName: owner?.name ? safeText(owner.name, 120) : null,
     title: safeText(c.declaration.envelope?.outcome ?? c.declaration.purpose ?? id, 300), shortTitle: c.declaration.title ? safeText(c.declaration.title, 60) : null, control: c.control,
     controllerRevision: status.controller.codeRevision, budget: status.budget,
-    runsUsed: status.runsUsed, maxWorkerRuns: status.maxWorkerRuns, recordedCostUsd: status.costUsd,
-    cost: { reportedUsd: status.costUsd > 0 ? status.costUsd : null, unreportedRuns: status.budget.unknownCostRuns, runningRuns: operations.length },
-    costToday: costSince(ops, startOfDay(now)),
-    costByUnit: costByUnit(status.costByUnit),
+    runsUsed: status.runsUsed, maxWorkerRuns: status.maxWorkerRuns,
+    usageToday: usageToday(ops, now),
+    usage: status.usage,
     executors: (c.declaration.executor.providers ?? [c.declaration.executor]).map((item) => code(item.kind)),
     providers: workProviders(status, taskRows, operations, now),
     agents: operations.map((op) => ({ id: op.id, taskId: op.task_id, executor: code(op.executor_kind), state: op.state })),
     tasks: taskRows.map((task) => ({ id: task.task_id, title: safeText(specs.get(task.task_id)?.title ?? task.task_id),
       outcome: specs.get(task.task_id)?.outcome ? safeText(specs.get(task.task_id).outcome) : null, state: task.state,
-      dependsOn: specs.get(task.task_id)?.dependsOn ?? [], cost: stepCost(costs, rejections, task.task_id),
-      routing: stepRouting(statusOf.get(task.task_id)), costByUnit: costByUnit(statusOf.get(task.task_id)?.costByUnit) })) };
+      dependsOn: specs.get(task.task_id)?.dependsOn ?? [], stats: stepStats(stats, rejections, task.task_id),
+      signature: statusOf.get(task.task_id)?.signature ?? null, routing: stepRouting(statusOf.get(task.task_id)), usage: statusOf.get(task.task_id)?.usage ?? emptyUsage() })) };
 }
 
 export function supervisorSnapshot(dataDir, now = Date.now(), { since, textChecks } = {}) {
   const path = join(dataDir, 'supervisor.db');
-  if (!existsSync(path)) return { available: false, message: 'AIWorks has no work records on this computer yet.', campaigns: [], costs: [], local: [], localCosts: [], activity: [] };
+  if (!existsSync(path)) return { available: false, message: 'AIWorks has no work records on this computer yet.', campaigns: [], projectUsage: [], local: [], localUsage: [], activity: [] };
   let store;
   try {
     store = new Store(path, { readOnly: true });
@@ -1181,7 +1138,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
       return modes.get(project);
     };
     // Work in a project without GitHub has no repository, issue or pull request: its project screens show it from
-    // work.mjs (workView `local`), never as a GitHub campaign here (OWNER_WORKSPACE S12). Only its runs, cost, models and
+    // work.mjs (workView `local`), never as a GitHub campaign here (OWNER_WORKSPACE S12). Only its runs, tokens, models and
     // AI workers are served, apart, as `local` (localRuns), so nothing counts them twice.
     const all = store.all("SELECT id FROM campaigns ORDER BY CASE WHEN control IN ('finished', 'cancelled') THEN 1 ELSE 0 END, created_at")
       .map(({ id }) => store.campaign(id));
@@ -1222,7 +1179,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
       const histories = stepHistories(store, id, ops);
       const waits = mergeWaits(store, id, taskRows);
       const riskOf = stepRisks(ops, c.declaration);
-      const costs = stepCosts(ops);
+      const stats = runStats(ops);
       const paused = c.control === 'paused' ? store.get("SELECT at, detail FROM journal WHERE campaign_id = ? AND kind = 'paused' ORDER BY seq DESC LIMIT 1", id) : null;
       // Latest finished attempt per task: the worker's own verdict, not the protocol class alone.
       const lastOutcome = (taskId) => {
@@ -1245,7 +1202,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
         // When the campaign was registered: a campaign no supervisor has picked up yet gets a grace period from it.
         registeredAt: c.created_at,
         controllerRevision: status.controller.codeRevision, leaseExpiresAt: status.controller.leaseExpiresAt,
-        nextWakeupAt: status.nextWakeupAt, blocker: code(c.blocker?.kind), livenessDefect: status.livenessDefect,
+        nextWakeupAt: status.nextWakeupAt, blocker: code(status.blocker?.kind), livenessDefect: status.livenessDefect,
         // Why dispatch stopped, rebuilt from supervisor-known fields only (stored reasons can quote worker text).
         stopReasons: taskRows.filter((task) => task.blocked && task.state !== 'done').map((task) => `${task.task_id}: ${stopReason(task)}`),
         budget: status.budget,
@@ -1257,22 +1214,21 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
           expected: status.release.expected ?? [], authorized: status.release.authorized ?? false },
         waitingReason: status.phase === 'provider-wait' ? 'provider-availability' : null,
         // Budget and executor-selection text is deterministic; other blockers can contain native/worker errors.
-        blockerClass: code(c.blocker?.class),
-        blockerReason: c.blocker ? ['budget', 'executors'].includes(c.blocker.kind) ? safeText(String(c.blocker.reason ?? ''), 300) : `Recovery required: ${code(c.blocker.kind) ?? 'blocked'}` : null,
-        blockerAction: c.blocker ? ['budget', 'executors'].includes(c.blocker.kind) ? safeText(String(c.blocker.requestedAction ?? ''), 300) : 'Inspect local supervisor status, resolve the recorded blocker, then recheck.' : null,
+        blockerClass: code(status.blocker?.class),
+        blockerReason: status.blocker ? ['budget', 'executors'].includes(status.blocker.kind) ? safeText(String(status.blocker.reason ?? ''), 300) : `Recovery required: ${code(status.blocker.kind) ?? 'blocked'}` : null,
+        blockerAction: status.blocker ? ['budget', 'executors'].includes(status.blocker.kind) ? safeText(String(status.blocker.requestedAction ?? ''), 300) : 'Inspect local supervisor status, resolve the recorded blocker, then recheck.' : null,
         controls: workControls(c.control),
         slots: effectiveLimits(store, c.declaration).slots, phase: status.phase,
         // The goal's limits in force, and its approved versions with what each changed (Project settings, Overview).
         // repairRoundsFrom: 'goal' (its declaration), 'project' (Project settings) or 'default' (3), AW-002.
         limits: limitsOf(effectiveLimits(store, c.declaration)), repairRoundsFrom: repairRoundsSource(c.declaration, projectLimitsOf(store, c.declaration)),
         versions: goalVersions(store, c),
-        runsUsed: status.runsUsed, maxWorkerRuns: status.maxWorkerRuns, recordedCostUsd: status.costUsd,
-        // OWNER_WORKSPACE S7: today's totals, with unreported and running runs apart; null, never 0, when nothing reported a cost.
-        cost: { reportedUsd: status.costUsd > 0 ? status.costUsd : null, unreportedRuns: status.budget.unknownCostRuns, runningRuns: operations.length },
-        // What its runs that finished today reported (Home's spent today).
-        costToday: costSince(ops, startOfDay(now)),
-        // MODEL_ROUTING R6 (UI12): the same work's cost in each unit apart, from status.
-        costByUnit: costByUnit(status.costByUnit),
+        runsUsed: status.runsUsed, maxWorkerRuns: status.maxWorkerRuns,
+
+        // What its runs that finished today reported (Home's reported tokens today).
+        usageToday: usageToday(ops, now),
+
+        usage: status.usage,
         executors: (c.declaration.executor.providers ?? [c.declaration.executor]).map((item) => code(item.kind)),
         providers: workProviders(status, taskRows, operations, now),
         instructions: store.all("SELECT * FROM events WHERE campaign_id = ? AND kind = 'agent-instruction' ORDER BY seq DESC LIMIT 30", id).map((event) => {
@@ -1323,11 +1279,11 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
           stopped: stepStopped(task, safeText(specs.get(task.task_id)?.outcome ?? specs.get(task.task_id)?.title ?? task.task_id),
             `https://github.com/${c.declaration.target.repository}/issues/${specs.get(task.task_id)?.issue}`),
           history: histories.get(task.task_id) ?? { attempts: [], events: [] },
-          // OWNER_WORKSPACE S7: its runs and the cost they reported; null, never 0, when none reported one.
-          cost: stepCost(costs, rejections, task.task_id),
-          // MODEL_ROUTING R6 (UI12): its models and tiers, why it moved up, and its cost in each unit apart, from status.
-          routing: stepRouting(statusOf.get(task.task_id)),
-          costByUnit: costByUnit(statusOf.get(task.task_id)?.costByUnit),
+
+          stats: stepStats(stats, rejections, task.task_id),
+
+          signature: statusOf.get(task.task_id)?.signature ?? null, routing: stepRouting(statusOf.get(task.task_id)),
+          usage: statusOf.get(task.task_id)?.usage ?? emptyUsage(),
           // SCOPED_READING (UI18): the rule a returned change broke and what the next attempt was given; null before READ3.
           reading: stepReading(store, id, task.task_id, statusOf.get(task.task_id)?.reading, reads) })),
         agents: operations.map((op) => {
@@ -1379,10 +1335,13 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
     const settings = computerSettings(campaigns, readConfig(dataDir), { now, local, repositories: configuredRepositories(dataDir),
       connected: projectConnectionEnabled(dataDir) ? connectedProjects(dataDir) : [],
       accounts: dashboardAccounts(store, readConfig(dataDir), { now, dataDir }), releaseStop: releaseStopState(dataDir) });
-    return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, costs: projectCosts(campaigns), local, localCosts: projectCosts(local, 'project'),
+    const planning = new Map();
+    planningUsage(store, { byProject: planning });
+    const projectPlanning = [...planning].map(([key, usage]) => ({ project: projectOf(key)?.id ?? key, usage }));
+    return { available: true, observedAt: new Date(now).toISOString(), controller, campaigns, projectPlanning, projectUsage: projectUsage(campaigns), local, localUsage: projectUsage(local, 'project'),
       activity, coordinator, recent, settings, releases, goals, baseHolds: heldBaseReads(dataDir).map((hold) => ({ checkout: basename(hold.repo), base: safeText(hold.base, 80), since: hold.since, runs: hold.runs, unidentified: hold.unidentified })),
       newestEvent: store.get('SELECT MAX(seq) AS seq FROM journal')?.seq ?? 0 };
-  } catch { return { available: false, message: "AIWorks can't read its work records right now. What you see may be out of date. Buttons are off until it can read them again.", campaigns: [], costs: [], local: [], localCosts: [], activity: [] }; }
+  } catch { return { available: false, message: "AIWorks can't read its work records right now. What you see may be out of date. Buttons are off until it can read them again.", campaigns: [], projectUsage: [], local: [], localUsage: [], activity: [] }; }
   finally { store?.close(); }
 }
 

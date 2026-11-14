@@ -7,8 +7,7 @@
 // The baseline side is the accepted outcomes of `--before`, recorded before the cohort started; the cohort side is the
 // accepted outcomes of `--after` whose campaign is a `--cohort` campaign. A class is compared only when each side has
 // MIN_ACCEPTED accepted outcomes. No saving is computed or claimed: it reports what each side measured, the share of runs
-// whose cost is unknown, and a quality drop, after which routing stays off for that class. Dollars are as reported,
-// never spent; tokens are never added to dollars. The output names classes, never store paths or campaign contents.
+// with incomplete token usage.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -23,9 +22,9 @@ const ratio = (a, b) => (b ? a / b : null);
 
 /** One side's measures for one class, from its accepted outcomes (baseline.mjs `tasks`). */
 function measures(outcomes) {
-  const reportedRuns = outcomes.reduce((sum, item) => sum + (item.usd?.reportedRuns ?? 0), 0);
-  const unknownRuns = outcomes.reduce((sum, item) => sum + (item.usd?.unknownRuns ?? 0), 0);
-  const reported = outcomes.reduce((sum, item) => sum + (item.usd?.reported ?? 0), 0);
+  const reportedRuns = outcomes.reduce((sum, item) => sum + ((item.usage?.reportedRuns ?? 0) - (item.usage?.partialRuns ?? 0)), 0);
+  const unknownRuns = outcomes.reduce((sum, item) => sum + ((item.usage?.unknownRuns ?? 0) + (item.usage?.partialRuns ?? 0)), 0);
+  const reported = outcomes.reduce((sum, item) => sum + (item.usage?.total ?? 0), 0);
   const repairs = outcomes.filter((item) => Number.isFinite(item.repairRounds));
   return {
     accepted: outcomes.length,
@@ -34,9 +33,9 @@ function measures(outcomes) {
     verifyRunsPerAccepted: ratio(outcomes.reduce((sum, item) => sum + item.verifyRuns, 0), outcomes.length),
     repairRoundsPerAccepted: ratio(repairs.reduce((sum, item) => sum + item.repairRounds, 0), repairs.length),
     medianMsToVerified: median(outcomes.map((item) => item.msToVerified).filter(Number.isFinite)),
-    // Over the runs that reported dollars only; the unknown share travels with any claim.
-    reportedUsdPerReportedRun: reportedRuns ? reported / reportedRuns : null,
-    unknownCostShare: ratio(unknownRuns, reportedRuns + unknownRuns),
+    // Over the runs that reported complete totals only; the unknown share travels with any claim.
+    tokensPerCompleteRun: reportedRuns ? reported / reportedRuns : null,
+    unknownTotalShare: ratio(unknownRuns, reportedRuns + unknownRuns),
     models: [...new Set(outcomes.map((item) => `${item.implementer ?? 'unknown'} ${item.model ?? 'unknown'}`))].sort(),
   };
 }
@@ -44,7 +43,7 @@ function measures(outcomes) {
 /** The comparison of `before` and `after` (two aiworks-baseline reports) for the cohort campaigns `cohort`. */
 export function compare(before, after, cohort) {
   for (const report of [before, after]) {
-    if (!/^aiworks-baseline\//.test(report?.report ?? '')) throw new Error('both inputs must be `baseline --json` reports');
+    if (report?.report !== 'aiworks-baseline/3') throw new Error('both inputs must be `baseline --json` reports');
   }
   const ids = new Set(cohort);
   if (!ids.size) throw new Error('name at least one cohort campaign with --cohort');
@@ -82,7 +81,7 @@ function format(result) {
     for (const [name, side] of [['baseline', row.baseline], ['cohort', row.cohort]]) {
       lines.push(`  ${name.padEnd(8)} accepted ${side.accepted}, first pass ${show(side.firstPassRate)}, implement/accepted ${show(side.implementAttemptsPerAccepted)}, ` +
         `verify/accepted ${show(side.verifyRunsPerAccepted)}, repairs/accepted ${show(side.repairRoundsPerAccepted)}, median to verified ${show(side.medianMsToVerified === null ? null : side.medianMsToVerified / 60_000, 1)} min, ` +
-        `reported usd/run ${show(side.reportedUsdPerReportedRun, 4)} (unknown cost ${show(side.unknownCostShare)} of runs); models: ${side.models.join(', ') || 'none'}`);
+        `reported tokens/run ${show(side.tokensPerCompleteRun, 4)} (unknown total ${show(side.unknownTotalShare)} of runs); models: ${side.models.join(', ') || 'none'}`);
     }
   }
   return lines.join('\n');

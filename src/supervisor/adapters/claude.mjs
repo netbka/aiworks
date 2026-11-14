@@ -1,8 +1,9 @@
+import { normalizedUsage, providerTokens } from '../token-usage.mjs';
 // AIWorks headless Claude Code CLI adapter. Each operation is a fresh session with a
 // supervisor-chosen UUID (never --resume/--continue or a "latest" session), scoped permission
 // mode with prompts denied, and a JSON-schema terminal result. Output shape verified against
 // claude 2.1.295: { type, subtype, is_error, api_error_status, session_id, structured_output,
-// total_cost_usd, usage, permission_denials, result }.
+// usage, permission_denials, result }.
 
 import Ajv from 'ajv';
 import { DEVELOPMENT_DENIED } from '../development-policy.mjs';
@@ -402,9 +403,15 @@ export function quotaRetryAt(text, now) {
   return now + 30 * 60_000;
 }
 
-/** A usage-limit refusal that did no billable work. It does not consume a worker run. */
-export const refusedBeforeWork = (verdict) => verdict?.class === 'quota' && verdict.receipt?.measured === true &&
-  !(verdict.receipt.costUsd > 0) && (verdict.receipt.numTurns ?? 0) <= 1;
+/** A quota refusal consumes no worker run only when the recorded counters prove zero work. */
+export function refusedBeforeWork(verdict) {
+  const receipt = verdict?.receipt;
+  if (verdict?.class !== 'quota' || receipt?.measured !== true || receipt.numTurns !== 1) return false;
+  const usage = normalizedUsage(receipt.usage, 'claude-cli');
+  if (usage?.total !== 0) return false;
+  return ![usage, ...(receipt.models ?? []).map((part) => part.usage)].some((counters) =>
+    Object.values(counters ?? {}).some((value) => Number.isFinite(value) && value > 0));
+}
 
 // `web`: true (or "acceptance") for a browser acceptance review, whose "accepted" means the report's claims hold — a
 // truthful REJECTED report may carry failed criteria (agy.mjs WEB_CRITERIA_RULE); passedCheck still reads those criteria
@@ -454,15 +461,11 @@ export function classify({ role, run, stdoutText, stderrText, expect, now }) {
   try { out = stdoutText.trim() ? JSON.parse(stdoutText) : null; } catch { out = null; }
   const receipt = out ? {
     sessionId: out.session_id ?? null,
-    costUsd: Number.isFinite(out.total_cost_usd) ? out.total_cost_usd : null,
-    usage: out.usage ? {
-      input: out.usage.input_tokens ?? null, output: out.usage.output_tokens ?? null,
-      cacheRead: out.usage.cache_read_input_tokens ?? null, cacheCreation: out.usage.cache_creation_input_tokens ?? null,
-    } : null,
+    ...providerTokens(out, 'claude-cli'),
     numTurns: out.num_turns ?? null,
     permissionDenials: Array.isArray(out.permission_denials) ? out.permission_denials.length : null,
     measured: true,
-  } : { sessionId: null, costUsd: null, usage: null, measured: false };
+  } : { sessionId: null, usage: null, measured: false };
   const base = { receipt, exitCode: run.exitCode ?? null };
   if (run.spawnError) return { ...base, class: 'spawn-failed', detail: run.spawnError };
   if (run.timedOut) return { ...base, class: 'timeout', detail: 'agent exceeded its time bound and was terminated' };

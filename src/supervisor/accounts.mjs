@@ -1,3 +1,4 @@
+import { normalizedUsage, operationUsage, runIdentity } from './token-usage.mjs';
 // Provider accounts (docs/design/ADAPTIVE_SCHEDULER.md section 4.5, slice RUN3). A usage limit, a failed login or an
 // unavailable host belongs to the real account behind a CLI on this host, not to one campaign: every campaign that uses
 // the account waits on one row and one success or recheck ends it once. config.json may name the account of an executor
@@ -274,35 +275,28 @@ export function accountUsageSummary(store, config, { kind, account = null, now =
  * Format raw usage tokens into a structured breakdown.
  * Returns null if no numeric tokens are reported.
  */
-export function formatTokensUsage(usage) {
-  if (!usage || typeof usage !== 'object') return null;
-  const input = Number.isFinite(usage.input) ? usage.input : Number.isFinite(usage.input_tokens) ? usage.input_tokens : null;
-  const output = Number.isFinite(usage.output) ? usage.output : Number.isFinite(usage.output_tokens) ? usage.output_tokens : null;
-  const cacheRead = Number.isFinite(usage.cacheRead) ? usage.cacheRead : Number.isFinite(usage.cache_read_input_tokens) ? usage.cache_read_input_tokens : null;
-  const cacheCreation = Number.isFinite(usage.cacheCreation) ? usage.cacheCreation : Number.isFinite(usage.cache_creation_input_tokens) ? usage.cache_creation_input_tokens : null;
-  const total = (input ?? 0) + (output ?? 0) + (cacheCreation ?? 0);
-  if (input === null && output === null && cacheRead === null && cacheCreation === null) return null;
-  return { input, output, cacheRead, cacheCreation, total: total > 0 ? total : null };
-}
+export const formatTokensUsage = normalizedUsage;
 
 /**
  * Format a human-readable tokens summary string.
  */
 export function formatTokensSummary(tokens) {
-  if (!tokens || typeof tokens !== 'object' || tokens.total == null) return 'unreported';
+  if (!tokens || typeof tokens !== 'object') return 'unreported';
   const parts = [];
   if (tokens.input != null) parts.push(`${tokens.input.toLocaleString()} in`);
   if (tokens.output != null) parts.push(`${tokens.output.toLocaleString()} out`);
   if (tokens.cacheRead != null && tokens.cacheRead > 0) parts.push(`${tokens.cacheRead.toLocaleString()} cached`);
-  return `${tokens.total.toLocaleString()} tokens (${parts.join(', ')})`;
+  if (tokens.cacheCreation != null) parts.push(`${tokens.cacheCreation.toLocaleString()} cache writes`);
+  if (tokens.reasoning != null) parts.push(`${tokens.reasoning.toLocaleString()} reasoning`);
+  return [tokens.total == null ? 'total unreported' : `${tokens.total.toLocaleString()} tokens`, ...parts].join(', ');
 }
 
 /**
  * Build a model signature record for a task run.
  * Fields: Name, Type, Effort, Tokens consumed.
  */
-export function buildTaskSignature({ model, executorKind, effort = 'standard', usage = null, verifier = null }) {
-  const tokens = formatTokensUsage(usage);
+export function buildTaskSignature({ model, executorKind, tier = null, effort = null, usage = null, models = null, verifier = null }) {
+  const tokens = normalizedUsage(usage, executorKind);
   let verifierObj = null;
   if (verifier && typeof verifier === 'object') {
     if (verifier.name && verifier.type) {
@@ -311,7 +305,7 @@ export function buildTaskSignature({ model, executorKind, effort = 'standard', u
       verifierObj = buildTaskSignature({
         model: verifier.model,
         executorKind: verifier.executorKind,
-        effort: verifier.effort,
+        tier: verifier.tier, effort: verifier.effort,
         usage: verifier.usage,
       });
     }
@@ -319,10 +313,37 @@ export function buildTaskSignature({ model, executorKind, effort = 'standard', u
   return {
     name: model ?? 'unknown-model',
     type: executorKind ?? 'unknown-type',
-    effort: effort ?? 'standard',
+    tier, effort,
     tokens,
+    ...(models?.length ? { models } : {}),
     ...(verifierObj ? { verifier: verifierObj } : {}),
   };
+}
+
+export function operationSignature(op) {
+  const identity = runIdentity(op);
+  const receipt = op.outcome?.receipt;
+  const usage = operationUsage(op);
+  const counters = normalizedUsage(receipt?.usage, identity.executor);
+  return buildTaskSignature({ ...identity, executorKind: identity.executor,
+    usage: counters ?? (usage.total !== null && !usage.partialRuns ? { total: usage.total } : null),
+    models: receipt?.models?.length ? usage.models : null });
+}
+
+// Older task signatures inferred effort and calculated totals differently. Recover only the receipt tied to this head.
+export function taskSignature(store, task, operations) {
+  const saved = task.signature;
+  if (!saved || (Object.hasOwn(saved, 'tier') && (!saved.verifier || Object.hasOwn(saved.verifier, 'tier')))) return saved ?? null;
+  const ops = operations ?? store.all("SELECT kind, executor_kind, routing, outcome, base_sha, target_sha FROM operations WHERE campaign_id = ? AND task_id = ? AND state = 'finished' ORDER BY created_at, seq", task.campaign_id, task.task_id);
+  function restore(part, stage, head) {
+    if (Object.hasOwn(part, 'tier')) return part;
+    const op = head && ops.findLast((op) => op.kind === stage && op.outcome?.class === 'result' &&
+      (stage === 'implement' ? op.outcome.value?.result === 'resolved' && (op.outcome.value.headSha ?? op.base_sha) === head :
+        op.outcome.value?.verdict === 'accepted' && op.target_sha === head));
+    return op ? operationSignature(op) : buildTaskSignature({ executorKind: part.type });
+  }
+  return { ...restore(saved, 'implement', task.head_sha),
+    ...(saved.verifier ? { verifier: restore(saved.verifier, 'verify', task.verified_sha) } : {}) };
 }
 
 /**
@@ -331,9 +352,12 @@ export function buildTaskSignature({ model, executorKind, effort = 'standard', u
 export function formatSignatureLines(signature) {
   if (!signature) return [];
   const lines = ['### Model signature', ''];
-  lines.push(`- **Implementer**: \`${signature.name}\` (${signature.type}) · Effort: ${signature.effort} · Tokens: ${formatTokensSummary(signature.tokens)}`);
+  if (signature.name) lines.push(`- **Implementer**: \`${signature.name}\` (${signature.type}) · Tier: ${signature.tier ?? 'unknown'} · Effort: ${signature.effort ?? 'unknown'} · Tokens: ${formatTokensSummary(signature.tokens)}`);
   if (signature.verifier) {
-    lines.push(`- **Verifier**: \`${signature.verifier.name}\` (${signature.verifier.type}) · Effort: ${signature.verifier.effort} · Tokens: ${formatTokensSummary(signature.verifier.tokens)}`);
+    lines.push(`- **Verifier**: \`${signature.verifier.name}\` (${signature.verifier.type}) · Tier: ${signature.verifier.tier ?? 'unknown'} · Effort: ${signature.verifier.effort ?? 'unknown'} · Tokens: ${formatTokensSummary(signature.verifier.tokens)}`);
+  }
+  for (const [role, run] of [['Implementer', signature], ['Verifier', signature.verifier]]) {
+    for (const row of run?.models ?? []) lines.push(`  - ${role} model \`${row.model ?? 'unknown'}\`: ${formatTokensSummary(row)}`);
   }
   return lines;
 }

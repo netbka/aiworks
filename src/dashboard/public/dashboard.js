@@ -1,7 +1,7 @@
 import { homeBlocks } from '/home.mjs';
 import { MOVED_DRAFTS, adoptDrafts, formatRoute, globalOf, resolveRoute, tabOf, tabRoute, TABS } from '/router.mjs';
 // The state copy of OWNER_WORKSPACE §7 and the Now screen (slice S4); the server serves src/dashboard/copy.mjs here.
-import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, costRunsLine, nowView, readingLines, resultMeaning, stateCopy, workLine, DASHBOARD_VERSION, DASHBOARD_VERSION_NAME, DASHBOARD_VERSIONS } from '/copy.mjs';
+import { COMMANDS, DELEGATED, DIALOGS, NEEDS, NOT_READ, busyOnCommand, nowView, readingLines, resultMeaning, stateCopy, workLine, DASHBOARD_VERSION, DASHBOARD_VERSION_NAME, DASHBOARD_VERSIONS } from '/copy.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const names = { done: 'Done', blocked: 'Blocked', unknown: 'Unknown',
@@ -21,7 +21,6 @@ const ownerCampaign = (c) => state.owner?.campaigns?.[c.id] ?? null;
 const deliveryOf = (c, task) => ownerCampaign(c)?.deliveries?.[task.id] ?? null;
 const shortRepo = (repository) => repository?.split('/')[1] ?? repository ?? '';
 const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
-const usd = (value) => `$${value.toFixed(2)}`;
 const campaignTitle = (c, { inProject = false } = {}) => {
   const purpose = ownerCampaign(c)?.purpose;
   const text = `${purpose?.text ?? 'Work without a name'}${purpose?.variant ? ` (${purpose.variant})` : ''}`;
@@ -128,10 +127,7 @@ function validateForm(form) {
     const min = field.getAttribute('min');
     const message = required && !value ? 'Fill in this field before continuing.'
       : value && field.getAttribute('type') === 'number' && (!Number.isSafeInteger(Number(value)) || min !== null && Number(value) < Number(min))
-        ? 'Enter a whole number of 1 or more.'
-        // A dollar amount (data-amount): up to two decimals, inside the field's data-min and data-max.
-        : value && field.dataset.amount !== undefined && !(/^\d+(?:\.\d{1,2})?$/.test(value) && Number(value) >= Number(field.dataset.min) && Number(value) <= Number(field.dataset.max))
-          ? `Enter an amount from $${field.dataset.min} to $${Number(field.dataset.max).toLocaleString('en-US')}, such as 25 or 12.50.` : null;
+        ? 'Enter a whole number of 1 or more.' : null;
     const id = `${field.id}-validation`;
     let error = form.querySelector(`#${id}`);
     if (message) {
@@ -164,7 +160,7 @@ const screenText = { home: ['Home', 'What needs me, and what changed?'], project
   review: ['Review', 'Is this the right goal and limits?'], plan: ['Plan', 'What will be true when this is done?'], 'add-project': ['Add project', 'Which folder should AIWorks work on?'],
   worklist: ['Work list', 'What is on AIWorks’s own work list?'], 'worklist-item': ['Work item', 'What does this item say, and what happened to it?'],
   'worklist-import': ['Imported issues', 'Which imported GitHub issues should be closed there?'],
-  'project-settings': ['Project settings', 'What must AIWorks never change here, and what may it spend?'],
+  'project-settings': ['Project settings', 'Which areas are protected, and who accepts results?'],
   knowledge: ['Knowledge', 'What does AIWorks know about this product?'], releases: ['Releases', 'What reached users, and what can be undone?'], usage: ['Usage', 'What has AIWorks used, and what is not known?'] };
 // The Review tab is keyed apart from a plan's Review, which asks another question.
 const screenKey = (route) => route.screen === 'settings' ? route.section ?? 'settings' : route.screen === 'project' ? route.tab === 'review' ? 'results' : 'overview' : route.screen;
@@ -386,19 +382,16 @@ document.addEventListener('toggle', (event) => {
   if (event.target.open) { opened.add(key); opened.delete(`${key}:closed`); } else { opened.delete(key); opened.add(`${key}:closed`); }
 }, true);
 
-/** Formats a compact model signature string for task rows, results, and previews. */
+function signatureText(run) {
+  const total = run.tokens?.total;
+  const tokens = total == null ? 'token total unknown' : `${total.toLocaleString()} tokens`;
+  return `${run.name} (${run.type ?? 'model'} · tier ${run.tier ?? 'unknown'} · effort ${run.effort ?? 'unknown'} · ${tokens})`;
+}
+
 function formatTaskSignatureBrief(sig) {
   if (!sig || typeof sig !== 'object') return null;
-  const parts = [];
-  if (sig.name) {
-    const tokens = sig.tokens?.total ? ` · ${sig.tokens.total.toLocaleString()} tokens` : '';
-    parts.push(`Signed: ${sig.name} (${sig.type ?? 'model'} · ${sig.effort ?? 'standard'} effort${tokens})`);
-  }
-  if (sig.verifier?.name) {
-    const vTokens = sig.verifier.tokens?.total ? ` · ${sig.verifier.tokens.total.toLocaleString()} tokens` : '';
-    parts.push(`Verified: ${sig.verifier.name} (${sig.verifier.type ?? 'model'} · ${sig.verifier.effort ?? 'standard'} effort${vTokens})`);
-  }
-  return parts.length ? parts.join(' | ') : null;
+  return [sig.name ? `Signed: ${signatureText(sig)}` : null,
+    sig.verifier?.name ? `Verified: ${signatureText(sig.verifier)}` : null].filter(Boolean).join(' | ') || null;
 }
 
 // Step rows: on a phone, CSS turns each row into a stacked card (name, where it stands, link) with no clipped columns.
@@ -478,17 +471,11 @@ function livenessBadge(c, liveness) {
   return badge(liveness === 'running' ? 'recent' : ['late', 'awaiting-pickup'].includes(liveness) ? 'pending' : 'stale', livenessNames[liveness]);
 }
 
-/** Runs, cost and the AI worker order of one campaign: detail on its card, and the body of the project's Cost tab. */
-function costNotes(c) {
-  // Unknown cost is "not reported", never $0.00.
-  const budget = c.budget, unreported = (budget?.unknownCostRuns ?? 0) + c.agents.length;
-  const cost = c.recordedCostUsd > 0 ? `${usd(c.recordedCostUsd)} reported${unreported ? ` + ${plural(unreported, 'run')} not reported yet` : ''}` : 'cost not reported yet';
-  return { cost, body: el('div', { class: 'notes' }, `AI workers in order of preference: ${c.executors.map(provider).join(' → ')}. `,
-    c.maxWorkerRuns === null ? `${plural(c.runsUsed, 'run')}; this work has no run limit. ` : `${c.runsUsed} of ${plural(c.maxWorkerRuns, 'run')} allowed. `,
-    `Cost: ${cost}. `,
-    budget?.maxCostUsd ? `${usd(budget.chargedCostUsd)} of the ${usd(budget.maxCostUsd)} ceiling is used, counting each unreported run at ${usd(budget.unknownRunCostUsd)}. `
-      : 'This work has no cost ceiling of its own; its project’s budget, when one is set, still counts it. It also pauses when an AI worker reports its own subscription or usage limit, and resumes after the reset. ',
-    'Pause stops new work from starting. Check again asks AIWorks to look again; it never skips the independent check.') };
+function usageNotes(c) {
+  const summary = usageSummary(c.usage);
+  return { summary, body: el('div', { class: 'notes' }, `AI workers in order of preference: ${c.executors.map(provider).join(' → ')}. `,
+    c.maxWorkerRuns === null ? `${plural(c.runsUsed, 'run')}. ` : `${c.runsUsed} of ${plural(c.maxWorkerRuns, 'run')} allowed. `,
+    usageTable(c.usage)) };
 }
 
 function campaignCard(c, expanded = true) {
@@ -516,8 +503,8 @@ function campaignCard(c, expanded = true) {
   // Provider detail matters only while the campaign can still start agents.
   if (expanded) card.append(...(terminal ? [] : [providerStatus(c)]), disclosure(`${c.id}/agent-steps`, `See all ${plural(c.tasks.length, 'step')}`, stepsTable(c)));
   else card.append(disclosure(c.id, `See all ${plural(c.tasks.length, 'step')}`, stepsTable(c)));
-  const { cost, body } = costNotes(c);
-  card.append(disclosure(`${c.id}/costs`, `Runs, cost and AI workers · ${plural(c.runsUsed, 'run')} · ${cost}`, body));
+  const { summary: tokens, body } = usageNotes(c);
+  card.append(disclosure(`${c.id}/tokens`, `Runs and AI workers · ${plural(c.runsUsed, 'run')} · ${tokens}`, body));
   if (c.instructions?.length) card.append(disclosure(`${c.id}/instructions`, `Your guidance to AI workers (${c.instructions.length})`,
     el('div', { class: 'instruction-list' }, ...c.instructions.map((item) => instructionReceipt(item, c)))));
   return card;
@@ -560,8 +547,7 @@ function messageReceipt(m, coordinator, aiworks) {
 function receiptSteps(m, coordinator, aiworks) {
   const steps = [receiptStep(true, 'Sent', `AIWorks received your request at ${clock(m.receivedAt)}`)];
   if (m.state === 'received') {
-    steps.push(m.failure === 'project-budget' ? receiptStep(false, 'Waiting for budget', 'the project budget cannot cover reading it. Raise or remove the budget in the project’s settings, or wait for next month if the monthly budget ran out; AIWorks reads it by itself when it fits', 'failed')
-      : m.failure ? receiptStep(false, 'Retrying', `the last read ended without an answer (${outcomeLabels[m.failure] ?? m.failure}); next attempt ${dateTime(m.retryAt)}`, 'failed')
+    steps.push(m.failure && m.failure !== 'project-budget' ? receiptStep(false, 'Retrying', `the last read ended without an answer (${outcomeLabels[m.failure] ?? m.failure}); next attempt ${dateTime(m.retryAt)}`, 'failed')
       : !coordinator.configured ? receiptStep(false, 'Not read', NOT_READ.receipt, 'failed')
         : coordinator.blocked ? receiptStep(false, 'Not read yet', 'AIWorks cannot read requests right now; why is in AIWorks itself under Settings', 'failed')
         : coordinator.maxRunsPerDay !== null && coordinator.runsToday >= coordinator.maxRunsPerDay ? receiptStep(false, 'Waiting', `AIWorks has read today's ${coordinator.maxRunsPerDay} requests; it reads this one when the 24 hours free up`)
@@ -758,7 +744,6 @@ function startReceipt(address) {
   const asked = startDraft(address).sentPlan;
   if (asked) {
     const plan = state.work?.plans?.find((item) => item.id === asked);
-    if (plan?.budgetWait) return el('p', { class: 'notice warning' }, `Sent · Waiting for budget. ${BUDGET_WAIT_WORDS}`);
     if (plan?.code === 'RECEIVED') return el('p', { class: 'subtext' }, `Sent · ${receivedText(plan)} The plan appears here when it is ready.`);
     if (!plan || plan.code === 'DRAFTING') return el('p', { class: 'subtext' }, 'Sent · AIWorks is drafting a plan. Nothing changes yet. The plan appears here when it is ready.');
     if (plan.code === 'DRAFT_FAILED') return el('p', { class: 'subtext' }, 'AIWorks couldn’t draft a plan for this request. Ask again, or change the goal.');
@@ -894,7 +879,6 @@ async function askForWork(project, address) {
  * the checks, the steps, overlaps, what may change, the AI workers, limits and "Release: Review only". Approve and start
  * sends the version and digest that were shown; the server registers exactly that plan, or refuses and starts nothing.
  */
-const BUDGET_WAIT_WORDS = 'The project budget cannot cover planning it, so AIWorks has not started. Raise or remove the budget in this project’s settings, or wait for next month if the monthly budget ran out; planning starts by itself when it fits.';
 // A request with no planning run recorded yet is received, not drafting: queued, or waiting to read its project again.
 const RETRY_WORDS = { GITHUB_UNKNOWN: 'GitHub could not be reached', BASE_UNKNOWN: 'the latest version of the project could not be read',
   CHECKOUT_UNAVAILABLE: 'AIWorks’s copy of the project could not be prepared', quota: 'the planning AI worker reached a usage limit',
@@ -948,7 +932,7 @@ function planItem(project, plan) {
   const off = Boolean(approving) || sending || offline || !state.supervisor.available;
   const edit = plan.editable && state.work?.planAndDo
     ? el('button', { class: 'button secondary small', type: 'button', disabled: off, onclick: () => editFromPlan(project, plan) }, editing ? 'Continue editing' : 'Edit plan') : null;
-  const word = plan.budgetWait ? 'Waiting for budget' : PLAN_WORDS[plan.code] ?? 'State unknown';
+  const word = PLAN_WORDS[plan.code] ?? 'State unknown';
   return el('li', { class: 'result-row plan-row', 'data-focus-scope': `plan/${plan.id}`, 'data-state': plan.code },
     el('div', { class: 'needs-text' }, routeLink(plan.outcome || 'A plan being drafted', { screen: 'review', project, plan: plan.id }, 'task-name')),
     el('div', { class: 'result-state' }, [word, plan.version ? `${PRIORITY_WORDS[plan.priority] ?? 'Normal'} priority` : null, plan.version ? `version ${plan.version}` : null,
@@ -1004,7 +988,6 @@ function reviewScreen(project, id) {
   if (!plan) return [empty('This plan is not on this computer', 'It may belong to another project, or the address is mistyped.'), back, routeLink('All plans', { screen: 'plan', project }, 'button secondary')];
   if (!plan.version) {
     return [plan.code === 'DRAFT_FAILED' ? empty('AIWorks couldn’t draft a plan', 'Ask again from Start work, or change the goal.')
-      : plan.budgetWait ? empty('Waiting for budget', BUDGET_WAIT_WORDS)
       : plan.code === 'RECEIVED' ? empty('Not drafted yet', ` ${receivedText(plan)} This page shows the plan when it is ready.`)
       : empty('AIWorks is drafting a plan', 'Nothing changes yet. This page shows the plan when it is ready.'), back];
   }
@@ -1845,9 +1828,7 @@ function addProjectScreen() {
     area,
     ready ? el('button', { class: 'button', type: 'button', 'data-connect': 'connect', disabled: busy, onclick: () => void connectFolder() }, 'Connect project') : null,
     draft.outcome?.code === 'PROJECT_MOVED' ? button('Connect as a new project', () => void connectFolder({ asNewProject: true }), 'secondary', busy) : null);
-  // First run states what planning costs before anything is planned (OWNER_UI_V2 WP8).
-  return [el('section', { class: 'panel' }, el('div', { class: 'panel-body' }, el('p', { class: 'subtext' }, planningText(state.planning)))),
-    ideaPanel(), el('section', { class: 'panel' }, form), el('section', { class: 'panel' }, samplePanel())];
+  return [ideaPanel(), el('section', { class: 'panel' }, form), el('section', { class: 'panel' }, samplePanel())];
 }
 
 /*
@@ -2766,7 +2747,7 @@ function overviewGoal(goal) {
       el('div', {}, el('dt', {}, 'Checked'), el('dd', {}, `${strip.checked} of ${strip.steps}`)),
       el('div', {}, el('dt', {}, 'Available to users'), el('dd', {}, strip.available.state === 'recorded' ? `${strip.available.live} live` : AVAILABLE_WORDS[strip.available.state] ?? 'Not known'))) : null,
     budget ? el('div', { class: 'subtext' }, [budget.maxWorkerRuns ? `${budget.runsUsed ?? 0} of ${budget.maxWorkerRuns} AI worker runs used` : null,
-      budget.reportedUsd !== null ? `${usd(budget.reportedUsd)} reported` : 'cost not reported', budget.unreportedRuns ? `${plural(budget.unreportedRuns, 'run')} without a reported cost` : null].filter(Boolean).join(' · ')) : null,
+      usageSummary(budget.usage)].filter(Boolean).join(' · ')) : null,
     goal.next ? el('div', { class: 'subtext' }, `Next: ${clockTimes(stepWords(campaignById(goal.id), goal.next))}`) : null,
     goalVersionList(campaignById(goal.id)),
     el('div', { class: 'campaign-controls' }, goal.control === 'registered'
@@ -2779,9 +2760,8 @@ function overviewGoal(goal) {
  * with what changed from the version before as recorded. Scope cannot change in an amendment, so only limits, AI
  * workers and routing can differ; limits a version did not record are said to be unknown, never guessed.
  */
-const LIMIT_NAMES = { slots: 'steps at a time', maxWorkerRuns: 'AI worker runs', maxRepairRounds: 'repair rounds per step', maxRetriesPerTask: 'retries per step',
-  maxCostUsd: 'reported dollars', unknownRunCostUsd: 'price of a run with no reported cost' };
-const limitValue = (key, value) => value === null ? 'none' : ['maxCostUsd', 'unknownRunCostUsd'].includes(key) ? usd(value) : String(value);
+const LIMIT_NAMES = { slots: 'steps at a time', maxWorkerRuns: 'AI worker runs', maxRepairRounds: 'repair rounds per step', maxRetriesPerTask: 'retries per step' };
+const limitValue = (key, value) => value === null ? 'none' : String(value);
 function versionChanges(v) {
   if (v.kind === 'registered') return 'Approved and started.';
   const parts = [v.limitChanges === null ? 'what its limits were before is not recorded' : v.limitChanges.length
@@ -2947,7 +2927,7 @@ const settingsEmpty = ({ title, text, primary }) => el('div', { class: 'empty-st
 function settingsLinks() {
   return panel('More', null, el('ul', { class: 'settings-links' },
     el('li', {}, routeLink('Connections', '#/settings/connections'), el('div', { class: 'subtext' }, 'AIWorks itself, each AI worker account, where merges are seen from, and the trusted main with its backup.')),
-    el('li', {}, routeLink('Usage', '#/settings/usage'), el('div', { class: 'subtext' }, 'What AI workers and planning used, by source and unit, with unknown cost kept unknown.')),
+    el('li', {}, routeLink('Usage', '#/settings/usage'), el('div', { class: 'subtext' }, 'Token usage by model, tier, effort and role.')),
     el('li', {}, routeLink('Alerts', '#/settings/alerts'), el('div', { class: 'subtext' }, 'Which notices alert you, quiet hours, and whether an alert transport is set up.')),
     el('li', {}, routeLink('Worker accounts', '#/settings/accounts'), el('div', { class: 'subtext' }, 'Each AI worker login on this computer, and whether it can take work now.')),
     el('li', {}, routeLink('Model instructions', '#/settings/instructions'), el('div', { class: 'subtext' }, 'Which AI models should handle what kind of work, by role, domain and reasoning effort.')),
@@ -3050,7 +3030,7 @@ function moreMenu(c, task = null) {
 /**
  * One piece of work on the Work screen (OWNER_WORKSPACE §4.7, slice S5): its steps in the order they can run, each with
  * its outcome, one state, who is on it and why it waits; Resume as the one primary action when it is paused, and Pause,
- * Check again and Cancel under More. Dependencies, attempts, AI workers and cost are in Details.
+ * Check again and Cancel under More. Dependencies, attempts, AI workers and tokens are in Details.
  */
 const delegatedNote = (c, task) => { const delivery = deliveryOf(c, task); return delivery?.state === 'delegated' ? delivery.note : null; };
 function workPanel(project, c) {
@@ -3065,23 +3045,19 @@ function workPanel(project, c) {
       verdictLabel(c, task),
       // Merging delegated by the owner: merged for them, why it is held (#97), or how long nothing merged it (#139).
       delegatedNote(c, task) ? el('div', { class: 'subtext' }, delegatedNote(c, task)) : null)));
-  const { cost, body } = costNotes(c);
+  const { summary: tokens, body } = usageNotes(c);
   return el('section', { class: 'panel', 'data-focus-scope': `work/${c.id}` },
     el('div', { class: 'panel-header' }, el('div', {}, el('h2', {}, campaignTitle(c, { inProject: true })), el('p', {}, campaignNext(c)), note ? el('p', { class: 'controls-note' }, note) : null),
       el('div', {}, resumeButton(c), moreMenu(c))),
     el('div', { class: 'steps' }, table(['What it delivers', 'Where it stands'], rows)),
-    disclosure(`${c.id}/work-details`, `Details · ${plural(c.tasks.length, 'step')} · ${plural(c.runsUsed, 'run')} · ${cost}`,
+    disclosure(`${c.id}/work-details`, `Details · ${plural(c.tasks.length, 'step')} · ${plural(c.runsUsed, 'run')} · ${tokens}`,
       el('div', {}, stepsTable(c), terminal ? null : providerStatus(c), body, modelNotes(c))));
 }
 
-/** Each step's models and tiers and its cost by unit, then the work's (MODEL_ROUTING R6): Details of the Work screen. */
+/** Per-step token usage and the model that reviewed the result. */
 function modelNotes(c) {
-  const steps = runOrder(c).filter((task) => modelsText(task.routing) || unitCostText(task.costByUnit));
-  if (!steps.length && !unitCostText(c.costByUnit)) return null;
-  return el('div', { class: 'notes' }, el('h3', { class: 'section-title' }, 'Models and cost by unit'),
-    steps.length ? el('ul', {}, ...steps.map((task) => el('li', {}, `${task.outcome ?? task.title}: `,
-      [modelsText(task.routing), movedUpText(task.routing), unitCostText(task.costByUnit)].filter(Boolean).join('. ')))) : null,
-    unitCostText(c.costByUnit) ? el('p', {}, `This work, by unit, never added together: ${unitCostText(c.costByUnit)}.`) : null);
+  return el('div', { class: 'notes' }, ...runOrder(c).map((task) => disclosure(`tokens/${c.id}/${task.id}`,
+    `${task.title ?? task.id} · ${usageSummary(task.usage)}`, el('div', {}, modelsText(task.routing), movedUpText(task.routing), usageTable(task.usage)))));
 }
 
 /** One attempt of a step and how it ended, from the supervisor's records: "Builder (Claude): rejected · started … · ended …". */
@@ -3471,8 +3447,8 @@ function stepScreen(project, c, task) {
       last ? el('p', { class: 'subtext' }, `Last result: ${last}`) : null,
       task.signature ? el('div', { class: 'instruction-list', 'data-task-signature': '' },
         el('h3', { class: 'section-title' }, 'Model signature'),
-        task.signature.name ? el('p', {}, el('strong', {}, 'Implementer: '), `${task.signature.name} (${task.signature.type ?? 'model'} · ${task.signature.effort ?? 'standard'} effort${task.signature.tokens ? ` · ${task.signature.tokens.total?.toLocaleString?.() ?? task.signature.tokens.total} tokens` : ' · tokens not reported'})`) : null,
-        task.signature.verifier ? el('p', {}, el('strong', {}, 'Verifier: '), `${task.signature.verifier.name} (${task.signature.verifier.type ?? 'model'} · ${task.signature.verifier.effort ?? 'standard'} effort${task.signature.verifier.tokens ? ` · ${task.signature.verifier.tokens.total?.toLocaleString?.() ?? task.signature.verifier.tokens.total} tokens` : ' · tokens not reported'})`) : null
+        task.signature.name ? el('p', {}, el('strong', {}, 'Implementer: '), signatureText(task.signature)) : null,
+        task.signature.verifier?.name ? el('p', {}, el('strong', {}, 'Verifier: '), signatureText(task.signature.verifier)) : null
       ) : null,
       // What that result means and, when stopped, what fixing it involves, in place (aiworks#11 review 4 F13).
       meaning ? el('div', { class: 'instruction-list', 'data-result-meaning': '' }, el('p', {}, meaning.kind), el('p', {}, meaning.fix)) : null,
@@ -3578,106 +3554,31 @@ function resultsScreen(project) {
     releaseStopLine(state.supervisor.settings?.releaseStop));
 }
 
-/**
- * What a step or a piece of work cost, in words. Unknown cost is "not reported", never $0.00: a run that reported no cost
- * is counted apart, and a run still in progress has no cost yet.
- */
-function costText({ runs, reportedUsd, unreportedRuns, runningRuns }) {
-  if (!runs && !runningRuns && !unreportedRuns && reportedUsd === null) return 'Nothing has run';
-  const parts = [reportedUsd !== null ? `${usd(reportedUsd)} reported${unreportedRuns ? ` + ${plural(unreportedRuns, 'run')} not reported` : ''}`
-    : unreportedRuns ? `not reported (${plural(unreportedRuns, 'run')})` : null, runningRuns ? `${plural(runningRuns, 'run')} still running` : null];
-  return parts.filter(Boolean).join(' · ');
+function usageSummary(usage) {
+  if (!usage?.runs) return 'No finished runs';
+  const missing = usage.unknownRuns + usage.partialRuns;
+  if (usage.total == null) return `Total unreported for ${plural(usage.runs, 'run')}`;
+  return `${usage.total.toLocaleString()} reported tokens${missing ? ` · ${plural(missing, 'run')} without a complete total` : ''}`;
 }
-// A step's runs beside its cost: the finished ones and those still running, so "1 run still running" never sits beside 0 (aiworks#11 review 4 F18).
-const stepRuns = ({ runs, runningRuns }) => runs + runningRuns;
 
-/**
- * Model, tier and cost by unit (MODEL_ROUTING slice R6, build slice UI12), in words. Each unit stays apart: reported
- * dollars, then tokens per AI provider, then the runs whose cost is unknown. Nothing is added across units or providers,
- * and an unknown cost is counted in runs, never shown as $0.00.
- */
-const tokenCount = (n) => n.toLocaleString('en-US');
+function usageTable(usage) {
+  if (!usage?.models?.length) return el('p', {}, 'No token records yet.');
+  const fields = ['input', 'cacheRead', 'cacheCreation', 'output', 'reasoning', 'total'];
+  const headers = ['Model', 'Role', 'Tier', 'Effort', 'Runs', 'Input', 'Cache read', 'Cache write', 'Output', 'Reasoning', 'Total'];
+  const cellValue = (row, key) => row[key] == null ? 'Unknown' : row[key].toLocaleString() +
+    (row.coverage[key] < row.runs ? ` (${row.coverage[key]}/${row.runs} complete)` : '');
+  return table(headers, usage.models.map((row) => el('tr', {}, ...[
+    `${provider(row.executor)} · ${row.model ?? 'Unknown'}`, row.role ?? 'Unknown', row.tier ?? 'Unknown', row.effort ?? 'Unknown',
+    row.runs, ...fields.map((key) => cellValue(row, key))].map((value) => cell(String(value))))));
+}
+
 const modelText = (used) => used ? `${provider(used.executor)} ${used.model ?? '(model not recorded)'}${used.tier ? ` (${used.tier})` : ''}` : null;
 function modelsText(routing) {
   const parts = [routing?.implement ? `Model: ${modelText(routing.implement)}` : null, routing?.verify ? `checked by ${modelText(routing.verify)}` : null].filter(Boolean);
   return parts.length ? parts.join(' · ') : null;
 }
-function unitCostText(cost) {
-  if (!cost) return null;
-  const parts = [cost.usd !== null ? `${usd(cost.usd)} reported (${plural(cost.usdRuns, 'run')})` : null,
-    ...cost.tokens.map((t) => `${provider(t.executor)}: ${tokenCount(t.input)} input${t.cachedInInput && t.cacheRead ? ` (${tokenCount(t.cacheRead)} of them cached)` : ''}${
-      !t.cachedInInput && t.cacheRead ? ` + ${tokenCount(t.cacheRead)} read from cache` : ''}${t.cacheCreation ? ` + ${tokenCount(t.cacheCreation)} written to cache` : ''} and ${tokenCount(t.output)} output tokens`),
-    cost.unknownRuns ? `${plural(cost.unknownRuns, 'run')} with unknown cost` : null].filter(Boolean);
-  return parts.length ? parts.join(' · ') : null;
-}
 const movedUpText = (routing) => routing?.movedUp?.reason ?? null;
 
-/**
- * The Cost headline and the lines under it (OWNER_WORKSPACE §4.10): finished work apart from work not finished yet, so the
- * first number answers "what did the finished work cost?" and never mixes in work still running (aiworks#11 review 5 G12).
- * Cancelled work has ended too, and is named when it ran. Unknown is never $0.00. `delivered` counts a work's steps with a result.
- */
-function costSummary(all, delivered) {
-  const ran = (c) => c.runsUsed > 0 || c.cost.reportedUsd !== null || c.cost.unreportedRuns > 0 || c.cost.runningRuns > 0;
-  const group = (list) => ({ works: list.length, reportedUsd: list.some((c) => c.cost.reportedUsd !== null) ? list.reduce((n, c) => n + (c.cost.reportedUsd ?? 0), 0) : null,
-    unreportedRuns: list.reduce((n, c) => n + c.cost.unreportedRuns, 0), runningRuns: list.reduce((n, c) => n + c.cost.runningRuns, 0), delivered: list.reduce((n, c) => n + delivered(c), 0) });
-  const ended = (c) => ['finished', 'cancelled'].includes(c.control), mine = all.filter(ran);
-  const done = group(mine.filter(ended)), open = group(mine.filter((c) => !ended(c)));
-  const running = (n) => n ? `${plural(n, 'run')} still running; ${n === 1 ? 'its' : 'their'} cost is not known yet.` : null;
-  if (!done.works) {
-    return { headline: open.reportedUsd !== null ? `${usd(open.reportedUsd)} reported so far · this project's work is not finished yet` : 'No cost reported for this project yet',
-      lines: [open.unreportedRuns ? `${plural(open.unreportedRuns, 'run')} did not report a cost, so the real total is ${open.reportedUsd !== null ? 'higher' : 'not known'}.` : null,
-        running(open.runningRuns)].filter(Boolean) };
-  }
-  const name = mine.some((c) => c.control === 'cancelled') ? 'finished or cancelled work' : 'finished work';
-  const headline = done.reportedUsd !== null ? `${usd(done.reportedUsd)} reported for ${name}${done.delivered ? ` · about ${usd(done.reportedUsd / done.delivered)} per step with a result` : ''}`
-    : `No cost reported for ${name}`;
-  const soFar = open.works ? [open.reportedUsd !== null ? `${usd(open.reportedUsd)} reported so far` : 'no cost reported yet',
-    open.unreportedRuns ? `${plural(open.unreportedRuns, 'run')} did not report a cost` : null].filter(Boolean).join(' · ') : null;
-  return { headline, lines: [done.unreportedRuns ? `${plural(done.unreportedRuns, 'run')} of the ${name} did not report a cost, so its real total is ${done.reportedUsd !== null ? 'higher' : 'not known'}.` : null,
-    soFar ? `Work not finished yet, counted apart: ${soFar}.` : null, running(open.runningRuns)].filter(Boolean) };
-}
-
-/**
- * What this project spent, on Overview's budget line (OWNER_UI_V2 screen 3; formerly the Cost tab, OWNER_WORKSPACE
- * §4.10). First what finished work reported, with work not finished yet counted apart (costSummary) and the runs that
- * reported no cost counted apart; then "See the breakdown": per piece of work and per step, its runs, reported cost,
- * unreported runs, retries and checker rejections. No primary action.
- */
-function spending(project) {
-  // A project without GitHub: its goals' runs come apart from the campaigns (state.supervisor.local), built the same way;
-  // a step has a result once it is done, and it has no step screen of its own.
-  const local = Boolean(localProject(project));
-  const total = !state.supervisor.available ? null : local ? state.supervisor.localCosts?.find((item) => item.project === project)
-    : state.supervisor.costs?.find((item) => sameProject(item.repository, project));
-  const all = local ? (state.supervisor.local ?? []).filter((c) => c.project === project) : projectCampaigns(project);
-  if (!total) return [];
-  // Nothing has run: the §7.1 copy, which the server takes from the state copy module.
-  if (total.empty) return [el('p', {}, el('strong', {}, total.empty.title), ` ${total.empty.text}`)];
-  const { headline, lines } = costSummary(all, local ? (c) => c.tasks.filter((task) => task.state === 'done').length : (c) => ownerCampaign(c)?.counts.delivered ?? 0);
-  if (costRunsLine(total)) lines.push(costRunsLine(total));
-  const stepName = (c, task) => local ? el('span', { class: 'task-name' }, task.outcome ?? task.title)
-    : routeLink(task.outcome ?? task.title, { screen: 'step', project, work: c.id, step: task.id }, 'task-name');
-  const work = (c) => el('section', { class: 'panel', 'data-focus-scope': `cost/${c.id}` },
-    el('div', { class: 'panel-header' }, el('div', {}, el('h4', {}, local ? c.title : campaignTitle(c)),
-      el('p', {}, `${plural(c.runsUsed, 'run')} · ${costText({ runs: c.runsUsed, ...c.cost })}`),
-      unitCostText(c.costByUnit) ? el('p', { class: 'subtext' }, `Tokens and dollars, each counted on its own: ${unitCostText(c.costByUnit)}`) : null)),
-    el('div', { class: 'steps' }, table(['Step', 'Runs', 'Cost', 'Retries', 'Checker rejections'], runOrder(c).map((task) => el('tr', { 'data-focus-scope': `cost/${c.id}/${task.id}` },
-      el('td', { class: 'c-work' }, stepName(c, task),
-        ...[modelsText(task.routing), movedUpText(task.routing)].filter(Boolean).map((text) => el('div', { class: 'subtext' }, text))),
-      cell(String(stepRuns(task.cost))), cell(costText(task.cost), unitCostText(task.costByUnit) ? el('div', { class: 'subtext' }, unitCostText(task.costByUnit)) : null),
-      cell(String(task.cost.retries)), cell(String(task.cost.checkerRejections)))))),
-    costNotes(c).body);
-  return [el('h3', {}, headline), ...lines.map((line) => el('p', {}, line)),
-    disclosure(`cost/${project}`, 'See the breakdown', el('div', {}, ...all.map(work)))];
-}
-
-/*
- * Project settings (OWNER_UI_V2 WP5): protected areas, notes for the AI and optional project and monthly budgets, read
- * on their own (GET /api/v2/projects/<id>/settings) when opened and again at every refresh while shown. The form is kept
- * as typed across the refresh and a failed save, per address, and binds the version it was started from: a version saved
- * meanwhile is said, and the owner keeps their entries or takes the newest. A save shows the version it applied.
- */
 const settingsViews = new Map();
 let settingsBusy = false;
 const settingsOff = () => settingsBusy || offline;
@@ -3706,48 +3607,29 @@ const settingsEntry = (project, { maxAge = null } = {}) => {
   if (!entry || maxAge !== null && !entry.loading && Date.now() - (entry.readAt ?? 0) > maxAge) void loadProjectSettings(project);
   return settingsViews.get(project) ?? {};
 };
-const amountText = (value) => (value === null || value === undefined ? '' : String(value));
 /** The form as the owner left it, or the saved settings with the version they came from. */
 function settingsDraft(project, view) {
   const saved = drafts.get(settingsAddress(project), 'settings');
   if (saved) return saved;
   const { settings } = view;
-  return { base: view.version, areas: settings.protectedAreas.join('\n'), notes: settings.notes, totalUsd: amountText(settings.budget.totalUsd),
-    monthlyUsd: amountText(settings.budget.monthlyUsd), unknownRunCostUsd: amountText(settings.budget.unknownRunCostUsd), acceptance: settings.acceptance ?? 'automatic',
+  return { base: view.version, areas: settings.protectedAreas.join('\n'), notes: settings.notes, acceptance: settings.acceptance ?? 'automatic',
     repairRounds: repairRoundsChoice(settings.limits) };
 }
 // Repair rounds in Project settings (AW-002, amended 2026-11-06): 'default' (3), a number 0..5, or 'none' (no limit).
 const repairRoundsChoice = (limits) => !limits || limits.maxRepairRounds === undefined ? 'default' : limits.maxRepairRounds === null ? 'none' : String(limits.maxRepairRounds);
 const repairRoundsLimits = (choice) => choice === 'default' || choice === undefined ? {} : { maxRepairRounds: choice === 'none' ? null : Number(choice) };
 
-/** One budget period in words: charged against the cap and what is left, or the reported spend without a cap. Unknown is never $0. */
-function spendLine(label, period, price) {
-  if (!period) return el('p', {}, `${label}: not known right now.`);
-  const unpriced = period.unknownCostRuns + period.openRuns;
-  if (period.capUsd === null) {
-    return el('p', {}, `${label}: no limit. Reported ${usd(period.reportedUsd)}${period.unknownCostRuns ? `, plus ${plural(period.unknownCostRuns, 'run')} whose cost was not reported (not known)` : ''}.`);
-  }
-  return el('p', { 'data-state': period.exhausted ? 'exhausted' : 'available' }, `${label}: ${usd(period.chargedUsd)} counted of ${usd(period.capUsd)}; ${usd(Math.max(0, period.remainingUsd))} left.`,
-    unpriced ? el('span', { class: 'subtext' }, ` Includes ${[period.unknownCostRuns ? `${plural(period.unknownCostRuns, 'run')} with no reported cost` : null,
-      period.openRuns ? `${plural(period.openRuns, 'running step')}` : null].filter(Boolean).join(' and ')}, each counted at ${usd(price)}.`) : null);
-}
-
-/** The changing part: the applied version, what the budget has left, and a version saved since this form was started. */
 function settingsParts(project) {
   const entry = settingsEntry(project), v = entry.view;
   if (!v) return [];
-  const draft = settingsDraft(project, v), spend = v.spend;
+  const draft = settingsDraft(project, v);
   return [
-    el('p', { class: 'subtext', role: 'status' }, v.version ? `Applied: version ${v.version}, saved ${clock(v.savedAt)}.` : 'Nothing saved yet: no protected areas, no notes and no budget.'),
+    el('p', { class: 'subtext', role: 'status' }, v.version ? `Applied: version ${v.version}, saved ${clock(v.savedAt)}.` : 'Nothing saved yet: no protected areas or notes.'),
     v.local ? null : el('p', {}, v.settings.acceptance === 'owner'
       ? 'Accepting results: you accept them yourself. A checked result is merged only after you accept exactly that version.'
       : 'Accepting results: automatic. A checked result is merged under the merge gate without waiting for you.'),
     entry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(entry.readAt)}. ${offline
       ? 'The page is disconnected; it reads these settings again when it reconnects.' : entry.error.message}`) : null,
-    spend.exhausted ? el('p', { class: 'notice warning' }, `The ${spend.exhausted === 'month' ? 'monthly budget' : 'project budget'} cannot cover another step, so no new step starts here${spend.exhausted === 'month' ? ' until next month' : ''}. Running steps finish. Raise or remove the budget to continue.`) : null,
-    spendLine('All time', spend.total, spend.unknownRunCostUsd),
-    spendLine(`This month (since ${new Date(spend.monthStart).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })}, UTC)`, spend.month, spend.unknownRunCostUsd),
-    el('p', { class: 'subtext' }, `Counts the AI worker runs of this project’s work, and planning its goals${spend.total?.planning ? ` (planning so far: ${usd(spend.total.planning.reportedUsd)} reported, ${plural(spend.total.planning.unknownCostRuns, 'run')} with no reported cost, ${plural(spend.total.planning.openRuns, 'running read')})` : ''}. Planning that names no single project is not counted against any project${spend.unallocated && (spend.unallocated.unknownCostRuns || spend.unallocated.openRuns || spend.unallocated.reportedUsd) ? `: so far ${usd(spend.unallocated.reportedUsd)} reported, ${plural(spend.unallocated.unknownCostRuns, 'run')} with no reported cost and ${plural(spend.unallocated.openRuns, 'running read')}` : ''}.`),
     draft.base !== v.version ? el('div', { class: 'notice warning', 'data-focus-scope': `settings/${project}/stale` },
       el('p', {}, `Version ${v.version} was saved after you started editing version ${draft.base}. Saving now is refused, so nothing is overwritten by accident.`),
       button('Keep my entries', () => { drafts.set(settingsAddress(project), 'settings', { ...draft, base: v.version }); rebuildSettings(); }, 'secondary small', settingsOff()),
@@ -3756,31 +3638,18 @@ function settingsParts(project) {
 }
 const rebuildSettings = () => { $('#content').replaceChildren(); render(); };
 
-/**
- * Overview's budget (OWNER_UI_V2 screen 3, WP5): the project's all-time and monthly budget with what is counted and left,
- * from the same view Project settings reads, read again every 30 seconds. Unknown cost is never $0, and no budget set
- * says so. It is changed only in Project settings.
- */
-function budgetPanel(project) {
-  const entry = settingsEntry(project, { maxAge: 30_000 }), v = entry.view;
-  const where = routeLink('Project settings', { screen: 'project-settings', project });
-  let body;
-  if (!v) {
-    body = [entry.error?.status === 409 ? el('p', {}, 'No project budget yet: confirm this project’s rules first, then set one in ', where, '.')
-      : entry.error ? el('p', { class: 'needs-stale', role: 'status' }, `Not known right now. ${entry.error.message}`)
-        : el('p', { class: 'subtext' }, 'Reading this project’s budget…')];
-  } else {
-    const spend = v.spend, set = spend.total?.capUsd != null || spend.month?.capUsd != null;
-    body = [entry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(entry.readAt)}.`) : null,
-      spend.exhausted ? el('p', { class: 'notice warning' }, `The ${spend.exhausted === 'month' ? 'monthly budget' : 'project budget'} cannot cover another step, so no new step or planning read starts here${spend.exhausted === 'month' ? ' until next month' : ''}. Running steps finish.`) : null,
-      spendLine('Project budget, all time', spend.total, spend.unknownRunCostUsd),
-      spendLine('This month (UTC)', spend.month, spend.unknownRunCostUsd),
-      el('p', { class: 'subtext' }, set ? 'Counts this project’s AI worker runs and the planning of its goals. Change it in ' : 'No budget is set, so no dollar limit stops a step here; each goal still keeps its own limits. Set one in ', where, '.')];
-  }
-  // What was spent sits on the budget line; what AIWorks used across all projects is in Settings › Usage.
-  body.push(...spending(project), el('p', { class: 'subtext' }, 'Everything AIWorks used on this computer, in all projects: ',
-    routeLink('Settings › Usage', { screen: 'settings', section: 'usage' }), '.'));
-  return panel('Budget', 'What this project has counted, spent and has left.', el('div', { class: 'panel-body', 'data-focus-scope': `overview/${project}/budget` }, ...body.filter(Boolean)));
+function tokenPanel(project) {
+  if (!state.supervisor.available) return null;
+  const local = Boolean(localProject(project));
+  const totals = local ? state.supervisor.localUsage : state.supervisor.projectUsage;
+  const usage = totals?.find((item) => sameProject(item.repository ?? item.project, project))?.usage;
+  const planner = state.supervisor.projectPlanning?.find((item) => sameProject(item.project, project))?.usage;
+  const programs = local ? (state.supervisor.local ?? []).filter((item) => item.project === project) : projectCampaigns(project);
+  return panel('Worker tokens', usageSummary(usage), el('div', { class: 'panel-body' }, usageTable(usage),
+    ...programs.filter((c) => c.usage?.runs).map((c) => disclosure(`tokens/${c.id}`, c.title ?? c.id,
+      el('div', {}, ...c.tasks.map((step) => disclosure(`tokens/${c.id}/${step.id}`, `${step.title ?? step.id} · ${usageSummary(step.usage)}`, usageTable(step.usage)))))),
+    planner ? el('section', {}, el('h3', {}, 'Planning and messages'), usageSummary(planner), usageTable(planner)) : null,
+    routeLink('Usage across projects', { screen: 'settings', section: 'usage' })));
 }
 
 /**
@@ -3806,7 +3675,7 @@ function workDetails(project) {
     el('div', { class: 'panel-body' }, disclosure(`overview/${project}/work`, 'Details', el('div', {}, ...body))));
 }
 const settingsLink = (project) => el('p', { class: 'subtext' }, routeLink('Project settings', { screen: 'project-settings', project }),
-  ': how work runs, what AIWorks never does, protected areas, notes for the AI and budget.');
+  ': how work runs, what AIWorks never does, protected areas, notes for the AI and run limits.');
 
 function projectSettingsScreen(project) {
   const entry = settingsEntry(project), v = entry.view;
@@ -3820,13 +3689,6 @@ function projectSettingsScreen(project) {
   areas.value = draft.areas;
   const notes = el('textarea', { id: 'settings-notes', rows: 4, maxlength: limits.notes, 'aria-describedby': 'settings-notes-help', oninput: () => save() });
   notes.value = draft.notes;
-  const amount = (id, value, { min, max }) => {
-    const input = el('input', { id, type: 'text', inputmode: 'decimal', autocomplete: 'off', 'data-amount': true, 'data-min': min, 'data-max': max, oninput: () => save() });
-    input.value = value;
-    return input;
-  };
-  const total = amount('settings-total', draft.totalUsd, limits.budget), monthly = amount('settings-monthly', draft.monthlyUsd, limits.budget);
-  const price = amount('settings-price', draft.unknownRunCostUsd, limits.unknownRun);
   // Who accepts results (AW-015): automatic, or the owner, in which case nothing merges before they accept that version.
   const modes = [['automatic', 'Automatic', 'A result that passed the independent check is merged under the merge gate without waiting for you.'],
     ['owner', 'I accept results myself', 'A checked result is merged only after you accept exactly that version. It waits on Home with Accept and Request changes.']];
@@ -3838,31 +3700,22 @@ function projectSettingsScreen(project) {
     ...Array.from({ length: limits.repairRounds.max - limits.repairRounds.min + 1 }, (_, i) => String(limits.repairRounds.min + i)).map((n) => el('option', { value: n }, n)),
     el('option', { value: 'none' }, 'No limit'));
   rounds.value = draft.repairRounds ?? 'default';
-  const fields = () => ({ areas: areas.value, notes: notes.value, totalUsd: total.value, monthlyUsd: monthly.value, unknownRunCostUsd: price.value, acceptance: acceptance(),
+  const fields = () => ({ areas: areas.value, notes: notes.value, acceptance: acceptance(),
     repairRounds: rounds.value });
   function save() { drafts.set(address, 'settings', { ...settingsDraft(project, settingsEntry(project).view ?? v), ...fields() }); }
-  const money = (text) => (text.trim() ? Number(text.trim()) : null);
   const form = el('form', { novalidate: true, class: 'panel-body start-form', 'data-settings-form': project, 'data-focus-scope': `settings/${project}/form`,
     onsubmit: (event) => {
       event.preventDefault(); save();
-      // The price of a run with no reported cost is required with either budget: unknown cost is never counted as zero.
-      price.required = Boolean(total.value.trim() || monthly.value.trim());
       if (settingsOff() || !validateForm(form)) return;
       const lines = areas.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
       void saveSettings(project, { version: settingsDraft(project, v).base, protectedAreas: lines, notes: notes.value,
-        budget: { totalUsd: money(total.value), monthlyUsd: money(monthly.value), unknownRunCostUsd: money(price.value) }, acceptance: acceptance(),
+        acceptance: acceptance(),
         limits: repairRoundsLimits(rounds.value) });
     } },
     el('label', { class: 'field' }, el('strong', {}, 'Protected areas'), areas,
       el('span', { id: 'settings-areas-help', class: 'subtext' }, `Folders or files AIWorks must never change, one per line, such as docs/legal or config/production.json. Up to ${limits.protected}. A plan that changes one is refused; a step that changes one stops for you.`)),
     el('label', { class: 'field' }, el('strong', {}, 'Notes for the AI'), notes,
       el('span', { id: 'settings-notes-help', class: 'subtext' }, `Given to every step as guidance; they never add permission. No secrets; up to ${limits.notes.toLocaleString('en-US')} characters.`)),
-    el('fieldset', {}, el('legend', {}, 'Budget (optional)'),
-      el('p', { class: 'subtext' }, 'Empty means no limit. A step starts only when the budget left covers it.'),
-      el('label', { class: 'field' }, el('strong', {}, 'Project budget, all time ($)'), total),
-      el('label', { class: 'field' }, el('strong', {}, 'Monthly budget ($)'), monthly),
-      el('label', { class: 'field' }, el('strong', {}, 'Count a run with no reported cost as ($)'), price,
-        el('span', { class: 'subtext' }, 'Needed with a budget: some AI workers do not report what a run cost, and that is never counted as $0.'))),
     el('label', { class: 'field' }, el('strong', {}, 'Repair rounds per step'), rounds,
       el('span', { id: 'settings-repair-rounds-help', class: 'subtext' }, 'How often AIWorks repairs a step after a check finds a problem. A plan that sets its own number keeps it. At the limit AIWorks does not wait for you: a step whose full check passed is delivered with its known problems listed, otherwise it ends as not done, each with a follow-up item.')),
     // A project without GitHub is accepted by Apply, so it has no merge to wait for.
@@ -3872,7 +3725,7 @@ function projectSettingsScreen(project) {
     el('p', { class: 'subtext' }, 'Saving applies to the next step AIWorks starts here. Work already approved keeps its own limits, except repair rounds where its plan names none: those follow this setting from the next check. These settings never widen what work may change.'),
     el('button', { class: 'button', type: 'submit', disabled: settingsOff() }, 'Save settings'));
   return [howWorkRuns(project), el('section', { class: 'panel', 'aria-labelledby': 'settings-title' },
-    el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'settings-title' }, 'Standing rules and budget'),
+    el('div', { class: 'panel-header' }, el('div', {}, el('h2', { id: 'settings-title' }, 'Standing rules'),
       el('p', {}, 'They apply to every goal in this project.'))),
     el('div', { class: 'panel-body', id: 'settings-dynamic' }, ...settingsParts(project)), form)];
 }
@@ -3884,14 +3737,13 @@ function projectSettingsScreen(project) {
  * rounds from Project settings or the default 3 where a plan names none (`repairRoundsFrom`, AW-002); no other default.
  */
 const LIMIT_WORDS = { slots: (n) => `${plural(n, 'step')} at a time`, maxWorkerRuns: (n) => `at most ${plural(n, 'AI worker run')}`,
-  maxRepairRounds: (n) => `at most ${plural(n, 'repair round')} per step`, maxRetriesPerTask: (n) => `at most ${plural(n, 'retry', 'retries')} per step`,
-  maxCostUsd: (n) => `at most ${usd(n)} reported`, unknownRunCostUsd: (n) => `a run with no reported cost counts as ${usd(n)}` };
+  maxRepairRounds: (n) => `at most ${plural(n, 'repair round')} per step`, maxRetriesPerTask: (n) => `at most ${plural(n, 'retry', 'retries')} per step` };
 const ROUNDS_FROM = { project: ' (from Project settings)', default: ' (the default)' };
 const limitsText = (limits, from = 'goal') => Object.entries(limits ?? {}).filter(([key, value]) => value !== null && LIMIT_WORDS[key])
   .map(([key, value]) => `${LIMIT_WORDS[key](value)}${key === 'maxRepairRounds' ? ROUNDS_FROM[from] ?? '' : ''}`).join(' · ');
 const NEVER = [
   'Changes a protected area, or anything outside what the approved plan allows. Such a result is held and never published, and there is no “allow once”.',
-  'Widens a goal’s files, protected areas, limits or budget by itself or from your answer to a decision. That is a new plan version for you to compare and approve.',
+  'Widens a goal’s files, protected areas, or limits by itself or from your answer to a decision. That is a new plan version for you to compare and approve.',
   'Merges a result that was not independently checked at its exact version, or outside the merge gate you set.',
   'Releases or deploys anything from this page: release is not built here, and needs its own grant for this project.',
   'Reads your secret files or shows secret values. Notes and facts that look like a password or key are refused.',
@@ -3918,7 +3770,7 @@ function howWorkRuns(project) {
       el('ul', {}, ...NEVER.map((line) => el('li', {}, line)))));
 }
 
-/** The 5-second refresh keeps the form as typed: only the applied version, the spend and the button change. */
+/** The 5-second refresh keeps the form as typed: only the applied version, the saved version and the button change. */
 function refreshProjectSettings(content, project) {
   const form = content.querySelector('form[data-settings-form]');
   if (!form || form.dataset.settingsForm !== project || !settingsViews.get(project)?.view) return false;
@@ -4382,8 +4234,7 @@ async function saveFact(project, body) {
 
 /*
  * Settings -> Usage (OWNER_UI_V2 WP8): what AIWorks used, by source and unit, read on its own when opened and at every
- * refresh while shown. Each unit stands apart (dollars as reported, tokens per provider); a run that reported no cost is
- * counted, never priced at $0; hosting and subscriptions are not tracked and say so, with no amount.
+ * refresh while shown. Token totals and their coverage come from the same recorded runs.
  */
 const usageEntry = { view: null, error: null, loading: false, readAt: null };
 async function loadUsage() {
@@ -4400,37 +4251,15 @@ async function loadUsage() {
     if (current.route.screen === 'settings' && current.route.section === 'usage' && state && !document.querySelector('dialog[open]')) render();
   }
 }
-/** What planning a goal costs: from this computer's earlier plans, or unavailable. Never $0 and never a price. */
-function planningText(p) {
-  if (!p) return 'Planning cost: not known right now.';
-  if (!p.available) return `Planning cost: unavailable. ${p.runs ? `${plural(p.runs, 'earlier plan')} on this computer reported no cost` : 'No goal has been planned on this computer yet'}, so AIWorks cannot estimate it. Planning a goal is one AI run; it starts only when you send a goal.`;
-  const range = p.lowUsd === p.highUsd ? `about ${usd(p.lowUsd)}` : `${usd(p.lowUsd)} to ${usd(p.highUsd)} (typically ${usd(p.medianUsd)})`;
-  return `Planning a goal has cost ${range} on this computer, from ${plural(p.reportedRuns, 'earlier plan')} that reported a cost${p.unknownRuns ? `; ${plural(p.unknownRuns, 'other')} reported none` : ''}. An estimate from history, not a price.`;
-}
 function usageScreen() {
   if (!usageEntry.view && !usageEntry.loading && !usageEntry.error) void loadUsage();
   const v = usageEntry.view;
   if (!v) return [usageEntry.error ? empty('Not known right now', ` ${usageEntry.error.message}`) : empty('Reading usage…', '')];
   if (!v.available) return [unavailable()];
-  const w = v.workers, c = v.coordinator;
-  // Each total names its runs, and every subset says which of them it counts, so the numbers add up on the page.
-  const dollars = (amount, runs, all) => !all ? 'No finished runs yet.' : amount === null ? `${plural(all, 'finished run')}. None reported a dollar cost.`
-    : `${plural(all, 'finished run')}. ${usd(amount)} reported by ${runs} of them.`;
-  const unknown = (runs, amount) => runs && amount !== null ? el('p', {}, `${runs} of them reported no cost: unknown, not $0.`) : null;
-  const tokenRuns = w.tokens.reduce((sum, t) => sum + t.runs, 0), workerRuns = w.usdRuns + w.unknownRuns;
-  const stale = usageEntry.error || offline ? el('p', { class: 'needs-stale', role: 'status' }, `Shown as read at ${clock(usageEntry.readAt)}.`) : null;
-  return [
-    panel('AI worker runs', 'Every finished step’s runs, in all work on this computer. Running steps are counted when they finish.', el('div', { class: 'panel-body' }, stale,
-      el('p', {}, dollars(w.usd, w.usdRuns, workerRuns)), unknown(w.unknownRuns, w.usd),
-      w.tokens.length ? el('p', {}, `Tokens by AI worker, from the ${tokenRuns} of them that reported tokens${workerRuns > tokenRuns ? `; ${workerRuns - tokenRuns} reported none` : ''}:`) : null,
-      w.tokens.length ? el('ul', { class: 'settings-links' }, ...w.tokens.map((t) => el('li', {}, el('strong', {}, provider(t.executor)),
-        el('div', { class: 'subtext' }, `${plural(t.runs, 'run')} · ${tokenCount(t.input)} input and ${tokenCount(t.output)} output tokens`)))) : null)),
-    panel('AI coordinator', 'Planning goals and answering your messages.', el('div', { class: 'panel-body' },
-      el('p', {}, dollars(c.usd, c.reportedRuns, c.reportedRuns + c.unknownRuns)), unknown(c.unknownRuns, c.usd), c.openRuns ? el('p', { class: 'subtext' }, `${plural(c.openRuns, 'run')} still running.`) : null,
-      el('p', {}, planningText(v.planning)))),
-    panel('Hosting and subscriptions', null, el('div', { class: 'panel-body' },
-      el('p', {}, 'Not tracked. AIWorks does not know what hosting or AI subscriptions cost you, so it shows no amount for them.'))),
-    el('p', { class: 'subtext' }, 'Dollars are as each AI worker reported them. Tokens and dollars are counted apart and never added together.')];
+  const stale = usageEntry.error || offline ? el('p', { role: 'status' }, `Shown as read at ${clock(usageEntry.readAt)}.`) : null;
+  return [stale, ...[['AI worker runs', v.workers], ['Planning and messages', v.coordinator]].map(([name, usage]) =>
+    panel(name, usageSummary(usage), el('div', { class: 'panel-body' }, usageTable(usage),
+      usage.openRuns ? el('p', {}, `${plural(usage.openRuns, 'run')} still running.`) : null)))].filter(Boolean);
 }
 
 /**
@@ -4449,9 +4278,9 @@ function goalScreen(project, id, all) {
 function projectScreen(route) {
   const project = route.project, all = projectCampaigns(project);
   // Now from the state copy module, for a project this computer knows (or while its state cannot be read).
-  // Overview (OWNER_UI_V2 screen 3): the goal, then the budget with what was spent, then running work under Details.
+  // Overview (OWNER_UI_V2 screen 3): the goal, then model token usage, then running work under Details.
   if (route.screen === 'project' && route.tab === 'overview' && (offline || !state.supervisor.available || all.length ||
-    projectList().some((item) => sameProject(item.id, project)))) return [...nowScreen(project), budgetPanel(project), workDetails(project), settingsLink(project)].filter(Boolean);
+    projectList().some((item) => sameProject(item.id, project)))) return [...nowScreen(project), tokenPanel(project), workDetails(project), settingsLink(project)].filter(Boolean);
   // Project settings are read on their own, so they show whatever the supervisor's snapshot says (WP5).
   if (route.screen === 'project-settings') return projectSettingsScreen(project);
   // Knowledge is read on its own too (WP8).

@@ -44,7 +44,7 @@
     <label><span id="instruction-step-label"></span><select id="instruction-task" required></select></label>
     <label>Recipient<select id="instruction-role"><option value="implement">Builder — its next run</option><option value="verify">Independent checker — its next run</option></select></label>
     <label>Instruction<textarea class="resize-none" id="instruction-text" rows="5" maxlength="2000" required aria-describedby="instruction-help" placeholder="What should the AI worker focus on?"></textarea></label>
-    <p id="instruction-help">Queued for this task's next run by the selected role. Running workers are not interrupted. Existing scope, acceptance and budget still apply. No secrets; up to 2,000 characters.</p>
+    <p id="instruction-help">Queued for this task's next run by the selected role. Running workers are not interrupted. Existing scope, acceptance and run limits still apply. No secrets; up to 2,000 characters.</p>
     <div class="dialog-actions"><button id="close-instruction" class="button secondary" type="button">Keep draft</button><button id="send-instruction" class="button" type="submit">Queue instruction</button></div>
   </form></dialog>
   <dialog id="message-dialog" aria-labelledby="message-title"><form id="message-form" novalidate>

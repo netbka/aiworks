@@ -238,7 +238,7 @@ test('earlier pauses, cancellations and STOP stay, and the resumed campaign keep
     campaignPause(inst.store, 'owner-paused', 'owner reason');
     campaignCancel(inst.store, 'cancelled', 'owner cancel');
     inst.store.run("UPDATE campaigns SET control = 'cancelled' WHERE id = 'cancelled'");
-    inst.store.run("UPDATE campaigns SET runs_used = 3, cost_usd = 1.5 WHERE id = 'running'");
+    inst.store.run("UPDATE campaigns SET runs_used = 3 WHERE id = 'running'");
     inst.store.run("UPDATE tasks SET attempts = 2, retry_at = 12345, last_error = 'timeout' WHERE campaign_id = 'running' AND task_id = 'T1'");
     inst.store.journal('running', 'task-failed', { task: 'T1' }, 1);
     const before = inst.store.campaign('running');
@@ -256,8 +256,8 @@ test('earlier pauses, cancellations and STOP stay, and the resumed campaign keep
     const after = inst.store.campaign('running');
     assert.equal(after.control, 'registered');
     assert.equal(canonicalJson(after.declaration), canonicalJson(before.declaration));
-    assert.deepEqual([after.scope_digest, after.authorization_version, after.runs_used, after.cost_usd],
-      [before.scope_digest, before.authorization_version, 3, 1.5]);
+    assert.deepEqual([after.scope_digest, after.authorization_version, after.runs_used],
+      [before.scope_digest, before.authorization_version, 3]);
     const task = inst.store.task('running', 'T1');
     assert.deepEqual([task.attempts, task.retry_at, task.last_error], [2, 12345, 'timeout']);
     assert.deepEqual(inst.store.all('SELECT seq, kind FROM journal WHERE seq <= ? ORDER BY seq', history.at(-1).seq), history);

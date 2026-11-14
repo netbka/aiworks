@@ -97,14 +97,16 @@ export function staticReceipt(inputs) {
   return { version: RECEIPT_VERSION, policy: STATIC_POLICY, mode: 'static', inputs, decision: route(inputs), inputsDigest: sha256(inputs) };
 }
 
-// routing-policy/1 (docs/design/MODEL_ROUTING.md sections 3 to 6 and 9, slice R4): indicators, filters, floors, ranking,
+// routing-policy/2 (docs/design/MODEL_ROUTING.md sections 3 to 6 and 9, slice R4): indicators, filters, floors, ranking,
 // escalation, pin and verifier independence, as a pure function of the receipt's inputs. The controller dispatches with it
 // for a campaign whose routing.mode is "auto" (slice R5); every other campaign keeps the static receipt above.
 
-export const POLICY = 'routing-policy/1';
+export const POLICY = 'routing-policy/2';
+const LEGACY_POLICY = 'routing-policy/1';
+export const AUTO_POLICIES = Object.freeze([LEGACY_POLICY, POLICY]);
 export const REASON_CODES = ['research-only', 'web-mismatch', 'cli-not-configured', 'role-unsupported', 'host-unavailable',
   'account-wait', 'below-floor', 'pin-excluded'];
-// Policy constants of routing-policy/1 (section 5.2), to be replaced by the measured baseline before any cohort.
+// Policy constants of routing-policy/2 (section 5.2), to be replaced by the measured baseline before any cohort.
 const PRIOR = { 1: 0.6, 2: 0.75, 3: 0.85 };
 const PRIOR_WEIGHT = 4;
 const MIN_ATTEMPTS = 5;
@@ -172,8 +174,8 @@ function stats(history, candidate, cls) {
   const row = history.find((item) => same(item, candidate) && item.class === cls) ?? null;
   const attempts = row?.attempts ?? 0;
   const rate = ((row?.accepted ?? 0) + PRIOR_WEIGHT * PRIOR[candidate.tier]) / (attempts + PRIOR_WEIGHT);
-  const known = typeof row?.cost?.mean === 'number' && row.cost.known > 0;
-  return { attempts, rate, u: { unit: row?.cost?.unit ?? null, mean: known ? row.cost.mean : null }, medianMs: row?.medianMs ?? null };
+  const known = row?.cost?.unit === 'tokens' && Number.isFinite(row.cost.mean) && row.cost.known > 0 && !row.cost.unknown;
+  return { attempts, rate, u: { unit: known ? 'tokens' : null, mean: known ? row.cost.mean : null }, medianMs: row?.medianMs ?? null };
 }
 
 /** Expected cost of an accepted result: null (unknown, never zero) when a cost is unknown or the units differ. */
@@ -248,7 +250,7 @@ function catalogIndependence(risk, taskRole, catalog) {
 }
 
 /**
- * routing-policy/1: the decision for `inputs`, the receipt's inputs (section 9). A pure function of its one argument: no
+ * routing-policy/2: the decision for `inputs`, the receipt's inputs (section 9). A pure function of its one argument: no
  * clock, store, host check or other input, so replaying a receipt gives the same decision.
  */
 export function routeAuto(inputs) {
@@ -362,7 +364,7 @@ export function policyInputs({ stage, spec, routing, providers, platform, facts,
   };
 }
 
-/** The immutable receipt of a routing-policy/1 decision. */
+/** The immutable receipt of a routing-policy/2 decision. */
 export function autoReceipt(inputs) {
   return { version: RECEIPT_VERSION, policy: POLICY, mode: 'auto', inputs, decision: routeAuto(inputs), inputsDigest: sha256(inputs) };
 }
@@ -371,5 +373,11 @@ export function autoReceipt(inputs) {
 export function replay(receipt) {
   if (receipt.policy === STATIC_POLICY) return route(receipt.inputs);
   if (receipt.policy === POLICY) return routeAuto(receipt.inputs);
+  if (receipt.policy === LEGACY_POLICY) {
+    // This immutable decision belongs to the retired policy. Its monetary inputs are never re-evaluated.
+    if (receipt.version !== RECEIPT_VERSION || receipt.mode !== 'auto' || !receipt.decision ||
+        receipt.inputsDigest !== sha256(receipt.inputs)) throw new Error('invalid historical routing receipt');
+    return structuredClone(receipt.decision);
+  }
   throw new Error(`unknown routing policy ${receipt.policy}`);
 }

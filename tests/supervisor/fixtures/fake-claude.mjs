@@ -32,7 +32,7 @@ appendFileSync(callsFile, `${JSON.stringify({ role, sessionId, cwd: process.cwd(
 const git = (...gitArgs) => spawnSync('git', gitArgs, { encoding: 'utf8', windowsHide: true }).stdout.trim();
 const emit = (body, code = 0) => { process.stdout.write(JSON.stringify(body)); process.exit(code); };
 const ok = (value) => emit({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, num_turns: 3,
-  total_cost_usd: 0.01, usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 50 },
+  usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 50 },
   permission_denials: [], structured_output: value, result: JSON.stringify(value) });
 const target = (/Target commit: ([0-9a-f]{40})/.exec(prompt) ?? /MUST carry targetSha ([0-9a-f]{40})/.exec(prompt))?.[1];
 const reportDigest = /reportDigest ([0-9a-f]{64})/.exec(prompt)?.[1];
@@ -207,11 +207,11 @@ Ran src/work.mjs (session ${sessionId})` });
     ok({ verdict: 'accepted', targetSha: '0'.repeat(40), reportDigest, summary: 'looked at something else', findings: [], checks: [] });
     break;
   case 'unknown-model': // the provider does not know the requested model, as the CLI reports it before any work
-    emit({ type: 'result', subtype: 'success', is_error: true, session_id: sessionId, num_turns: 1, total_cost_usd: 0,
+    emit({ type: 'result', subtype: 'success', is_error: true, session_id: sessionId, num_turns: 1, usage: { total_tokens: 0 },
       result: `There's an issue with the selected model (${model}). It may not exist or you may not have access to it.` }, 1);
     break;
   case 'quota': // subscription limit refusal before any work, as the CLI reports it (no parseable reset here)
-    emit({ type: 'result', subtype: 'success', is_error: true, session_id: sessionId, num_turns: 1, total_cost_usd: 0, result: "You've hit your session limit" }, 1);
+    emit({ type: 'result', subtype: 'success', is_error: true, session_id: sessionId, num_turns: 1, usage: { total_tokens: 0 }, result: "You've hit your session limit" }, 1);
     break;
   case 'hang':
     await new Promise((done) => setTimeout(done, 60_000));

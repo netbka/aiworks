@@ -30,7 +30,7 @@ export function summaryLine(goals, landed, checking = 0, count = 0, stopped = fa
 }
 
 /**
- * @param data   the Home data (goals, landed, needs, quiet, spentToday) plus `decided` ({ question, chosen, change?, address }),
+ * @param data   the Home data (goals, landed, needs, quiet, tokensToday) plus `decided` ({ question, chosen, change?, address }),
  *               `goalAddress(goal)` for a goal's own page, `address(project)` for a project's page, `needCards`
  *               (finished nodes) and `stopped` (AIWorks stopped on this computer)
  * @param h      { el, timeAgo }
@@ -52,10 +52,10 @@ export function homeBlocks(data, h) {
     el('ul', { class: 'home-cards' }, ...data.needCards.map((card) => el('li', {}, card)))));
 
   if (goals.length) {
-    const spent = data.spentToday?.usd;
+    const usage = data.tokensToday;
     out.push(el('section', { class: 'home-block', 'aria-labelledby': 'home-progress' },
       el('div', { class: 'home-head' }, el('h2', { id: 'home-progress' }, 'In progress'),
-        typeof spent === 'number' ? el('span', { class: 'home-note' }, `$${spent.toFixed(2)} spent on these today`) : null),
+        usage?.runs ? el('span', { class: 'home-note' }, `${usage.total == null ? 'Tokens unreported' : usage.total.toLocaleString() + ' tokens reported'} today${usage.unknownRuns + usage.partialRuns ? ' · incomplete' : ''}`) : null),
       el('ul', { class: 'home-goals' }, ...goals.map((goal) => {
         // The goal's own address in its project when the data names it; otherwise its project's page.
         const shown = goal.total - goal.dropped, to = data.goalAddress?.(goal) ?? data.address?.(goal.project) ?? null;

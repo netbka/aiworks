@@ -111,4 +111,4 @@ node src/supervisor/cli.mjs baseline --json --since 2026-01-01 --data C:/Work/ai
 
 Without `--json` it prints a readable summary followed by the report; `--json` prints the report only; `--since <date>` limits the period (`BASELINE_SINCE_INVALID` for a non-date). It is a measurement of recorded work, not a saving claim.
 
-Unreported dollars/tokens remain unknown. A budget limits authorized work; it is not a promise about exact provider billing.
+The baseline records tokens by executor, model, tier, effort and role, and includes coverage for each counter.

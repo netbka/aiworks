@@ -24,7 +24,7 @@ import { DisplayTextChecks } from './display-text.mjs';
 import { applyResult, approvePlan, editPlan, requestPlanAndDo, undoApply, workView } from './work.mjs';
 import { projectSettingsView, saveProjectSettings } from './project-settings.mjs';
 import { alertsView, saveAlerts } from './alerts.mjs';
-import { knowledgeView, planningCost, saveKnowledge, usageView } from './knowledge.mjs';
+import { knowledgeView, saveKnowledge, usageView } from './knowledge.mjs';
 import { closeImportedIssues, commentWorkItem, createWorkItem, ownerOnly, recordTrustedMain, setWorkItemState, workItemView, workListView } from './work-list.mjs';
 import { connectionsView, EVENT_TYPES, homeView, markReportRead, markSeen, overviewView, readLastSeen, readReports, releasesView, trustedMainView, typedEvents, withReadOnlyStore } from './views.mjs';
 
@@ -282,8 +282,6 @@ export function createDashboardServer({ dataDir, roadmap, merges = null, host = 
           const body = JSON.stringify({ observedAt: new Date(now).toISOString(), host: machine, supervisor, roadmap: roadmap.snapshot(),
             merges: { refreshing: merged.refreshing, repositories: merged.repositories }, owner, projects, work, worklist,
             home: home(supervisor, owner, projects), connections: connections(supervisor, merged),
-            // First run states what planning costs before anything is planned (WP8): from history, or unavailable.
-            ...(projects.addProject ? { planning: planningCost(dataDir) } : {}),
             overviews: Object.fromEntries((projects.projects ?? []).map((row) => [row.id, overviewView(row.id, { supervisor, projects })])) });
           keptState = Date.now() - now >= SLOW_STATE_MS ? { raw, at: Date.now(), body } : null;
           return send(200, body);

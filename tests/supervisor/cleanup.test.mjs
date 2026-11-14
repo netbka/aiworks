@@ -201,7 +201,7 @@ test('a coordinator checkout whose new run is recorded while cleanup reads a bas
   const runDir = join(r.env.dataDir, 'coordinator-run');
   mkdirSync(runDir, { recursive: true });
   const record = (id, state) => r.store.insert('coordinator_runs', { id, state, session_id: id, run_dir: runDir, workspace: checkout,
-    message_ids: [], outcome: null, cost_usd: null, created_at: Date.now(), updated_at: Date.now() });
+    message_ids: [], outcome: null, created_at: Date.now(), updated_at: Date.now() });
   record('run-1', 'finished');
   // Another instance records and dispatches a new run in that checkout while this pass awaits its base read.
   const read = r.controller.fetchBase.bind(r.controller);

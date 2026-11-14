@@ -1,5 +1,7 @@
 # Owner workspace: one question per screen
 
+[AW-021](../DECISIONS.md#aw-021---measure-model-usage-in-tokens) supersedes the historical monetary accounting in this design. Current usage is measured in tokens by model, tier, effort and role.
+
 **Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](../DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
 
 **Status:** its slices are built in source since this design, and [OWNER_UI_V2](OWNER_UI_V2.md) later changed the navigation ([OPERATIONS_DASHBOARD.md](../OPERATIONS_DASHBOARD.md)). It stays the authority for state words, state copy and the security boundary. Nothing is deployed by this repository. The rest of this document is the design as written: its "today", "observed" and "planned" statements describe the code at its basis revision, and [STATUS.md](../STATUS.md) holds what the source does now. It is the design for #11, part of the program in [PROJECT_WORKSPACE_PLAN.md §4](../PROJECT_WORKSPACE_PLAN.md#4-owner-information-architecture---one-primary-question-per-screen) (#14). It builds on the owner view from #4 and the review items carried over in #6.

@@ -1,5 +1,7 @@
 # AIWorks - Project-first owner workspace and adaptive delivery plan
 
+[AW-021](DECISIONS.md#aw-021---measure-model-usage-in-tokens) supersedes the historical monetary accounting in this design. Current usage is measured in tokens by model, tier, effort and role.
+
 **Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
 
 **Status now:** this plan is kept as the historical roadmap of the redesign. Most of its slices have since been built in source, many of them switched off; [STATUS.md](STATUS.md) holds what the source does now and what is still open. Statements below that say "today", "current", "observed" or "planned" describe the revision each section names, not the current source.

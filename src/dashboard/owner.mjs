@@ -251,9 +251,9 @@ const RESULT_ACTIONS = ['accept', 'review', 'unchecked', 'accepted-unmerged', 'm
  * AW-017: the only Needs you kinds the owner is counted for: a sign-in or a payment that stops work (said as
  * information), and a checked version waiting for the owner's acceptance where the owner chose to accept results (AW-015).
  */
-const OWNER_KINDS = new Set(['accept', 'sign-in', 'payment']);
+const OWNER_KINDS = new Set(['accept', 'sign-in', 'run limit']);
 /** The work stops (controller raiseBlocker kinds) that only the owner's own sign-in or payment can lift. */
-const OWNER_STOPS = { auth: 'sign-in', budget: 'payment' };
+const OWNER_STOPS = { auth: 'sign-in', budget: 'run limit' };
 
 /** One finished step as a Results row: its group, its state word, what it means, and the link to the result. */
 function resultRow(c, task, d, releases, recorded = null, read = new Set()) {
@@ -786,7 +786,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
       // the Check again its sentence names, while the work takes it: a Needs you card has no More menu (review 5 G8).
       const check = (c.controls?.more ?? []).includes('recheck') ? blockerCheck(c.blocker, c.id) : null;
       const words = blockerWords(c.blocker, { check: Boolean(check) });
-      // AW-017: only a sign-in or a payment (more runs or cost than approved) is the owner's own, said as information.
+      // AW-017: only a sign-in or a run-limit amendment is the owner's own, said as information.
       const own = OWNER_STOPS[c.blocker] ?? null;
       items.push({ ...base, kind: own ?? 'stopped', ...(own ? {} : { system: true, stalled: true }), text: NEEDS.workStopped, command: check,
         points: [{ link: null, text: `${words.reason}. What to do: ${words.action}.` }] });

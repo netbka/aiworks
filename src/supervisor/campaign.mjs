@@ -98,7 +98,7 @@ export function repairRoundsSource(declaration, projectLimits = null) {
 }
 
 /**
- * Effective limits. Run, retry and cost limits are optional and default to no limit: an omitted or null limit never
+ * Effective limits. Run and retry limits are optional and default to no limit: an omitted or null limit never
  * stops work; only provider subscription/usage limits (which the supervisor waits out) do. Repair rounds alone have a
  * default (AW-002, amended 2026-11-06): the declaration's number, or no limit when it says null explicitly; else the
  * project's settings (`projectLimits.maxRepairRounds`, 0..5 or null for no limit); else DEFAULT_MAX_REPAIR_ROUNDS. Callers
@@ -114,8 +114,6 @@ export function campaignLimits(declaration, projectLimits = null) {
     maxWorkerRuns: l.maxWorkerRuns ?? null,
     maxRepairRounds: source === 'goal' ? l.maxRepairRounds : source === 'project' ? projectLimits.maxRepairRounds : DEFAULT_MAX_REPAIR_ROUNDS,
     maxRetriesPerTask: l.maxRetriesPerTask ?? null,
-    maxCostUsd: l.maxCostUsd ?? null,
-    unknownRunCostUsd: l.unknownRunCostUsd ?? null,
   };
 }
 
@@ -178,12 +176,7 @@ export function validateDeclaration(declaration) {
   if (l.maxRepairRounds != null && !int(l.maxRepairRounds, 0, 5)) bad('limits.maxRepairRounds must be 0..5, null for no limit, or omitted for the project setting or 3');
   if (l.maxRetriesPerTask != null && !int(l.maxRetriesPerTask, 0, 5)) bad('limits.maxRetriesPerTask must be 0..5, or omitted/null for no limit');
   for (const key of Object.keys(l)) if (!['maxWorkerRuns', 'slots', 'maxRepairRounds', 'maxRetriesPerTask', 'maxCostUsd', 'unknownRunCostUsd'].includes(key)) bad(`unknown limits key ${key}`);
-  // Optional cost ceiling in USD; runs whose provider reports no cost are priced at a declared conservative value.
-  if (l.maxCostUsd != null && !(Number.isFinite(l.maxCostUsd) && l.maxCostUsd >= 1 && l.maxCostUsd <= 10000)) bad('limits.maxCostUsd must be 1..10000, or omitted/null for no ceiling');
-  if (l.maxCostUsd != null && !(Number.isFinite(l.unknownRunCostUsd) && l.unknownRunCostUsd >= 0.5 && l.unknownRunCostUsd <= 100)) {
-    bad('limits.unknownRunCostUsd (0.5..100) is required with maxCostUsd: unreported provider cost is never treated as zero');
-  }
-  if (l.unknownRunCostUsd != null && l.maxCostUsd == null) bad('limits.unknownRunCostUsd requires maxCostUsd');
+  // Older declarations may carry the two retired limit keys above. Preserve their original authority digest.
 
   const e = d.executor ?? {};
   if (e.kind === 'cli-chain') for (const key of Object.keys(e)) {

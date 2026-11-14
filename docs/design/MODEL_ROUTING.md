@@ -1,4 +1,4 @@
-# Cost- and quality-aware model choice per task role
+# Token- and quality-aware model choice per task role
 
 **Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](../DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
 
@@ -15,11 +15,11 @@
 - **Review stays independent.** A check always runs in a fresh session, on a model the work program already authorizes. It never reuses the worker's session. For risky work it prefers a different model from the one that did the work.
 - **Every choice can be explained and replayed.** Each run records which model was chosen, from which options, and why. The same record gives the same choice again.
 - **The owner can pin a model.** A pin overrides the automatic choice for that work program. It never widens permissions.
-- **Honest cost.** Costs are shown in the units each provider reports: dollars where a CLI reports dollars, tokens where it reports tokens, and "unknown" where it reports nothing. Unknown is never counted as free. No saving is claimed until it is measured against a recorded baseline (section 8).
+- **Usage.** Compare provider-reported tokens with coverage for missing counters.
 
 What it does **not** do:
 
-- It sets **no** run cap or cost ceiling ([AW-002](../DECISIONS.md#aw-002---campaigns-have-no-capacity-limits-by-default)). Owner-declared budgets keep working as today.
+- It sets **no** run cap ([AW-002](../DECISIONS.md#aw-002---campaigns-have-no-capacity-limits-by-default)). Owner-declared budgets keep working as today.
 - It makes **no** model call to decide. The router is deterministic code that runs only when a step is dispatched, never on an idle tick.
 - It never switches account, subscription or login, and never uses a model or provider the work program does not list.
 - It does not enable GitHub-free admission ([D4](../PROJECT_WORKSPACE_PLAN.md#8-owner-decisions-and-remaining-implementation-design-gates)), Auto Release ([D5-gate](../PROJECT_WORKSPACE_PLAN.md#8-owner-decisions-and-remaining-implementation-design-gates), #13) or Telegram delivery (#1). Section 10 says what waits for which decision.
@@ -51,21 +51,9 @@ So today the model is fixed per provider and per campaign. The only "routing" is
 - The verifier is chosen by the same `executorChoice` and the same order as the implementer. Implementer and verifier are therefore usually the **same provider and model**, in different sessions (observed from `controller.mjs:563-591`; nothing compares the two).
 - The worker-context policy blocks a non-implementer whose session is not independent and read-only (`scripts/lib/worker-context.mjs:149-151`). Dispatch always plans a fresh session (`controller.mjs:753-760`).
 
-### 2.3 Cost and usage records
+### 2.3 Usage records
 
-| Provider | What the adapter records | Where |
-| --- | --- | --- |
-| Claude | `total_cost_usd` as `costUsd`, input/output/cache-read/cache-creation tokens, turns, permission-denial count | `claude.mjs:298-308` |
-| Codex | tokens; cached input marked as a subset of input; `costUsd: null` | `executors.mjs:249-251`, `executors.mjs:260` |
-| Cursor | nothing: `usage: null`, `costUsd: null`, `measured: false` | `executors.mjs:252-260` |
-| AGY | input/output/cache-read tokens; `costUsd: null` | `src/supervisor/adapters/agy.mjs:222-225` |
-| Coordinator | `total_cost_usd` only, in `coordinator_runs.cost_usd` | `coordinator.mjs:213`, `coordinator.mjs:379`, `src/supervisor/store.mjs:57-59` |
-
-- The receipt sits in `operations.outcome` (`controller.mjs:318`) and in the `operation-finished` journal entry with `costUsd`, `usage`, terminal verdict and blocking-finding count (`controller.mjs:348-355`).
-- Reported dollars add to `campaigns.cost_usd` (`controller.mjs:328`). Runs refused before work, unavailable executors and admission blocks are refunded (`executors.mjs:19-22`, `controller.mjs:317`, `controller.mjs:329-334`).
-- An optional `maxCostUsd` counts every run without reported dollars at a declared `unknownRunCostUsd`, never zero (`src/supervisor/api.mjs:98-111`, `campaign.mjs:122-127`).
-- The **model** is not stored on the operation. Only `executor_kind` is (`store.mjs:38-43`, `controller.mjs:746`, journal `controller.mjs:751`). The model must be read from the declaration in force at the time; executor changes are journalled with the old and new declaration (`api.mjs:44-46`).
-- Whether Claude's reported dollars are what the owner actually pays on their plan is **unknown**.
+New choices use routing-policy/2. Replaying a historical routing-policy/1 receipt returns the recorded decision after checking its input digest. Read counters from each operation receipt. Codex includes cached input in input. Claude reports separate cache categories and may provide per-model rows. AGY and Cursor expose the fields their terminal records contain. Coordinator runs use the same representation. If a total cannot be reconstructed from known counters and inclusion rules, it stays unknown. See [AW-021](../DECISIONS.md#aw-021---measure-model-usage-in-tokens).
 
 ### 2.4 Provider waits
 
@@ -80,7 +68,7 @@ So today the model is fixed per provider and per campaign. The only "routing" is
 
 ## 3. Indicators: what kind of step is this?
 
-Every step gets three deterministic indicators. They are computed from the approved declaration and the task's recorded history only: no model call and no reading of free text. Each rule is part of the versioned router policy (`routing-policy/1`), so a later change cannot silently change old receipts.
+Every step gets three deterministic indicators. They are computed from the approved declaration and the task's recorded history only: no model call and no reading of free text. Each rule is part of the versioned router policy (`routing-policy/2`), so a later change cannot silently change old receipts.
 
 ### 3.1 Role
 
@@ -134,7 +122,7 @@ A campaign that opts in declares its candidates: each is an executor kind alread
 ```
 
 - A candidate inherits everything else (permission mode, `researchOnly`) from its provider entry. So the provider list stays the list of authorized CLIs, and `candidates` is the list of authorized models.
-- Tier 1 is the owner's "economy", 2 "standard", 3 "strongest". The tier is the owner's declared cost order. It is not a price.
+- Tier 1 is the owner's "economy", 2 "standard", 3 "strongest". The tier is the owner's declared capability order. It is not a price.
 - `routing` is part of the immutable scope digest, like `executor` (`campaign.mjs:60-61`). Changing it follows the executor amendment rule: higher authorization version, paused campaign, no open operation, journalled (`api.mjs:30-46`).
 - **Without `routing`, nothing changes.** The router reproduces today's choice exactly (declared order, one model per provider) and only writes a receipt (slice R2). Every campaign already declared keeps its behaviour.
 
@@ -202,20 +190,20 @@ If the campaign declares no candidate at or above the floor, the floor drops to 
 
 For each eligible candidate `m` at or above the floor, the router computes from recorded history (section 5.3):
 
-- **Acceptance rate `â(m)`**, smoothed with the tier prior: `â = (accepted + 4·p0) / (attempts + 4)`. Starting priors: `p0` = 0.6, 0.75 and 0.85 for tiers 1, 2 and 3. These are policy constants of `routing-policy/1`, to be replaced by the measured baseline (section 8) before any cohort.
+- **Acceptance rate `â(m)`**, smoothed with the tier prior: `â = (accepted + 4·p0) / (attempts + 4)`. Starting priors: `p0` = 0.6, 0.75 and 0.85 for tiers 1, 2 and 3. These are policy constants of `routing-policy/2`, to be replaced by the measured baseline (section 8) before any cohort.
   - Implement: an attempt is accepted when the verifier later accepted the head (or report) it produced.
   - Verify: an attempt is accepted when it returned a valid verdict (`accepted`, or `rejected` with a blocking finding). This measures usable reviews only. Whether a verifier missed a real defect is not visible in the store (section 8.3).
-- **Mean cost per attempt `u(m)`**, in the candidate's native unit, from attempts whose cost is known. The count of attempts with unknown cost is kept beside it.
+- **Mean cost per attempt `u(m)`**, in tokens, from attempts whose cost is known. The count of attempts with unknown cost is kept beside it.
 - **Expected cost of an accepted result** for an implement candidate, with its projected verifier `v = v(m)` (section 4.4): `E(m) = (u(m) + u(v(m))) / â(m)`. Each implement attempt needs a verify run, and `1/â` is the expected number of attempts. For a verify candidate: `E(v) = u(v) / â(v)`.
 - `E(m)` is **unknown** when `v(m)` is `null`, when `u(m)` or `u(v(m))` is unknown, or when the two are in different units. Units are never added together. An unknown `E` never ranks as cheap: it sends the step to the tier walk (section 5.3, rule 2).
 
-Why `v(m)` matters: `u(v)` is added before dividing by `â(m)`, so a different verifier can reverse the ranking. Example in dollars: `m1` has `u = 1`, `â = 0.5`, and `m2` has `u = 2`, `â = 0.8`. With `u(v) = 0`, `E(m1) = 2` and `E(m2) = 2.5`, so `m1` wins. With `u(v) = 10`, `E(m1) = 22` and `E(m2) = 15`, so `m2` wins. That is why the projection is part of the decision, and its inputs are in the receipt.
+Why `v(m)` matters: `u(v)` is added before dividing by `â(m)`, so a different verifier can reverse the ranking. Example in tokens: `m1` has `u = 1`, `â = 0.5`, and `m2` has `u = 2`, `â = 0.8`. With `u(v) = 0`, `E(m1) = 2` and `E(m2) = 2.5`, so `m1` wins. With `u(v) = 10`, `E(m1) = 22` and `E(m2) = 15`, so `m2` wins. That is why the projection is part of the decision, and its inputs are in the receipt.
 
 Planning overhead (coordinator runs) is the same for every candidate. It is reported per campaign (section 9) and does not affect the ranking.
 
 ### 5.3 Ranking
 
-1. **Comparable dollars.** If every eligible candidate at or above the floor has at least 5 attempts in this class **and** a known `E` in the same unit, pick the lowest `E`. For an implement step, this includes each projected verifier: `v(m)` must exist and have at least 5 attempts and a known cost in the verify class. Today only Claude reports dollars (section 2.3), so this applies to Claude-only candidate sets.
+1. **Comparable token totals.** If every eligible candidate at or above the floor has at least 5 attempts in this class **and** a known `E` in the same unit, pick the lowest `E`. For an implement step, this includes each projected verifier: `v(m)` must exist and have at least 5 attempts and a known cost in the verify class. Today only Claude reports dollars (section 2.3), so this applies to Claude-only candidate sets.
 2. **Otherwise, walk up the tiers.** Starting at the floor, take the lowest tier whose best candidate has `1/â ≤ 2` (at most two expected attempts). Within that tier, pick the lowest known `E` among candidates with the same unit, then the fewest expected attempts, then declared order. If no tier qualifies, use the top tier.
 3. **Cold start.** With no history for this class, use the floor tier and declared order. The receipt says `basis: "cold-start"`.
 4. **Ties** go to the shorter median run time, then declared order.
@@ -295,14 +283,14 @@ It reads these existing fields:
 | --- | --- |
 | `operations.kind`, `seq`, `task_id`, `campaign_id`, `executor_kind`, `state`, `created_at`, `updated_at` | Attempts per task and stage, run time |
 | `operations.outcome.class`, `.refunded`, `.detail`, `.value.result`, `.value.verdict`, `.value.headSha`, `.value.findings[].severity` | Quality: accepted, rejected, unusable; which head was accepted; refunds excluded |
-| `operations.outcome.receipt.costUsd`, `.usage.{input,output,cacheRead,cacheCreation,inputIncludesCacheRead}`, `.numTurns`, `.measured` | Native cost; unknown counts |
+| `operations.outcome.receipt` | Normalized token counters, provider model breakdown and coverage |
 | `operations.target_sha` | Links a verify run to the implement attempt that produced the head |
 | `tasks.state`, `attempts`, `repair_rounds`, `failures`, `verified_sha` | Accepted outcomes, repair rounds, retry churn by class |
-| `operations.routing` (`decision.chosen`, `decision.indicators`) | The recorded model and, for routing-policy/1, the recorded class |
-| `campaigns.declaration` (executor, tasks, `routing.sensitivePaths`), `task_specs`, `cost_usd`, `runs_used` | Task class indicators (section 3) where no receipt records them, current models |
+| `operations.routing` (`decision.chosen`, `decision.indicators`) | The recorded model and, for routing-policy/2, the recorded class |
+| `campaigns.declaration` (executor, tasks, `routing.sensitivePaths`), `task_specs`, `runs_used` | Task class indicators (section 3) where no receipt records them, current models |
 | `journal` `executor-amended` (`from`, `to`) | Which model was declared when an older operation ran (`api.mjs:44-46`) |
 | `journal` `operation-finished`, `executor-fallback`, `executor-unavailable`, `run-refunded` | Verdicts, blocking counts, fallbacks, provider waits |
-| `coordinator_runs.cost_usd` | Planning overhead, per host, not per task |
+| `coordinator_runs.outcome.receipt` | Coordinator model identity and token usage |
 
 ### 8.2 What it reports
 
@@ -313,15 +301,15 @@ For each task class (stage x risk x complexity) and each provider and model:
 - repair rounds per accepted outcome; retries by failure class;
 - run time per attempt, and time from the first operation to verification;
 - provider wait episodes and fallbacks (from the journal);
-- per accepted outcome: reported dollars, tokens by provider, and the **number of runs with unknown cost**. Totals are kept per unit and never added across units;
-- coordinator dollars per period, as overhead.
+- Per accepted outcome, report known token totals, partial counters and missing receipts.
+- Coordinator tokens and coverage for the same period.
 
 ### 8.3 What it cannot measure
 
-- **Dollars for Codex, Cursor and AGY.** They report none (section 2.3). Their cost stays unknown, and so does any total that includes them.
+- Effective tier, effort or model when absent from the run evidence.
 - **Cursor usage of any kind.** It reports nothing.
-- **What the owner actually pays.** Whether Claude's reported dollars are billed, or are a subscription equivalent, is unknown. The report says "reported", never "spent".
-- **The model and class of an older operation with certainty.** An operation with a routing receipt (slice R2) is attributed to the model its receipt chose, when that provider ran, and a routing-policy/1 receipt also gives its class; each class row counts these runs (`modelRecordedRuns`, `classRecordedRuns`). An operation recorded before receipts is inferred from the declaration, executor amendments and the task spec by the rules of section 3; a provider without a declared model is "CLI default" (unknown), and a step whose spec is gone has an unknown class.
+- Missing usage and identity in historical receipts.
+- **The model and class of an older operation with certainty.** An operation with a routing receipt (slice R2) is attributed to the model its receipt chose, when that provider ran, and a routing-policy/2 receipt also gives its class; each class row counts these runs (`modelRecordedRuns`, `classRecordedRuns`). An operation recorded before receipts is inferred from the declaration, executor amendments and the task spec by the rules of section 3; a provider without a declared model is "CLI default" (unknown), and a step whose spec is gone has an unknown class.
 - **Defects found after acceptance.** Reverts, follow-up fixes and owner review comments after a PR is published are in GitHub, not in the store.
 - **Missed defects by a verifier.** The store shows only usable reviews.
 - **Exact provider wait duration.** The journal records when a wait starts. The end is approximated by the next dispatch of that task and labelled approximate.
@@ -331,7 +319,7 @@ For each task class (stage x risk x complexity) and each provider and model:
 - The baseline report is recorded first, with its window and its store identity (`store.mjs:110-116`).
 - A cohort then runs with `routing.mode: "auto"` (slice R7). The same report is produced for it.
 - A difference is claimed only per class, and only where each side has **at least 10 accepted outcomes**.
-- Fewer runs, fewer repairs or shorter time per accepted outcome may be claimed in those units. A dollar saving may be claimed only over runs with reported dollars, and the claim states the share of runs with unknown cost.
+- Compare first-pass acceptance, run counts, elapsed time and complete token totals, including the coverage of each metric.
 - If quality drops (lower first-pass acceptance, or more repairs) in any class, routing stays off for that class until the floor is raised. Cost never buys lower quality.
 
 ## 9. The routing receipt
@@ -341,7 +329,7 @@ Every operation gets an immutable, versioned receipt. It is written in the same 
 ```json
 {
   "version": 1,
-  "policy": "routing-policy/1",
+  "policy": "routing-policy/2",
   "mode": "auto",
   "inputs": {
     "stage": "implement",
@@ -355,7 +343,7 @@ Every operation gets an immutable, versioned receipt. It is written in the same 
     "hostFacts": [ { "kind": "claude-cli", "cliConfigured": true, "hostUnavailable": null, "wait": null },
       { "kind": "codex-cli", "cliConfigured": true, "hostUnavailable": null, "wait": null } ],
     "history": [ { "kind": "claude-cli", "model": "sonnet", "class": "implement/R0/C2", "attempts": 12, "accepted": 9,
-      "cost": { "unit": "usd-reported", "mean": 0.84, "known": 12, "unknown": 0 }, "medianMs": 610000,
+      "cost": { "unit": "tokens", "mean": 840, "known": 12, "unknown": 0 }, "medianMs": 610000,
       "window": { "fromOp": "...", "toOp": "...", "to": 1760000000000 } },
       { "kind": "codex-cli", "model": "gpt-6-astra", "class": "verify/R0/C2", "attempts": 8, "accepted": 8,
       "cost": { "unit": "tokens", "mean": null, "known": 0, "unknown": 8 }, "medianMs": 240000, "window": { "...": "..." } } ],
@@ -403,7 +391,7 @@ Replaying any receipt must give the same `decision`, including `decision.eligibi
 
 **The model reaches the worker** through the existing `executor.model` argument: Claude `claude.mjs:133`, Codex and Cursor `executors.mjs:182`, AGY `agy.mjs:107`. The router passes the provider entry with the chosen model. An unknown model name fails the run; that failure becomes an `unavailable` wait for that **candidate** only, untimed until a recheck, so it does not loop.
 
-**What the owner sees** (slice R6): per accepted step, "Model: Sonnet (standard). Cost: $0.84 reported + 1 check run with unknown cost." Per work program: dollars reported, tokens by provider, runs with unknown cost, and a short reason when a step moved up ("moved to the strongest model after two rejected attempts"). The raw receipt is a drill-down. Wording follows [D9](../PROJECT_WORKSPACE_PLAN.md#8-owner-decisions-and-remaining-implementation-design-gates) (English) and the #11 work view.
+**What the owner sees.** Step and project usage by model, tier, effort and role, with input, output, cache, reasoning, total and coverage.
 
 ## 10. Synthetic evaluation table
 
@@ -412,7 +400,7 @@ These cases become the table-driven tests of slice R4. Candidates as in section 
 | # | Job | Indicators | Floor | First choice | Escalation in the test |
 | --- | --- | --- | --- | --- | --- |
 | 1 | Fix a typo in one doc (commit, `writes: ["docs/X.md"]`, 2 references, 2 criteria) | R0, C1 | impl 1, verify 2 | Haiku implements (cold start); Sonnet checks | Two rejections on tier 1 → Sonnet implements the next repair |
-| 2 | New API endpoint (commit, `writes: ["src/api/"]`, 7 references, 5 criteria) | R0, C2 | impl 2, verify 2 | Sonnet; with history Sonnet `â`=0.75 against Opus 0.85 at higher cost → Sonnet (dollar rule) | One `invalid-result` → sidestep impossible (one tier-2 candidate) → stays; second → Opus |
+| 2 | New API endpoint (commit, `writes: ["src/api/"]`, 7 references, 5 criteria) | R0, C2 | impl 2, verify 2 | Sonnet; with history Sonnet `â`=0.75 against Opus 0.85 at higher cost → Sonnet (token rule) | One `invalid-result` → sidestep impossible (one tier-2 candidate) → stays; second → Opus |
 | 3 | Cross-cutting refactor (commit, no `writes`, 14 references, 8 criteria, 3 dependencies, merged dependencies) | R1, C3 (6 points) | impl 3, verify 3 | Opus implements; verifier prefers Codex (different model, C3) | Codex unusable twice → verifier tier already top; backoff only |
 | 4 | Browser acceptance (report, `web`) | R1, C1 | impl 2, verify 2 | AGY; if AGY waits, Claude with the browser (`executors.mjs:12-14`) | AGY quota → Claude browser; **not** escalation; receipt reason `account-wait` |
 | 5 | Supervisor change (commit, `writes: ["src/supervisor/"]`, role `backend-engineer`) | R2 | impl 3, verify 3 | Opus implements; Codex verifies (different model); the verifier role `verification-agent` lists `backend-engineer` in `independent_from` | One rejection: R2 escalates on the first failure but Opus is already top tier; Codex cannot commit on Windows (`role-unsupported`, `executors.mjs:132`), so Opus repairs |
@@ -421,13 +409,13 @@ These cases become the table-driven tests of slice R4. Candidates as in section 
 | 8 | Owner pins `implementer: claude-cli/opus` | R0, C1 | pinned | Opus | No escalation; when Opus's account waits, the step waits |
 | 9 | Campaign without `routing` | any | — | First provider in the declared chain, as today | Today's `lastFailedExecutor` rotation, unchanged |
 | 10 | Verify step after implementer session S1 | any | 2 | Fresh session S2 ≠ S1; only declared candidates | A test forcing an equal id fails |
-| 11 | Implement step, two candidates in dollars: `m1` with `u` = 1, `â` = 0.5; `m2` with `u` = 2, `â` = 0.8; 5+ attempts each in both classes | R0, C1 | impl 1, verify 2 | Verify-class history gives `v(m1)` and `v(m2)` with `u(v)` = 0 → `m1` (`E` 2 against 2.5); the same receipt with only the verify-class rows changed so `u(v)` = 10 → `m2` (`E` 22 against 15) | Replay of both receipts gives the same `chosen` and `verifierProjection`; on Windows, a Codex candidate is `role-unsupported` for implementer but eligible as verifier, recomputed from `platform` |
+| 11 | Implement step, two candidates in tokens: `m1` with `u` = 1, `â` = 0.5; `m2` with `u` = 2, `â` = 0.8; 5+ attempts each in both classes | R0, C1 | impl 1, verify 2 | Verify-class history gives `v(m1)` and `v(m2)` with `u(v)` = 0 → `m1` (`E` 2 against 2.5); the same receipt with only the verify-class rows changed so `u(v)` = 10 → `m2` (`E` 22 against 15) | Replay of both receipts gives the same `chosen` and `verifierProjection`; on Windows, a Codex candidate is `role-unsupported` for implementer but eligible as verifier, recomputed from `platform` |
 
 ## 11. Decisions taken here (not owner-reserved)
 
-- **D8 (model choice):** automatic, deterministic routing by role, risk, complexity and measured outcome, among the models the campaign declares, with an optional owner pin. Unknown billing stays unknown. This follows the plan's proposed resolution (§8).
+- **D8 (model choice):** automatic, deterministic routing by role, risk, complexity and measured outcome, among the models the campaign declares, with an optional owner pin. Missing token counts stay unknown. This follows the plan's proposed resolution (§8).
 - Opt-in per campaign through `routing`. Without it, behaviour is unchanged.
-- Tiers are the owner's declared cost order. Units are never converted into each other.
+- Tiers are the owner's declared capability order. Units are never converted into each other.
 - Escalation only on poor-quality evidence. Never on a denial, a limit, a login problem or a host failure.
 - A different verifier model for risky work is a preference. Fresh session and authorized candidates are hard rules.
 - The receipt is immutable, versioned, stored with the operation, and replayable without the store.
@@ -440,7 +428,7 @@ None of these re-opens D1, D3, D5 or D9.
 
 | # | Question | Recommended answer | What it unblocks |
 | --- | --- | --- | --- |
-| Q1 | Which models may each of the owner's accounts use, and is any account billed per use rather than a flat plan? Accounts and spending are the owner's (Constitution §2), and a different model on a pay-per-use account changes spending. This document cannot see the accounts (unknown). | Allow routing among the models of the providers already in use, on the same logins, where the plan is flat. On any pay-per-use account, keep today's single model unless the campaign also declares `maxCostUsd`. | Declarations with several candidates per provider for the cohort (R7). R1 to R6 do not wait. |
+| Q1 | Which models can the existing authorized accounts run? | Record the available provider models in the campaign. | Declaring eligible routing candidates. |
 | Q2 | May routing run on the live workstation runtime, after R1 to R5 are merged, reviewed on their exact heads and deployed by the documented upgrade? Changing what the live runtime does is a production change agents may not make ([AGENTS.md](../../AGENTS.md#authorized-work)). | Yes, for one cohort of AIWorks documentation and design campaigns first, compared with the baseline (section 8.4) before wider use. | R7: the first measured comparison. |
 
 Waiting on decisions already open elsewhere (not asked again here):
@@ -483,7 +471,7 @@ Slices that edit `controller.mjs`, `campaign.mjs` or `api.mjs` are sequenced wit
 
 **R4. Router policy** (pure function)
 
-- Outcome: indicators, filters, floors, history aggregation, ranking, escalation, pin and verifier independence, as `routing-policy/1`.
+- Outcome: indicators, filters, floors, history aggregation, ranking, escalation, pin and verifier independence, as `routing-policy/2`.
 - Files: `src/supervisor/router.mjs`, new `tests/supervisor/router.test.mjs`.
 - Tests: the section 10 table, case by case; property tests that a choice is always a declared candidate, never below the floor unless `floor-capped`, never escalated by a denial, quota, auth or host outcome, and never a verifier session equal to an implementer session; a sidestep and a different-model verifier preference that change when only `priorAttempts[0].kind`/`model` or `headImplementer.kind`/`model` change; an implement choice that flips when only the verify-class `history` rows change (section 10, case 11), with `verifierProjection` recomputed and the replay equal; `E` unknown, never zero, when a projected verifier has no known cost or another unit; replay of every generated receipt.
 - Acceptance: the router reads no clock, store or host state; coverage of every reason code.

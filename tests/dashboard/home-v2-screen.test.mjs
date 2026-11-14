@@ -15,7 +15,7 @@ const fixture = {
     { project: 'bakery', title: 'Seasonal menu page', now: 'Next: Menu prices', done: 0, total: 2, dropped: 0, segments: ['now', 'todo'], state: 'Checking' },
     { project: 'bakery', title: 'Gift cards', now: 'Next: Card design', done: 2, total: 4, dropped: 1, segments: ['done', 'done', 'todo', 'dropped'], state: 'Queued' }],
   landed: { total: 7, entries: Array.from({ length: 7 }, (_, i) => ({ title: `Step ${i + 1}`, project: 'bakery', at: Date.now() - i * 60000 })) },
-  quiet: [{ name: 'garden', state: 'Done' }], spentToday: { usd: 1.25, unreportedRuns: 0 },
+  quiet: [{ name: 'garden', state: 'Done' }], tokensToday: { total: 325, runs: 1, unknownRuns: 0, partialRuns: 0 },
   decided: [{ question: 'Which colour?', chosen: 'Blue', address: '#/step/x' }], address: () => '#/project/bakery/overview' };
 
 test('words from the data are text only: markup stays a string and never becomes an attribute or a tag', () => {

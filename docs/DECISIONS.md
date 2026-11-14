@@ -16,9 +16,9 @@ Scope narrowed by AW-010 for the separate release role.
 
 ## AW-002 - Campaigns have no capacity limits by default
 
-Optional run, repair, retry and cost limits must be explicit. Provider availability, permission controls and the no-progress guard still apply. Unknown cost remains unknown unless a declared conservative cost bound supplies its interpretation.
+Campaigns may set explicit run, repair and retry limits. Provider availability, permissions and the no-progress guard still apply. AW-021 governs usage measurement.
 
-**Amendment, owner decision 2026-11-06, for `maxRepairRounds` only.** Repair rounds per step default to 3. The effective `maxRepairRounds` is the declaration's number; or no limit when the declaration says `null` explicitly; else the project's Project settings `limits.maxRepairRounds` (0..5, or `null` for no limit); else 3. Reaching it never waits for the owner: the step is finished through [AW-017](#aw-017---aiworks-decides-and-finishes-without-the-owner), delivered with known defects or ended as not done with a follow-up item, on every path that counts repair rounds (verifier rejection, integration conflict, CI repair, owner-requested changes, publication repair). A step already at or past the limit when this takes effect finishes its open round first. Run (`maxWorkerRuns`), retry (`maxRetriesPerTask`) and cost (`maxCostUsd`) limits stay unlimited unless declared.
+**Amendment, owner decision 2026-11-06, for `maxRepairRounds` only.** Repair rounds per step default to 3. The effective `maxRepairRounds` is the declaration's number; or no limit when the declaration says `null` explicitly; else the project's Project settings `limits.maxRepairRounds` (0..5, or `null` for no limit); else 3. Reaching it never waits for the owner: the step is finished through [AW-017](#aw-017---aiworks-decides-and-finishes-without-the-owner), delivered with known defects or ended as not done with a follow-up item, on every path that counts repair rounds (verifier rejection, integration conflict, CI repair, owner-requested changes, publication repair). A step already at or past the limit when this takes effect finishes its open round first. Run (`maxWorkerRuns`) and retry (`maxRetriesPerTask`) limits stay unlimited unless declared.
 
 ## AW-003 - The operations dashboard is local only
 
@@ -177,7 +177,7 @@ Owner decision 2026-10-30, in the owner's words (translated): "AIWorks decides a
 
 - Automatic answers and send-backs on one step stop after the no-progress limit (four); the step is then finished. No answer starts unbounded paid runs.
 - Needs you lists only what needs the owner's own sign-in, credential or payment (a provider login, more runs or cost than approved), as information, and the checked versions the owner chose to accept themselves ([AW-015](#aw-015---acceptance-controls-merging-when-the-owner-chooses-it), off by default). Everything else is listed apart, not counted.
-- What stays: exact-head independent verification, secret filtering, containment, run and cost limits and idempotence. A head that failed the full check is never merged. Releases happen only where an [AW-010](#aw-010---auto-release-is-a-separate-release-role-under-a-standing-per-project-grant) grant exists or, since [AW-018](#aw-018---merged-results-land-in-the-projects-own-folder), by a project's own publication instructions, and only for results that passed their check. A project without GitHub has no merge path, so its stopped step ends as not done; only a checked result reaches its folder ([AW-018](#aw-018---merged-results-land-in-the-projects-own-folder)).
+- What stays: exact-head independent verification, secret filtering, containment, run limits and idempotence. A head that failed the full check is never merged. Releases happen only where an [AW-010](#aw-010---auto-release-is-a-separate-release-role-under-a-standing-per-project-grant) grant exists or, since [AW-018](#aw-018---merged-results-land-in-the-projects-own-folder), by a project's own publication instructions, and only for results that passed their check. A project without GitHub has no merge path, so its stopped step ends as not done; only a checked result reaches its folder ([AW-018](#aw-018---merged-results-land-in-the-projects-own-folder)).
 
 The owner can still answer a decision first, accept or request changes, pause and cancel. The runbook section is [No step waits for the owner](SUPERVISOR.md#no-step-waits-for-the-owner).
 
@@ -216,7 +216,7 @@ Reuse requires the original settled verifier operation, clean exact-head gate, o
 immutable outcome digest, campaign scope and authorization version, and packet authority. Recheck that proof and
 the current base before every text dispatch and publication. A changed head, base, authority or report, missing
 proof, non-text failure, report deliverable, known-defect delivery or base-explained red gate uses the normal
-independent verification path. Existing privacy guards, session fences, retry limits and run/cost budgets remain
+independent verification path. Existing privacy guards, session fences, retry limits and run limits remain
 binding. Private reports and proof records remain in private run evidence and the store. See
 [publication safety](SUPERVISOR.md#3-lifecycle-of-one-task).
 
@@ -231,3 +231,11 @@ it is never exempted, and the limit is not raised to hide a slow file. A failure
 before any repair (the failure-review rule of aiworks#57 and #67): a product defect is fixed, a test that waits less
 than the work it starts needs takes the deadline its siblings use, and anything still unexplained stays a red gate with
 a recorded follow-up. No repository setting, verifier verdict or report turns a red file green.
+
+## AW-021 - Measure model usage in tokens
+
+Accepted by the owner on 2026-11-14. AIWorks records AI usage in tokens only. Prices, currency amounts, estimated charges and monetary admission limits are retired. This decision supersedes monetary accounting in earlier designs, declarations and settings.
+
+Every finished operation contributes its provider-reported usage once, including failed attempts that returned counters. Separate executor, model, routing tier, effective reasoning effort and role. Prefer per-model counters when a provider reports several models. Record missing identity or counters as unknown. An explicit zero is a measurement. Preserve input, output, cache reads, cache writes and reasoning where available. Use the provider total or calculate a total only where its rules and counters allow it. Display coverage with partial sums.
+
+Use the same receipts for the step, campaign, project, installation and CLI reports. Older immutable records remain readable. Never convert past prices to tokens. Token measurement adds no admission limit. Existing run, retry, repair and provider-quota controls still apply.

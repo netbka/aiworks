@@ -37,7 +37,7 @@ function build(dataDir, now) {
     // Goal 1: a declared title; its first step was built, checked and merged by AIWorks (three events), the second is being built.
     campaignStart(store, declaration('bakery-orders', 'example/bakery', [step('T1', 'order form'), step('T2', 'order email', { dependsOn: ['T1'] }),
       step('T3', 'order history', { dependsOn: ['T2'] })], { title: 'Online cake orders', purpose: 'Let customers order cakes online' }), now - 6 * H);
-    operation('bakery-orders', 'T1', 'implement', { at: now - 3 * H, outcome: { class: 'result', value: { result: 'implemented' }, receipt: { costUsd: 1.25 } } });
+    operation('bakery-orders', 'T1', 'implement', { at: now - 3 * H, outcome: { class: 'result', value: { result: 'implemented' }, receipt: { usage: { total: 325 } } } });
     operation('bakery-orders', 'T1', 'verify', { at: now - 2 * H, outcome: { class: 'result', value: { verdict: 'accepted', findings: [] } } });
     const url = 'https://github.com/example/bakery/pull/31';
     setTask('bakery-orders', 'T1', { state: 'done', attempts: 1, head_sha: sha('a'), verified_sha: sha('a'), pr_url: url });
@@ -47,11 +47,13 @@ function build(dataDir, now) {
     operation('bakery-orders', 'T2', 'implement', { state: 'dispatched', at: now - 10 * 60 * 1000 });
     setTask('bakery-orders', 'T2', { state: 'implementing', attempts: 1 });
 
-    // Goal 2: no title, a purpose full of codes; its runs used all approved runs, which only the owner can pay for.
-    campaignStart(store, declaration('bakery-menu', 'example/bakery', [step('T1', 'menu page'), step('T2', 'menu prices')],
-      { purpose: 'MENU-2: Seasonal menu page for 3f2a9c1d7e (example/bakery#12) #44' }), now - 5 * H);
+    // Goal 2: no title, a purpose full of codes and an exhausted one-run authorization.
+    const menu = declaration('bakery-menu', 'example/bakery', [step('T1', 'menu page'), step('T2', 'menu prices')],
+      { purpose: 'MENU-2: Seasonal menu page for 3f2a9c1d7e (example/bakery#12) #44' });
+    menu.limits.maxWorkerRuns = 1;
+    campaignStart(store, menu, now - 5 * H);
     setTask('bakery-menu', 'T1', { state: 'verifying', attempts: 1, head_sha: sha('c') });
-    setCampaign('bakery-menu', { blocker: { kind: 'budget', class: 'B3', reason: 'Synthetic: all approved runs used.', requestedAction: 'Approve more runs.' } });
+    setCampaign('bakery-menu', { runs_used: 1, blocker: { kind: 'budget', class: 'B3', reason: 'Synthetic: all approved runs used.', requestedAction: 'Approve more runs.' } });
 
     // Goal 3: paused in another project, one step dropped.
     campaignStart(store, declaration('garden-photos', 'example/garden', [step('T1', 'photo upload'), step('T2', 'photo captions')],
@@ -87,7 +89,7 @@ test('Home counts only what the owner must answer; a result AIWorks merged is ne
   const { home, state } = await readHome(dataDir);
   assert.equal(home.available, true);
 
-  // Needs: the one owner-action set. The payment the owner must make counts; the result AIWorks merged does not.
+  // Needs: the one owner-action set. The approved run limit counts; the result AIWorks merged does not.
   const actions = state.owner.items.filter((item) => !item.system);
   assert.equal(home.needs.count, actions.length);
   assert.equal(home.needs.count, state.owner.attention.count, 'the same number as the nav badge');

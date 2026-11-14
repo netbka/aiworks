@@ -215,12 +215,12 @@ function fill(store, dataDir, root, now) {
   const setTask = (id, taskId, changes) => store.patch('tasks', { campaign_id: id, task_id: taskId }, store.task(id, taskId).version, changes, now);
   const setCampaign = (id, changes) => store.patch('campaigns', { id }, store.campaign(id).version, changes, now);
   let seq = 0;
-  const operation = (id, taskId, kind, { executor = 'claude-cli', state = 'dispatched', at = now - 20 * M, outcome = null } = {}) => {
+  const operation = (id, taskId, kind, { executor = 'claude-cli', state = 'dispatched', at = now - 20 * M, outcome = null, routing = null } = {}) => {
     const opId = `${id}.${taskId}.${kind}.${++seq}`, runDir = join(dataDir, 'runs', opId);
     mkdirSync(runDir, { recursive: true });
     store.insert('operations', { id: opId, campaign_id: id, task_id: taskId, kind, seq, idempotency_key: opId, lease_generation: 1, state,
       session_id: `00000000-0000-4000-8000-${String(seq).padStart(12, '0')}`, run_dir: runDir, workspace: join(root, 'worktrees', opId),
-      packet: { synthetic: true }, packet_digest: '0'.repeat(64), outcome, created_at: at, updated_at: state === 'finished' ? at + 10 * M : at, executor_kind: executor });
+      packet: { synthetic: true }, packet_digest: '0'.repeat(64), outcome, routing, created_at: at, updated_at: state === 'finished' ? at + 10 * M : at, executor_kind: executor });
     return { runDir, workspace: join(root, 'worktrees', opId), sessionId: `00000000-0000-4000-8000-${String(seq).padStart(12, '0')}` };
   };
   // Claude's session transcript, where the dashboard reads a Claude worker's turns and tool calls (under the fixture's
@@ -244,7 +244,7 @@ function fill(store, dataDir, root, now) {
   const working = [];
   const beat = ({ runDir }, at = now) => { writeFileSync(join(runDir, 'heartbeat'), String(at)); working.push(runDir); };
   // `usage`: the tokens a run reported. Most fixture runs report none, so Usage shows a token breakdown of a few runs only.
-  const finished = (result, costUsd, usage = null) => ({ class: 'result', value: result, ...(costUsd ? { receipt: { costUsd, ...(usage ? { usage } : {}) } } : {}) });
+  const finished = (result, usage = null) => ({ class: 'result', value: result, receipt: { usage } });
 
   // example/shop-app: running work, a finished campaign with merged, open and closed results, and a merge wait.
   const shop = 'example/shop-app';
@@ -259,14 +259,16 @@ function fill(store, dataDir, root, now) {
 
   id = start(declaration('shop-reviews', shop, 'Show product reviews', 20, [task('T1', 21, 'review list', 'Product review list')]), now - 4 * H);
   live(id);
-  operation(id, 'T1', 'implement', { state: 'finished', at: now - 2 * H, outcome: finished({ result: 'implemented' }, 1.1, { input: 182000, output: 9400 }) });
+  operation(id, 'T1', 'implement', { state: 'finished', at: now - 2 * H,
+    routing: { decision: { chosen: { kind: 'claude-cli', model: 'opus', tier: 3 } }, launch: { executor: 'claude-cli', model: 'opus', effort: 'high' } },
+    outcome: finished({ result: 'implemented' }, { input: 182000, output: 9400, total: 191400 }) });
   beat(operation(id, 'T1', 'verify', { at: now - 6 * M }));
   setTask(id, 'T1', { state: 'verifying', attempts: 1, head_sha: 'c'.repeat(40) });
 
   id = start(declaration('shop-wishlist', shop, 'Let customers save a wishlist', 30, [task('T1', 31, 'wishlist', 'Wishlist page')], CHAIN), now - 2 * H);
   live(id);
   // Claude built it; Codex checks it, which Settings says Codex can do here ("can check and report here").
-  operation(id, 'T1', 'implement', { state: 'finished', at: now - 2 * H, outcome: finished({ result: 'implemented' }, 0.7, { input: 96000, output: 5100 }) });
+  operation(id, 'T1', 'implement', { state: 'finished', at: now - 2 * H, outcome: finished({ result: 'implemented' }, { input: 96000, output: 5100, total: 101100 }) });
   run = operation(id, 'T1', 'verify', { executor: 'codex-cli', at: now - 70 * M });
   // The worker process is alive, but its own record has not moved for 25 minutes.
   writeFileSync(join(run.runDir, 'heartbeat'), String(now));
@@ -283,10 +285,10 @@ function fill(store, dataDir, root, now) {
       { criterion: 2, result: 'pass', check: 'Set the price filter to 10–20', evidence: 'Only the 3 products in that range remain.' },
       { criterion: 3, result: 'not-checked', check: 'No narrow viewport was available to the checker', evidence: 'Not measured.' }],
     findings: [{ id: 'N1', severity: 'non-blocking', description: 'The filter labels are not translated yet.' }], eyesOn: ['Whether “Price” or “Cost” reads better on the filter'] } };
-  for (const [taskId, branch, n, implementCost, verifyCost] of [['T1', 'search-page', 101, 1.9, 0.8], ['T2', 'search-filters', 102, 1.5, null], ['T3', 'sale-banner', 103, null, null]]) {
-    // Runs that reported a cost and runs that did not: unknown cost is never shown as zero.
-    operation(id, taskId, 'implement', { state: 'finished', at: now - 28 * H, outcome: finished({ result: 'implemented' }, implementCost) });
-    operation(id, taskId, 'verify', { state: 'finished', at: now - 27 * H, outcome: finished({ verdict: 'accepted', findings: [] }, verifyCost) });
+  for (const [taskId, branch, n, buildUsage, checkUsage] of [['T1', 'search-page', 101, { total: 810 }, { total: 240 }], ['T2', 'search-filters', 102, { total: 655 }, null], ['T3', 'sale-banner', 103, null, null]]) {
+    // Mix complete and missing receipts.
+    operation(id, taskId, 'implement', { state: 'finished', at: now - 28 * H, outcome: finished({ result: 'implemented' }, buildUsage) });
+    operation(id, taskId, 'verify', { state: 'finished', at: now - 27 * H, outcome: finished({ verdict: 'accepted', findings: [] }, checkUsage) });
     const report = `# ${taskId} report\n\nSynthetic review fixture report.`, head = sha(shop, branch), review = searchReview[taskId];
     setTask(id, taskId, { state: 'done', attempts: 1, head_sha: head, verified_sha: head, pr_url: pull(shop, n),
       ...(review ? { result: { result: 'resolved', summary: 'implemented', headSha: head, report },
@@ -325,7 +327,7 @@ function fill(store, dataDir, root, now) {
 
   id = start(declaration('recipes-print', recipes, 'Print recipe cards', 100, [task('T1', 101, 'print card', 'Print card'),
     task('T2', 102, 'print layout', 'Print layout'), task('T3', 103, 'print settings', 'Print settings')]), now - 50 * H);
-  operation(id, 'T1', 'implement', { state: 'finished', at: now - 49 * H, outcome: finished({ result: 'implemented' }, 0.9) });
+  operation(id, 'T1', 'implement', { state: 'finished', at: now - 49 * H, outcome: finished({ result: 'implemented' }) });
   setTask(id, 'T1', { state: 'done', attempts: 1, head_sha: sha(recipes, 'print-card'), verified_sha: sha(recipes, 'print-card'), pr_url: pull(recipes, 201) });
   setCampaign(id, { control: 'cancelled', status: 'cancelled' });
   lease(id, now - 40 * H);
@@ -336,8 +338,8 @@ function fill(store, dataDir, root, now) {
     ['recipes-scaling', 'recipe-scaling', 222, 'recipe scaling', 'Recipe scaling', 'cancelled']]) {
     id = start(declaration(cid, recipes, `${outcome} for every recipe`, n, [task('T1', n, title, outcome)]), now - 20 * H);
     const verified = sha(recipes, branch), report = '# T1 report\n\nSynthetic review fixture report.', reportDigest = createHash('sha256').update(report, 'utf8').digest('hex');
-    operation(id, 'T1', 'implement', { state: 'finished', at: now - 19 * H, outcome: finished({ result: 'implemented' }, 0.7) });
-    operation(id, 'T1', 'verify', { state: 'finished', at: now - 18 * H, outcome: finished({ verdict: 'accepted', findings: [] }, 0.3) });
+    operation(id, 'T1', 'implement', { state: 'finished', at: now - 19 * H, outcome: finished({ result: 'implemented' }) });
+    operation(id, 'T1', 'verify', { state: 'finished', at: now - 18 * H, outcome: finished({ verdict: 'accepted', findings: [] }) });
     setTask(id, 'T1', { state: 'done', attempts: 1, head_sha: verified, verified_sha: verified, pr_url: pull(recipes, n),
       result: { result: 'resolved', summary: 'implemented', headSha: verified, report },
       verification: { verdict: 'accepted', targetSha: verified, reportDigest, summary: 'Checked on the fixture recipes.',
@@ -355,8 +357,8 @@ function fill(store, dataDir, root, now) {
   id = start(declaration('recipes-units', recipes, 'Convert recipe units', 105, [task('T1', 106, 'unit converter', 'Unit converter'),
     task('T2', 107, 'metric units', 'Metric units')]), now - 30 * H);
   for (const [taskId, branch, n] of [['T1', 'unit-converter', 202], ['T2', 'metric-units', 203]]) {
-    operation(id, taskId, 'implement', { state: 'finished', at: now - 29 * H, outcome: finished({ result: 'implemented' }, 1.2) });
-    operation(id, taskId, 'verify', { state: 'finished', at: now - 28 * H, outcome: finished({ verdict: 'accepted', findings: [] }, 0.5) });
+    operation(id, taskId, 'implement', { state: 'finished', at: now - 29 * H, outcome: finished({ result: 'implemented' }) });
+    operation(id, taskId, 'verify', { state: 'finished', at: now - 28 * H, outcome: finished({ verdict: 'accepted', findings: [] }) });
     setTask(id, taskId, { state: 'done', attempts: 1, head_sha: sha(recipes, branch), verified_sha: sha(recipes, branch), pr_url: pull(recipes, n) });
     store.journal(id, 'published', { task: taskId, url: pull(recipes, n) }, now - 27 * H);
   }
@@ -454,8 +456,8 @@ function fill(store, dataDir, root, now) {
     task('T2', 112, 'pantry check', 'Pantry check'), task('T3', 113, 'meal plan', 'Meal plan')]), now - 6 * H);
   for (const [taskId, branch] of [['T1', 'shopping-list'], ['T2', 'pantry-check']]) {
     const verified = sha(recipes, branch);
-    operation(id, taskId, 'implement', { state: 'finished', at: now - 6 * H, outcome: finished({ result: 'implemented' }, 0.8) });
-    operation(id, taskId, 'verify', { state: 'finished', at: now - 5 * H, outcome: finished({ verdict: 'accepted', findings: [] }, 0.4) });
+    operation(id, taskId, 'implement', { state: 'finished', at: now - 6 * H, outcome: finished({ result: 'implemented' }) });
+    operation(id, taskId, 'verify', { state: 'finished', at: now - 5 * H, outcome: finished({ verdict: 'accepted', findings: [] }) });
     const review = createItem(store, { kind: 'review', title: `${taskId}: ${branch.replace('-', ' ')}`, body: 'Synthetic review fixture review.',
       links: { campaignId: id, taskId, verifiedSha: verified }, authorKind: 'supervisor', now: now - 5 * H });
     const report = `# ${taskId} report
@@ -485,8 +487,8 @@ Synthetic review fixture report.`;
   for (const [taskId, branch, n, checkedAt, wait] of [['T1', 'low-stock', 211, now - 116 * H, 'CI has not passed at the verified head yet'],
     ['T2', 'pantry-photos', 212, now - H, null], ['T3', 'pantry-export', 213, now - 20 * H, 'the pull request is not open']]) {
     const verified = sha(recipes, branch), report = `# ${taskId} report\n\nSynthetic review fixture report.`;
-    operation(id, taskId, 'implement', { state: 'finished', at: checkedAt - 2 * H, outcome: finished({ result: 'implemented' }, 0.6) });
-    operation(id, taskId, 'verify', { state: 'finished', at: checkedAt - 10 * M, outcome: finished({ verdict: 'accepted', findings: [] }, 0.3) });
+    operation(id, taskId, 'implement', { state: 'finished', at: checkedAt - 2 * H, outcome: finished({ result: 'implemented' }) });
+    operation(id, taskId, 'verify', { state: 'finished', at: checkedAt - 10 * M, outcome: finished({ verdict: 'accepted', findings: [] }) });
     setTask(id, taskId, { state: 'done', attempts: 1, head_sha: verified, verified_sha: verified, pr_url: pull(recipes, n),
       result: { result: 'resolved', summary: 'implemented', headSha: verified, report },
       verification: { verdict: 'accepted', targetSha: verified, reportDigest: createHash('sha256').update(report, 'utf8').digest('hex'), summary: 'Checked on the fixture pantry.',
@@ -529,11 +531,10 @@ Synthetic review fixture report.`;
   submitWorkRequest(store, { projectId: 'recipes', route: 'goal', text: 'Users can import recipes from a photo.', trackingIssue: 1, requestId: planId() }, now - 20 * M);
 
   // The campaign counters follow the runs, as the supervisor keeps them: every recorded run counts unless it was refunded,
-  // and every cost a run reported adds to the total. So a project's total is the sum of what its runs reported.
+  // including work from earlier authorizations.
   for (const { id: campaignId } of store.all('SELECT id FROM campaigns')) {
     const outcomes = store.all('SELECT outcome FROM operations WHERE campaign_id = ?', campaignId).map((op) => op.outcome);
-    setCampaign(campaignId, { runs_used: outcomes.filter((outcome) => !runNotCounted(outcome)).length,
-      cost_usd: Math.round(outcomes.reduce((sum, outcome) => sum + (outcome?.receipt?.costUsd > 0 ? outcome.receipt.costUsd : 0), 0) * 10000) / 10000 });
+    setCampaign(campaignId, { runs_used: outcomes.filter((outcome) => !runNotCounted(outcome)).length });
   }
 
   // Settings › Messages: Plan only requests with each receipt of OWNER_WORKSPACE §5.4 (answered, read, received), written as the
@@ -545,7 +546,7 @@ Synthetic review fixture report.`;
     mkdirSync(runDir, { recursive: true });
     const recorded = { runId, workspace: join(root, 'worktrees', runId), sessionId: `00000000-0000-4000-a000-${String(seq).padStart(12, '0')}` };
     store.insert('coordinator_runs', { id: runId, state, session_id: recorded.sessionId, run_dir: runDir, workspace: recorded.workspace,
-      message_ids: messageIds, outcome: null, cost_usd: null, created_at: at, updated_at: at });
+      message_ids: messageIds, outcome: null, created_at: at, updated_at: at });
     for (const messageId of messageIds) {
       store.run("UPDATE owner_messages SET state = 'read', run_id = ?, read_at = ?, attempts = attempts + 1, updated_at = ? WHERE id = ?", runId, at, at, messageId);
     }

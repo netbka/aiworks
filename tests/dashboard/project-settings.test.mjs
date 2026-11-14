@@ -17,7 +17,7 @@ const lookupAs = (ancestors) => async () => ({ pid: 999_991, ancestors, jobs: []
 const OWNER = { platform: 'win32', lookup: lookupAs([999_990]) };
 const WORKER = { platform: 'win32', lookup: lookupAs([process.pid]) };
 
-test('only the owner, from the version shown, changes a project’s protected areas or budget', async (t) => {
+test('only the owner, from the version shown, changes a project’s protected areas or repair limit', async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-dashboard-settings-'));
   writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ repositories: { [REPOSITORY]: { path: 'unused' } } }));
   new Store(join(dataDir, 'supervisor.db')).close();
@@ -37,8 +37,8 @@ test('only the owner, from the version shown, changes a project’s protected ar
     read: async () => (await fetch(`${base}/api/v2/projects/${encodeURIComponent(REPOSITORY)}/settings`)).json() };
   };
   const owner = await serve(OWNER), worker = await serve(WORKER);
-  const change = (version, totalUsd = 50) => ({ requestId: randomUUID(), project: REPOSITORY, version, protectedAreas: ['config/production.json'],
-    notes: 'Keep changes small.', budget: { totalUsd, monthlyUsd: null, unknownRunCostUsd: 2 } });
+  const change = (version, maxRepairRounds = 1) => ({ requestId: randomUUID(), project: REPOSITORY, version, protectedAreas: ['config/production.json'],
+    notes: 'Keep changes small.', limits: { maxRepairRounds } });
 
   const refused = async (response, status, code) => { assert.equal(response.status, status); if (code) assert.equal((await response.json()).code, code); };
   await refused(await worker.send(change(0)), 403, 'APPROVAL_FROM_AIWORKS');
@@ -48,9 +48,9 @@ test('only the owner, from the version shown, changes a project’s protected ar
   const saved = await owner.send(change(0));
   assert.equal(saved.status, 200);
   const body = await saved.json();
-  assert.deepEqual([body.version, body.view.version, body.view.settings.budget.totalUsd], [1, 1, 50]);
-  // A page still showing version 0 cannot raise the budget over the version saved since.
-  await refused(await owner.send(change(0, 5000)), 409, 'SETTINGS_CHANGED');
+  assert.deepEqual([body.version, body.view.version, body.view.settings.limits.maxRepairRounds], [1, 1, 1]);
+  // A page still showing version 0 cannot raise the repair limit over the version saved since.
+  await refused(await owner.send(change(0, 5)), 409, 'SETTINGS_CHANGED');
   const shown = await owner.read();
-  assert.deepEqual([shown.version, shown.settings.budget.totalUsd, shown.settings.protectedAreas], [1, 50, ['config/production.json']]);
+  assert.deepEqual([shown.version, shown.settings.limits.maxRepairRounds, shown.settings.protectedAreas], [1, 1, ['config/production.json']]);
 });

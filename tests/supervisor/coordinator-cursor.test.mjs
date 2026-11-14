@@ -18,7 +18,8 @@ test('a native nullable coordinator envelope keeps planning moving without relax
     result: { exitCode: 0 }, now: 1, stderrText: '', stdoutText: [init, ...extra,
       { type: 'result', subtype: 'success', is_error: false, session_id: nativeSession, result: JSON.stringify(body) }].map(JSON.stringify).join('\n'),
   });
-  assert.deepEqual(classify(), { class: 'result', value, costUsd: null });
+  const checked = classify();
+  assert.deepEqual([checked.class, checked.value, checked.receipt.model, checked.receipt.usage], ['result', value, model, null]);
   assert.equal(classify({ ...envelope, runId: randomUUID() }).class, 'invalid-result');
   assert.equal(classify({ ...envelope, packetDigest: 'b'.repeat(64) }).class, 'invalid-result');
   assert.equal(classify(envelope, { ...initial, model: 'Other model' }).class, 'invalid-result');

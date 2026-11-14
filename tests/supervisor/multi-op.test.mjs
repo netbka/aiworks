@@ -1,7 +1,7 @@
 // RUN2 (ADAPTIVE_SCHEDULER slice S2): the controller stays correct when more than one operation is open, before the
 // scheduler (RUN5) admits a second worker. Publication runs while a worker runs, the base comes from an explicit ref,
 // an unknown launch's process-ownership blocker belongs to its own operation, status names every open operation, the
-// store refuses a second open operation for one task, and a declared cost ceiling reserves open runs. Workers are
+// store refuses a second open operation for one task, and open runs retain their task identity. Workers are
 // played by the test through the controller's own result path (applyOutcome), so nothing is spawned and the tests run
 // on Linux CI too. No model, network or GitHub call: a disposable git origin and the synthetic gh of helpers.mjs.
 import assert from 'node:assert/strict';
@@ -207,33 +207,4 @@ test('the store refuses a second open operation for one task', async (t) => {
   // A finished operation does not count: the next attempt of the same task is recorded.
   r.implement('T1');
   assert.doesNotThrow(() => openRow(r, 'T1', 'verify', { seq: 2 }));
-});
-
-test('cost ceiling reserves open runs', async (t) => {
-  // Ceiling $10; each run without a reported cost is priced at $3. Measured spend is $4.
-  const r = rig(t, { tasks: [commitTask('T1', 751), commitTask('T2', 752), commitTask('T3', 753)], limits: { maxCostUsd: 10, unknownRunCostUsd: 3 } });
-  const c = r.store.campaign(r.id);
-  r.store.patch('campaigns', { id: r.id }, c.version, { cost_usd: 4 }, Date.now());
-  assert.equal(campaignBudget(r.store, r.store.campaign(r.id)).exhausted, null, '$4 with nothing open');
-  await r.tick();
-  r.openOp('T1', 'implement');
-  let budget = campaignBudget(r.store, r.store.campaign(r.id));
-  assert.deepEqual([budget.reservedRuns, budget.chargedCostUsd, budget.exhausted], [1, 7, null], '$4 plus one open run at $3');
-  openRow(r, 'T2', 'implement');
-  budget = campaignBudget(r.store, r.store.campaign(r.id));
-  assert.deepEqual([budget.reservedRuns, budget.chargedCostUsd], [2, 10]);
-  assert.match(budget.exhausted, /cost ceiling reached .*2 open run\(s\)/, 'no third run: the two open runs could reach the ceiling');
-  // A finished run without a reported cost is charged, no longer reserved: it is not counted twice.
-  r.implement('T1');
-  budget = campaignBudget(r.store, r.store.campaign(r.id));
-  assert.deepEqual([budget.unknownCostRuns, budget.reservedRuns, budget.chargedCostUsd], [1, 1, 10]);
-  assert.equal(campaignStatus(r.store, r.id).budget.reservedRuns, 1, 'status shows the reservation');
-});
-
-test('without a declared cost ceiling open runs reserve nothing', async (t) => {
-  const r = rig(t, { tasks: [commitTask('T1', 761), commitTask('T2', 762)] });
-  await r.tick();
-  openRow(r, 'T2', 'implement');
-  const budget = campaignBudget(r.store, r.store.campaign(r.id));
-  assert.deepEqual([budget.reservedRuns, budget.chargedCostUsd, budget.exhausted], [0, null, null]);
 });

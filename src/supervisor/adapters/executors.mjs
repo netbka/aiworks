@@ -1,3 +1,4 @@
+import { emptyUsage, mergeUsage, operationUsage, providerTokens } from '../token-usage.mjs';
 // Native CLI adapters share the terminal contract and the existing contained runner.
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -132,11 +133,11 @@ function withStageRule(prompt, role, stage) {
 export const buildPrompt = (args) => DEVELOPMENT_RESOURCE_RULE + '\n\n' + (args.web ? agy.buildPrompt(args)
   : withStageRule(withReadingRule(withGateRules(claude.buildPrompt(args), args.role, args.deliverable, args.publicationRewrite), args.role), args.role, args.stage ?? null));
 const nativeKind = (kind) => kind ?? 'claude-cli';
-// Codex/Cursor do not report measured dollar cost or Claude turn counts: unknown is not a free refusal.
+// Codex/Cursor do not report Claude turn counts: unknown is not a free refusal.
 export const refusedBeforeWork = (verdict) => nativeKind(verdict?.executorKind) === 'claude-cli' && claude.refusedBeforeWork(verdict);
 // A run the owner's budget does not pay for: admission never happened, the provider refused before any
 // work, or the executor itself was unavailable (no shell, no sandbox) so no task attempt took place.
-export const runNotCounted = (outcome) => outcome?.class === 'admission-blocked' || outcome?.class === 'unavailable' || refusedBeforeWork(outcome);
+export const runNotCounted = (outcome) => outcome?.refunded === true || outcome?.class === 'admission-blocked' || outcome?.class === 'unavailable' || refusedBeforeWork(outcome);
 
 // Codex structured output requires all fields; optional terminal fields may be null.
 function strictSchema(schema) {
@@ -519,7 +520,7 @@ function classifyRun({ executorKind, strip = null, ...args }) {
   if (kind === 'claude-cli') return { ...claude.classify(args), executorKind: kind };
   if (kind === 'agy-cli') return { ...agy.classify(args), executorKind: kind };
   const { run, stdoutText, stderrText, expect, now, role } = args;
-  let nativeSessionId = null, value = null, usage = null, failure = '', completed = false, malformed = false, toolDenied = false, researchToolUsed = false, setupFailure = null;
+  let nativeSessionId = null, value = null, tokens = { usage: null }, failure = '', completed = false, malformed = false, toolDenied = false, researchToolUsed = false, setupFailure = null;
   try {
     if (kind === 'codex-cli') {
       const events = stdoutText.split(/\r?\n/).filter((line) => line.trim()).map((line) => JSON.parse(line));
@@ -538,11 +539,27 @@ function classifyRun({ executorKind, strip = null, ...args }) {
       const messages = events.filter((event) => event.type === 'item.completed' && event.item?.type === 'agent_message');
       value = messages.at(-1)?.item.text ?? null;
       failure = events.filter((event) => ['error', 'turn.failed'].includes(event.type)).map((event) => String(event.message ?? event.error?.message ?? event.error ?? '')).join('\n');
-      const nativeUsage = turns[0]?.usage;
-      if (nativeUsage) usage = { input: nativeUsage.input_tokens ?? null, output: nativeUsage.output_tokens ?? null,
-        cacheRead: nativeUsage.cached_input_tokens ?? null, cacheCreation: null, inputIncludesCacheRead: true };
+      const thread = threads.length === 1 ? threads[0] : null;
+      if (thread && turns.length <= 1) {
+        const turn = turns[0];
+        tokens = providerTokens({ usage: turn?.usage, model: turn?.model ?? thread.model,
+          reasoning_effort: turn?.reasoning_effort ?? thread.reasoning_effort }, kind);
+      } else if (thread) {
+        const summary = emptyUsage();
+        for (const turn of turns) {
+          const receipt = providerTokens({ ...turn, model: turn.model ?? thread.model,
+            reasoning_effort: turn.reasoning_effort ?? thread.reasoning_effort }, kind);
+          mergeUsage(summary, operationUsage({ executor_kind: kind, outcome: { receipt } }));
+        }
+        const models = summary.models.map((row) => ({
+          model: row.model, effort: row.effort,
+          usage: Object.fromEntries(Object.keys(row.coverage).map((field) => [field, row[field]])),
+          partialFields: Object.keys(row.coverage).filter((field) => row.coverage[field] < row.runs),
+        }));
+        tokens = { models, usage: !summary.partialRuns && !summary.unknownRuns ? { total: summary.total } : null };
+      }
     } else {
-      let output;
+      let output, nativeModel;
       if (args.researchOnly) {
         const events = stdoutText.split(/\r?\n/).filter((line) => line.trim()).map((line) => JSON.parse(line));
         const init = events.filter((event) => event.type === 'system' && event.subtype === 'init');
@@ -556,18 +573,20 @@ function classifyRun({ executorKind, strip = null, ...args }) {
           : !['system', 'user', 'assistant', 'result'].includes(event.type) ||
             event.message?.content?.some((part) => part.type !== 'text'));
         output = results.at(-1) ?? {};
+        nativeModel = init[0]?.model;
         if (init.length !== 1 || results.length !== 1 || events.at(-1) !== output
           || init[0]?.session_id !== output.session_id || init[0]?.apiKeySource !== 'login') {
           malformed = true; output = {};
         }
       } else output = JSON.parse(stdoutText);
+      tokens = providerTokens({ ...output, model: output.model ?? nativeModel }, kind);
       nativeSessionId = output.session_id;
       completed = output.type === 'result' && output.subtype === 'success' && output.is_error === false;
       if (output.is_error) failure = String(output.result ?? '');
       else value = output.result;
     }
   } catch { malformed = true; }
-  const receipt = { executorKind: kind, nativeSessionId, sessionId: null, costUsd: null, usage, measured: Boolean(usage) };
+  const receipt = { executorKind: kind, nativeSessionId, sessionId: null, ...tokens, measured: Boolean(tokens.usage || tokens.models?.length) };
   const base = { executorKind: kind, receipt, exitCode: run.exitCode ?? null };
   if (researchToolUsed) return { ...base, class: 'error', detail: 'research worker used an unexpected tool; no provider fallback' };
   if (toolDenied) return { ...base, class: 'error', detail: 'repository reader failed or native command was denied; no provider fallback' };
