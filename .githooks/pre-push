@@ -1,2 +1,3 @@
 #!/bin/sh
-exec node scripts/check-public-scope.mjs --pre-push
+# $2 is the URL this push really goes to (pushurl and pushInsteadOf applied); $1 is only the remote name.
+exec node scripts/check-public-scope.mjs --pre-push "$2"
