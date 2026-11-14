@@ -46,7 +46,7 @@ import { baseCheckStep, baseCompareSettings, baseRecord, claimBaseRed, settleBas
 import { CACHE_RULE, checkClaims, hasRunner, insertResults, offerCache, otherNodeMajor, resultsOf, testCacheSettings } from './test-cache.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
-import { addComment, createItem, followUp, productDefectItem, settleSubject, standingFollowUp, reviewItem, subjectLabel, WorkListError, workAuthorization, workLink } from './work-list.mjs';
+import { addComment, createItem, followUp, openNotDoneItems, productDefectItem, settleMergedNotDone, settleSubject, standingFollowUp, reviewItem, subjectLabel, WorkListError, workAuthorization, workLink } from './work-list.mjs';
 import { OWNER_CLASSES, blockerFingerprint, nextRecheckAt, noopTransport, ownerMessage, redact, reminderDue } from './owner-intervention.mjs';
 import { alertDecision, configuredTransport, currentAlertRules, renderAlert } from './alerts.mjs';
 import { PUBLICATION_REFUSED, privateTerms, publicationFindings, relativeTo } from '../shared/public-text.mjs';
@@ -542,6 +542,10 @@ export class Controller {
     this.mergeMissingUntil = new Map();
     // aiworks#207: when each campaign's open integration repair rounds were last checked for an out-of-band merge (memory only).
     this.repairCheckedAt = new Map();
+    // When each campaign's not-done steps were last checked for a head merged outside AIWorks (memory only).
+    this.notDoneCheckedAt = new Map();
+    // The base commit and items each campaign's not-done steps were last checked against: an unmoved base is not read again.
+    this.notDoneCheckedBase = new Map();
     const commands = config.commands ?? {};
     this.cmd = { codex: commands.codex, cursor: commands.cursor, agy: commands.agy, chrome: commands.chrome,
       claude: commands.claude ?? ['claude'], git: commands.git ?? ['git'], gh: commands.gh ?? ['gh'] };
@@ -602,6 +606,10 @@ export class Controller {
         WHERE n.state IN ('pending', 'sending') AND c.control IN ('finished', 'cancelled')`)) {
         if (!ids.includes(id)) ids.push(id);
       }
+    }
+    // And a finished campaign with a not-done step whose follow-up is still open, once its merge check is due.
+    for (const { campaign_id: id } of openNotDoneItems(this.store)) {
+      if (!ids.includes(id) && this.notDoneDue(id) && this.store.campaign(id)?.control === 'finished') ids.push(id);
     }
     // And a finished campaign whose owner asked for changes to one of its results (OWNER_UI_V2 WP4).
     for (const { campaign_id: id } of this.store.all(`SELECT DISTINCT events.campaign_id FROM events JOIN campaigns ON campaigns.id = events.campaign_id
@@ -736,6 +744,8 @@ export class Controller {
     // An open integration repair round whose PR was merged by someone else ends (aiworks#207). Checked before a finished
     // campaign's rounds reopen below, so a round opened by this pass is dispatched without a GitHub read.
     if (this.store.campaign(id).control === 'registered' && !this.unmergedRevision()) await this.endMergedRepairs(ctx);
+    // A step ended as not done whose head was merged outside AIWorks settles its open follow-up.
+    if (['registered', 'finished'].includes(this.store.campaign(id).control) && !this.unmergedRevision()) await this.settleMergedNotDoneSteps(ctx);
     // A conflicting published PR reopens its task and with it the finished campaign (aiworks#27).
     if (this.ir && this.store.campaign(id).control === 'finished') await this.checkPublishedIntegration(ctx);
     // A published head whose CI fails reopens its task the same way (aiworks#42).
@@ -2488,6 +2498,65 @@ export class Controller {
     }
     this.log(`merged ${ctx.id}/${fresh.task_id} out of band: ${fresh.pr_url} at ${sha}; its integration repair round ends`);
     return true;
+  }
+
+  notDoneDue(id, now = this.now()) {
+    return (this.notDoneCheckedAt.get(id) ?? -Infinity) + this.config.integrationPollMs <= now;
+  }
+
+  /**
+   * A step AIWorks ended as not done (settleStopped) whose head was merged outside AIWorks after all: the owner merged its
+   * pull request, or someone published its branch and merged it. Its open not-done follow-up would otherwise say nothing
+   * was merged and lead to the work being done twice. At most every integrationPollMs per campaign, and only while a
+   * cancelled commit step has such an item and a recorded head, the base is read once (fetchBase, before the fence,
+   * aiworks#140) and each head checked against it. A head found in the base closes the item with one comment and is
+   * journalled; the step itself stays cancelled.
+   *
+   * The heads are the verified one (a published head, also the start of a repair round) and the last implemented one.
+   * A head the step was built on, or any earlier base commit (a worker can report a newer base commit as its head), is no
+   * work of it and never counts, unless it is the verified head.
+   */
+  async settleMergedNotDoneSteps(ctx) {
+    if (!this.notDoneDue(ctx.id)) return;
+    // Set before any early end, so a finished campaign with nothing to check is visited again only after the poll interval.
+    this.notDoneCheckedAt.set(ctx.id, this.now());
+    const c = this.store.campaign(ctx.id), decl = c.declaration;
+    if (isLocalTarget(decl)) return;
+    const specs = specsOf(this.store, ctx.id, decl);
+    const valid = (commit) => /^[0-9a-f]{40}$/.test(commit ?? '');
+    const heads = (task) => [...new Set([task.verified_sha, task.head_sha])]
+      .filter((sha) => valid(sha) && (sha !== task.base_sha || sha === task.verified_sha));
+    const steps = openNotDoneItems(this.store, ctx.id).map((row) => ({ number: row.number, task: this.store.task(ctx.id, row.task_id) }))
+      .filter(({ task }) => task?.state === 'cancelled' && specs.get(task.task_id)?.deliverable === 'commit' && heads(task).length);
+    if (!steps.length) return;
+    if (resolveCheckout(this.store, this.config, decl.target.repository)?.conflict) return;
+    const repo = this.repo(decl), baseSha = (await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository)).sha;
+    if (!valid(baseSha)) return;
+    const checked = `${baseSha}:${steps.map(({ number }) => number).join(',')}`;
+    if (this.notDoneCheckedBase.get(ctx.id) === checked) return;
+    const isAncestor = (ancestor, descendant) => gitA.isAncestor({ git: this.cmd.git, path: repo.path, ancestor, descendant });
+    // A head on the base's own first-parent line since the step was dispatched is a base commit, not a branch merged in: a
+    // fast-forward merge is then left open, which is safe.
+    const own = (task, head) => {
+      if (head === task.verified_sha) return true;
+      if (!valid(task.base_sha) || isAncestor(head, task.base_sha)) return false;
+      const line = gitA.firstParentSince({ git: this.cmd.git, path: repo.path, from: task.base_sha, to: baseSha });
+      return line !== null && !line.includes(head);
+    };
+    this.fenced(ctx, () => {
+      if (!this.authorityHolds(ctx.id, c)) { this.notDoneCheckedAt.delete(ctx.id); return; }
+      this.notDoneCheckedBase.set(ctx.id, checked);
+      for (const { number, task } of steps) {
+        const fresh = this.store.task(ctx.id, task.task_id);
+        if (fresh?.state !== 'cancelled') continue;
+        const sha = heads(fresh).find((head) => isAncestor(head, baseSha) && own(fresh, head));
+        if (!sha) continue;
+        const now = this.now();
+        if (!settleMergedNotDone(this.store, { number, sha, baseBranch: decl.target.baseBranch, baseSha, now })) continue;
+        this.store.journal(ctx.id, 'not-done-merged', { task: fresh.task_id, sha, base: baseSha, item: number }, now);
+        this.log(`not-done step ${ctx.id}/${fresh.task_id} was merged outside AIWorks at ${sha}: follow-up #${number} closed`);
+      }
+    });
   }
 
   /** The open integration-conflict finding of a task in an integration repair round, or null. */

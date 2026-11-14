@@ -226,6 +226,32 @@ export function settleSubject(store, { subject, campaignId, taskId, now }) {
 }
 
 /**
+ * The open not-done follow-up items AIWorks filed for the steps of one campaign, or of every campaign: { number,
+ * campaign_id, task_id }, oldest first. Empty when this installation has no work list.
+ */
+export function openNotDoneItems(store, campaignId = null) {
+  if (!present(store)) return [];
+  return store.all(`SELECT number, campaign_id, task_id FROM work_items WHERE kind = 'task' AND author_kind = 'supervisor' AND state = 'open'
+    AND campaign_id IS NOT NULL AND task_id IS NOT NULL ${campaignId === null ? '' : 'AND campaign_id = ?'}
+    AND EXISTS (SELECT 1 FROM json_each(labels) WHERE value = ?) ORDER BY number`, ...(campaignId === null ? [] : [campaignId]), `${FOLLOW_UP}:${NOT_DONE}`);
+}
+
+/**
+ * A step ended as not done whose head reached the base after all, merged outside AIWorks: its open not-done follow-up is
+ * closed with one comment naming the head and the base commit it was found in. Idempotent: a closed item is left alone and
+ * a repeated call records no second comment. Returns whether the item was closed now.
+ */
+export function settleMergedNotDone(store, { number, sha, baseBranch, baseSha, now }) {
+  return store.tx(() => {
+    if (item(store, number)?.state !== 'open') return false;
+    addComment(store, { number, idempotencyKey: `merged:${sha}`, authorKind: 'supervisor', now,
+      body: `Settled: this step's head \`${sha}\` was found in ${baseBranch} at \`${baseSha}\`; it was merged outside AIWorks. Check the base before planning any of it again.` });
+    setItemState(store, { number, state: 'closed', now });
+    return true;
+  });
+}
+
+/**
  * A follow-up item not tied to a campaign step (#144): one per `key`, so a repeated report records nothing twice. Null
  * when this installation has no work list. Not for the owner: AIWorks plans it like any other work item.
  */
