@@ -41,6 +41,32 @@ const ABSOLUTE_PATH = [
   /(?<![\w.-])\/(?:home|Users|root|mnt|media|opt|tmp|srv|etc|var|usr(?!\/bin\/env\b)|private|Volumes|Library|Applications|System|run|snap|nix)\/(?!example\b|user\b)[\w.-]+/,
 ];
 
+/**
+ * `text` with every path under one of `roots` made repository-relative (aiworks work item 86): a worker or verifier that
+ * names a file by its absolute path in its own checkout cites the repository file, so the prefix is local detail only.
+ * A root is `{ path, depth }`: `depth` further folder names after `path` belong to the prefix too (a worktree root's
+ * own worktree folder). Only exact prefixes followed by a separator are cut, in either slash form and either case;
+ * anything else stays for the privacy check to judge.
+ */
+export function relativeTo(text, roots = []) {
+  let value = String(text ?? '');
+  for (const { path, depth = 0 } of roots) {
+    const parts = String(path ?? '').split(/[\\/]+/).filter(Boolean);
+    if (parts.length < 2) continue;
+    const sep = '[\\\\/]+';
+    const escaped = parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(sep);
+    // A worktree folder may carry `+` (git.mjs workspaceName). A path with any `..` folder after the prefix may leave the
+    // root, so it keeps its prefix, whole, for the privacy check to refuse. The rest is read to the end of the line, not
+    // to the first space or quote: a folder name may hold either, and keeping a prefix only keeps the old refusal.
+    const pattern = new RegExp(`(?<![\\w.-])${/^[A-Za-z]:$/.test(parts[0]) ? '' : '[\\\\/]'}${escaped}${`${sep}(?!\\.\\.?[\\\\/])[\\w.$~+-]+`.repeat(depth)}${sep}`, 'gi');
+    value = value.replace(pattern, (match, offset, whole) => {
+      const rest = /^[^\r\n]*/.exec(whole.slice(offset + match.length))[0];
+      return /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(rest) ? match : '';
+    });
+  }
+  return value;
+}
+
 /** Categories of private content in text published to `repository` (PR title and body, issue or PR comment). */
 export function publicationFindings(text, { repository, terms = [] } = {}) {
   const value = String(text ?? '');
