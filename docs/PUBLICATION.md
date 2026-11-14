@@ -20,4 +20,11 @@ Keep installation-specific names out of the public rules too. An optional ignore
 
 The checks also refuse binary files (images, PDFs, archives, office documents, fonts and any file with NUL bytes), because a screenshot can show a person, an email address or a private window that no text check reads. A binary file may be published only when its blob id is listed in `.public-binaries`. Open the file and confirm it shows no private data before you add `<blob id> <path>` there; `git rev-parse :<path>` prints the id of a staged file. The refusal names only blob ids.
 
+Git hooks see only commits. Text that an agent posts with `gh` (pull request bodies, issue comments, API writes) never passes through them. `node scripts/claude-guard/install.mjs` installs a Claude Code PreToolUse hook for the current user. Before a `git push` or a `gh` write to a public GitHub repository, in any project, it checks:
+- the command text, the files the command sends, and the commits being pushed;
+- the private terms, the names of the checkouts under the repository roots, personal paths and session links;
+- `--no-verify`, and binary files not in that repository's `.public-binaries`.
+
+It refuses the call when any check fails, and leaves private repositories alone. Its settings stay in `~/.claude/hooks/public-guard.json`, outside the repository (see `scripts/claude-guard/public-guard.example.json`).
+
 Hooks and pattern scanners are additional checks, not proof that arbitrary text is safe. Do not bypass them. Review source, assets, every proposed commit and public metadata before publishing. Source cleanup cannot erase existing Git objects, GitHub edit history or downloaded copies; history and remote-record cleanup require an explicit reviewed plan.
