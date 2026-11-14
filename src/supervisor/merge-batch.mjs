@@ -83,7 +83,7 @@ export async function batchStep(controller, items, settings, repoPath, baseSha) 
     : startGroup(controller, all, items, settings, repoPath, baseSha, note);
 }
 
-function startGroup(controller, all, items, settings, repoPath, baseSha, note) {
+async function startGroup(controller, all, items, settings, repoPath, baseSha, note) {
   const git = controller.cmd.git, ready = [], local = Boolean(items[0].local);
   // A local group starts only from trusted main with nothing unrecorded on it.
   if (local) {
@@ -136,7 +136,7 @@ function startGroup(controller, all, items, settings, repoPath, baseSha, note) {
   if (all.some((group) => group.started.detail.base === baseSha && group.started.detail.signature === signature)) return false;
   const branch = items[0].decl.target.baseBranch;
   const root = controller.repo(items[0].decl).worktreeRoot, path = join(root, `merge-batch-${baseSha.slice(0, 12)}-${head.slice(0, 12)}`);
-  try { checkout(git, repoPath, path, head, root); } catch (error) { controller.log(`group merge onto ${baseSha} could not start: ${error.message}`); return false; }
+  try { await checkout(git, repoPath, path, head, root); } catch (error) { controller.log(`group merge onto ${baseSha} could not start: ${error.message}`); return false; }
   // Recorded before the gate starts: after a crash here the next pass finds the worktree and starts the gate.
   note('merge-batch-started', { id: head, base: baseSha, branch, members, signature, candidates, path, command: settings.refresh.command });
   try { startGate(path, settings.refresh.command); } catch (error) {
@@ -256,7 +256,7 @@ async function continueGroup(controller, open, items, settings, repoPath, baseSh
     if (result.acted || result.waiting) return true;
     if (result.stop) { end('merge-batch-stopped', result.stop); return false; }
     // A merge that did not happen (a lost lease, a changed task) is judged again next pass.
-    if (local) mergeLocal(controller, item, settings, repoPath, { group: open.id, base: parent, tree: member.tree });
+    if (local) await mergeLocal(controller, item, settings, repoPath, { group: open.id, base: parent, tree: member.tree });
     else mergeNow(controller, item, base, null, member.tree);
     controller.mergePassReads = new Map();
     const done = memberRow(store, member, 'merged', since);
