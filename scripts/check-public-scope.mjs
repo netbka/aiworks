@@ -103,9 +103,24 @@ export function checkPublicHistory(root, revisions, tip = revisions.at(-1).split
     inspect(root, entries, terms, binaries);
   }
 }
+/**
+ * The commits the push remote already serves, as the remote itself answers (git ls-remote), never as local
+ * remote-tracking refs claim: those can be moved locally. Only tips present here are returned. Any failure, or no
+ * remote named, returns null, and the caller then checks the whole history.
+ */
+export function publishedTips(root, remote) {
+  if (!remote || remote.startsWith('-')) return null;
+  const listed = spawnSync('git', ['ls-remote', '--heads', '--tags', '--', remote], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 60_000 });
+  if (listed.error || listed.status !== 0) return null;
+  const tips = [...new Set(listed.stdout.split('\n').map(line => line.split('\t')[0]).filter(sha => /^[0-9a-f]{40}$/.test(sha)))];
+  return tips.filter(sha => spawnSync('git', ['cat-file', '-e', `${sha}^{commit}`], { cwd: root, windowsHide: true }).status === 0);
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     if (process.argv[2] === '--pre-push') {
+      // Git passes the remote's name (or URL) to the hook; a new branch then skips only what that remote already serves.
+      let published;
       for (const line of readFileSync(0, 'utf8').trim().split('\n').filter(Boolean)) {
         const [localRef, local, remoteRef, remote] = line.split(/\s+/);
         if (!/^[0-9a-f]{40}$/.test(local) || !/^[0-9a-f]{40}$/.test(remote)) throw new Error('Invalid push reference.');
@@ -120,7 +135,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
           if (!object) throw new Error('Cannot inspect a proposed tag.');
         }
         if (git(process.cwd(), ['cat-file', '-t', object]).toString().trim() !== 'commit') throw new Error('A public branch or tag must resolve to a commit.');
-        checkPublicHistory(process.cwd(), /^0+$/.test(remote) ? [local] : [`${remote}..${local}`]);
+        if (!/^0+$/.test(remote)) { checkPublicHistory(process.cwd(), [`${remote}..${local}`]); continue; }
+        if (published === undefined) published = publishedTips(process.cwd(), process.argv[3]);
+        checkPublicHistory(process.cwd(), published?.length ? [local, '--not', ...published] : [local], local);
       }
     } else checkPublicScope();
   }

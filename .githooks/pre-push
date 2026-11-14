@@ -1,2 +1,2 @@
 #!/bin/sh
-exec node scripts/check-public-scope.mjs --pre-push
+exec node scripts/check-public-scope.mjs --pre-push "$1"

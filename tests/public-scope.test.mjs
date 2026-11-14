@@ -177,3 +177,34 @@ test('a Git checkout under a configured repository root is a private term withou
   // The supervisor's publications to a target name that target: they keep to the listed terms only.
   assert.deepEqual(privateTerms(self), []);
 });
+
+test('a new branch skips only the history its push remote already serves, as that remote answers', t => {
+  const base = mkdtempSync(join(tmpdir(), 'aiworks-push-remote-'));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const root = join(base, 'work'), bare = join(base, 'remote.git');
+  mkdirSync(root);
+  const git = (cwd, ...args) => {
+    const out = spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', ...args], { cwd, encoding: 'utf8', windowsHide: true });
+    assert.equal(out.status, 0, out.stderr);
+    return out.stdout.trim();
+  };
+  git(base, 'init', '-q', '--bare', bare);
+  git(root, 'init', '-q');
+  writeFileSync(join(root, 'README.md'), ['ghp', 'D'.repeat(36)].join('_'));
+  git(root, 'add', '.'); git(root, 'commit', '-qm', 'Already served by the remote');
+  git(root, 'push', '-q', '--no-verify', bare, 'HEAD:refs/heads/main');
+  writeFileSync(join(root, 'README.md'), 'Public source');
+  git(root, 'add', '.'); git(root, 'commit', '-qm', 'Clean change');
+  const push = (remote) => spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/check-public-scope.mjs', import.meta.url)), '--pre-push', ...(remote ? [remote] : [])], {
+    cwd: root, input: `refs/heads/new ${git(root, 'rev-parse', 'HEAD')} refs/heads/new ${'0'.repeat(40)}\n`, encoding: 'utf8', windowsHide: true,
+  });
+  assert.equal(push(bare).status, 0, push(bare).stderr);
+  assert.equal(push(null).status, 1); // no remote named: the whole history is checked
+  git(root, 'update-ref', 'refs/remotes/fake/main', 'HEAD');
+  assert.equal(push(join(base, 'missing.git')).status, 1); // an unreachable remote, whatever local refs claim
+  writeFileSync(join(root, 'README.md'), ['ghp', 'E'.repeat(36)].join('_'));
+  git(root, 'add', '.'); git(root, 'commit', '-qm', 'Unpublished private content');
+  writeFileSync(join(root, 'README.md'), 'Public source again');
+  git(root, 'add', '.'); git(root, 'commit', '-qm', 'Hide it again');
+  assert.equal(push(bare).status, 1);
+});
