@@ -147,7 +147,8 @@ test('readGateRun: the exit code and the final node:test summary the controller 
   const dir = workdir(t);
   assert.equal(readGateRun(dir), null, 'no gate ran here');
   writeFileSync(join(dir, 'gate.log'), 'noise\r\n# all test files: 1 unit (of 1)\r\n# tests 3\r\n# pass 3\r\n# fail 0\r\n');
-  assert.deepEqual(readGateRun(dir), { exit: null, summary: '# all test files: 1 unit (of 1)\n# tests 3\n# pass 3\n# fail 0', exited: null, head: null }, 'an unfinished gate has no exit code');
+  assert.deepEqual(readGateRun(dir), { exit: null, summary: '# all test files: 1 unit (of 1)\n# tests 3\n# pass 3\n# fail 0', exited: null,
+    failures: '# all test files: 1 unit (of 1)\n# tests 3', head: null, command: null }, 'an unfinished gate has no exit code');
   writeFileSync(join(dir, 'gate-exit.log'), '0\n');
   assert.equal(readGateRun(dir).exit, '0');
   // A plain node --test run has no "# all test files" line: its last run of count lines is the summary, never other output.
@@ -184,6 +185,7 @@ test('a gate run is a run of the verified head only when start recorded that com
   assert.equal(gate(dir, 'start', 'node', 'pass.mjs').code, 0);
   assert.equal(waitFast(dir).code, 0);
   const run = readGateRun(dir);
+  assert.deepEqual(run.command, ['node', 'pass.mjs'], 'the command it ran is recorded, for base compare');
   assert.equal(gateHeadProblem(run, target), null, 'started on the target, its own gate files only');
   assert.ok(gateHeadProblem(run, '0'.repeat(40)), 'a run of another commit');
   assert.ok(gateFailure({ ...run, headProblem: gateHeadProblem(run, '0'.repeat(40)) }), 'kept with its reason, it never counts as passed');

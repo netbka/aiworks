@@ -48,6 +48,8 @@ if (gate) {
 `);
   // gate-head.log as the helper's start writes it: the target on a clean checkout, unless the scenario names another head.
   if (gate.head !== false) writeFileSync(join(process.cwd(), 'gate-head.log'), `${gate.head ?? target} clean\n`);
+  // gate-command.log, the command the helper ran, only where the scenario names one (base compare compares it).
+  if (Array.isArray(gate.command)) writeFileSync(join(process.cwd(), 'gate-command.log'), `${JSON.stringify(gate.command)}\n`);
 }
 
 // Assembled at run time so the fixture source itself passes the public-scope check.

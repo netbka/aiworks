@@ -3,7 +3,7 @@
 // root: an operator-configured read-only directory. There is no default or fallback to AIWorks's own tree:
 // without a valid root every code path that needs governance fails closed with a coded error.
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 
 export class GovernanceRootError extends Error {
@@ -69,4 +69,20 @@ export function roleCatalog(governanceRoot) {
   }
   const digest = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
   return { digest, roles };
+}
+
+/**
+ * The project contracts of the governance checkout (registry/projects/*.json), read, never copied or changed, in file
+ * name order: { file, contract } for each readable JSON object, { file, problem } for one that is not. Used by the
+ * read-only base compare inventory (cli.mjs base-compare-inventory).
+ */
+export function projectContracts(governanceRoot) {
+  const dir = join(requireGovernanceRoot(governanceRoot), 'registry', 'projects');
+  return readdirSync(dir).filter((name) => name.endsWith('.json')).sort().map((file) => {
+    try {
+      const contract = JSON.parse(readFileSync(join(dir, file), 'utf8'));
+      return contract && typeof contract === 'object' && !Array.isArray(contract) && typeof contract.id === 'string'
+        ? { file, contract } : { file, problem: 'not a project contract object with a string id' };
+    } catch (error) { return { file, problem: `unreadable (${error.code ?? 'invalid JSON'})` }; }
+  });
 }

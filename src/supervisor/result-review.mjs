@@ -7,7 +7,7 @@
 // only through the supervisor's merge gate, and a local result is applied only by the owner's Apply. In a project whose
 // acceptance mode is "owner" (AW-015) the merge gate also waits for that acceptance (awaitingAcceptance).
 import { createHash } from 'node:crypto';
-import { failedTests, gateFailure } from './gate.mjs';
+import { gateFailureList, gateFailure } from './gate.mjs';
 import { acceptanceMode, projectOf } from './project-settings.mjs';
 
 /** The finding that reopens a finished step at the owner's request. */
@@ -74,11 +74,18 @@ export const fullCheckPassed = (gate) => Boolean(gate) && gate.exit === '0' && !
  * Whether an acceptance kept by base compare (base-check.mjs) is explained by its base: its finished gate failed, and
  * every failed test it lists, at least one and the list complete, is among the base failures the verification recorded.
  * Merging such a head adds no failure to the base it merges into. It re-checks the stored gate summary against the list the
- * supervisor recorded with the verification (a worker can set neither); it does not read base_checks again.
+ * supervisor recorded with the verification (a worker can set neither), with the same parser (gate.mjs gateFailedTests
+ * over the failure lines readGateRun kept); it does not read base_checks again. A list recorded with the base's command
+ * (per-project base compare) also needs the gate's own recorded command to be the same; one recorded before that
+ * carries no command and is read as before.
  */
 export function baseExplained(v) {
   if (!v?.gate || v.gate.exit === null || !Array.isArray(v.baseFailures?.failed)) return false;
-  const ids = failedTests(v.gate.summary);
+  if (Array.isArray(v.baseFailures.command) && JSON.stringify(v.gate.command ?? null) !== JSON.stringify(v.baseFailures.command)) return false;
+  const list = gateFailureList(v.gate);
+  // A list recorded with its runner is explained only by the same runner's list; one recorded before carries none.
+  if (typeof v.baseFailures.runner === 'string' && list?.runner !== v.baseFailures.runner) return false;
+  const ids = list?.ids;
   return Boolean(ids?.length) && ids.every((id) => v.baseFailures.failed.includes(id));
 }
 

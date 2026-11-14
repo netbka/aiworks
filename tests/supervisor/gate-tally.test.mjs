@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { checkVerification } from '../../src/supervisor/adapters/git.mjs';
 import { GATE_FILES } from '../../src/supervisor/gate.mjs';
+import { RUNNER_LOGS } from '../fixtures/runner-logs.mjs';
 import { declaration, environment, runUntil, skipWithoutSqlite, sleep } from './helpers.mjs';
 
 const load = async () => ({
@@ -81,21 +82,62 @@ test('an acceptance with no gate run, one that never finished or one of another 
   assert.equal(store.tasks(id)[0].state, 'done');
 });
 
+test('base compare: the failed tests of every supported runner are read from the whole log, or unknown', async () => {
+  const { failedTests, failureEvidence, gateFailedTests } = await import('../../src/supervisor/gate.mjs');
+  for (const [runner, logs] of Object.entries(RUNNER_LOGS)) {
+    for (const { name, log, failed } of logs) {
+      assert.deepEqual(failedTests(log), failed, `${runner}: ${name}`);
+      assert.deepEqual(failedTests(log.replaceAll('\n', '\r\n')), failed, `${runner}: ${name}, CRLF`);
+      // The lines kept with a verification give the same list when the merge gate parses them again.
+      assert.deepEqual(failedTests(failureEvidence(log)), failed, `${runner}: ${name}, kept lines`);
+    }
+  }
+  const fail = (runner) => RUNNER_LOGS[runner].find((entry) => entry.name === 'fail');
+  const coloured = fail('vitest').log.replaceAll(' FAIL ', '\x1b[41m\x1b[1m FAIL \x1b[22m\x1b[49m');
+  assert.deepEqual(failedTests(coloured), fail('vitest').failed, 'colours');
+  // An unknown runner, or two runners in one log, is no list.
+  assert.equal(failedTests('lint: 3 problems\nnpm ERR! code 1\n'), null);
+  assert.equal(failedTests(`${fail('pytest').log}\n${fail('jest').log}`), null);
+  assert.equal(failedTests(`${fail('go').log}\n${RUNNER_LOGS.cargo[0].log}`), null);
+  // A recorded run: its kept lines decide, and a run-tests summary that names another list makes it unknown.
+  const listed = fail('run-tests').log;
+  const summary = listed.slice(listed.indexOf('# all test files'));
+  assert.deepEqual(gateFailedTests({ summary, failures: failureEvidence(listed) }), ['tests/a.test.mjs :: a']);
+  assert.equal(gateFailedTests({ summary: summary.replace(':: a', ':: b'), failures: failureEvidence(listed) }), null);
+  assert.equal(gateFailedTests({ summary: null, failures: null }), null);
+  assert.deepEqual(gateFailedTests({ summary }), ['tests/a.test.mjs :: a'], 'a run recorded before the kept lines');
+  assert.deepEqual(gateFailedTests({ summary: null, failures: failureEvidence(fail('pytest').log) }), fail('pytest').failed);
+});
+
 test('base compare: a failed gate keeps its acceptance only when every failed test it names fails on the base too', { skip: skipWithoutSqlite }, async (t) => {
   const { failedTests } = await import('../../src/supervisor/gate.mjs');
-  const { sharedBaseFailures } = await import('../../src/supervisor/base-check.mjs');
+  const { baseCompareSettings, projectBaseCompare, sharedBaseFailures } = await import('../../src/supervisor/base-check.mjs');
   const { mergeRefusal } = await import('../../src/supervisor/result-review.mjs');
   const { complete, failedOf, settle } = await import('../../scripts/lib/test-retry.mjs');
   const block = (...ids) => `${FAILED.split('\n')[0]}\n${ids.map((id) => `# failed: ${id}`).join('\n')}\n${FAILED.split('\n').slice(1).join('\n')}`;
   const A = 'tests/a.test.mjs :: a', B = 'tests/b.test.mjs :: b', C = 'tests/c.test.mjs';
   // A list the runner cut short, a summary from another runner, or one naming no failed test never lets an acceptance stand.
-  const base = { state: 'failed', failed: [A, B] };
-  assert.deepEqual(sharedBaseFailures(base, block(A)), [A]);
-  assert.equal(sharedBaseFailures(base, `${block(A)}\n# failed: not listed: 3 more`), null);
+  const CHECK = ['npm', 'run', 'check'];
+  const base = { state: 'failed', failed: [A, B], command: JSON.stringify(CHECK), runner: 'run-tests' };
+  assert.deepEqual(sharedBaseFailures(base, block(A), CHECK), [A]);
+  assert.equal(sharedBaseFailures(base, `${block(A)}\n# failed: not listed: 3 more`, CHECK), null);
   assert.equal(failedTests(`# tests 7\n# fail 1\n# failed: ${A}`), null);
-  assert.equal(sharedBaseFailures(base, block()), null);
-  assert.equal(sharedBaseFailures({ state: 'failed', failed: null }, block(A)), null);
-  assert.equal(sharedBaseFailures({ state: 'passed', failed: [] }, block(A)), null);
+  assert.equal(sharedBaseFailures(base, block(), CHECK), null);
+  assert.equal(sharedBaseFailures({ ...base, failed: null }, block(A), CHECK), null);
+  assert.equal(sharedBaseFailures({ ...base, state: 'passed', failed: [] }, block(A), CHECK), null);
+  // The head counts against the base only when its gate ran the base's command; an unrecorded command never does.
+  assert.equal(sharedBaseFailures(base, block(A), ['npm', 'test']), null);
+  assert.equal(sharedBaseFailures(base, block(A), null), null);
+  // Ids of another runner, or a base recorded without its runner, never count.
+  assert.equal(sharedBaseFailures(base, { runner: 'jest', ids: [A] }, CHECK), null);
+  assert.equal(sharedBaseFailures({ ...base, runner: null }, block(A), CHECK), null);
+  // Per project: its own command, else the top-level one; a malformed entry is off for that project, never the fallback.
+  const settings = baseCompareSettings({ command: CHECK, projects: { 'Example-Org/Good': { command: ['npm', 'test'] }, 'example-org/bad': { command: [] } } });
+  assert.deepEqual(projectBaseCompare(settings, { repository: 'example-org/good' }).command, ['npm', 'test']);
+  assert.equal(projectBaseCompare(settings, { repository: 'example-org/bad' }), null);
+  assert.deepEqual(projectBaseCompare(settings, { repository: 'example-org/other' }).command, CHECK);
+  assert.equal(settings.problems.length, 1);
+  assert.ok(baseCompareSettings({ command: CHECK, projects: [] }).problem, 'a malformed projects map is off everywhere');
   // A file killed at its limit, or one that crashed before its summary, may hide failures: the whole list is then unknown.
   const killed = 'not ok 1 - a\n# tests/a.test.mjs still running after 15 minutes; stopping it and its child processes\n';
   const summary = (run) => `${FAILED.split('\n')[0]}\n${settle([run], []).lines.join('\n')}\n${FAILED.split('\n').slice(1).join('\n')}`;
@@ -109,17 +151,30 @@ test('base compare: a failed gate keeps its acceptance only when every failed te
   assert.deepEqual(failedTests(summary(run(nested))), [A, `${A} > inner`]);
 
   // The harness injects an isolated host namespace; base gates use real custody there, never a fake nested token.
-  for (const { name, head, baseExit, baseIds, stands, gateHead } of [
+  const pytest = (...ids) => [`${'='.repeat(10)} test session starts ${'='.repeat(10)}`, ...ids.map((id) => `FAILED ${id} - assert 0`),
+    `${'='.repeat(10)} ${ids.length} failed, 3 passed in 0.50s ${'='.repeat(10)}`].join('\n');
+  const P = 'tests/test_a.py::test_a', Q = 'tests/test_b.py::test_b', R = 'tests/test_c.py::test_c';
+  for (const { name, head, baseExit, baseIds, stands, gateHead, otherCommand, log = block } of [
     { name: 'shared', head: [A], baseExit: 1, baseIds: [A, B], stands: true },
     { name: 'adds a failure', head: [A, C], baseExit: 1, baseIds: [A, B], stands: false },
     { name: 'base passed', head: [A], baseExit: 0, baseIds: [], stands: false },
     // A gate run on another commit is no run of this head, whatever the base fails.
     { name: 'shared, but the gate ran on another commit', head: [A], baseExit: 1, baseIds: [A, B], stands: false, gateHead: OTHER },
+    // A head gate run under another command than the base's is no comparison.
+    { name: 'shared, but the gate ran another command', head: [A], baseExit: 1, baseIds: [A, B], stands: false, otherCommand: true },
+    // Another runner's log, with no node:test summary: its failed tests come from the whole gate.log.
+    { name: 'pytest, shared', head: [P], baseExit: 1, baseIds: [P, Q], stands: true, log: pytest },
+    { name: 'pytest, adds a failure', head: [P, R], baseExit: 1, baseIds: [P, Q], stands: false, log: pytest },
   ]) {
-    const { env, store, controller, id } = await setup(t, { scenario: { gate: [{ log: `${block(...head)}\n`, exit: '1', head: gateHead }, { log: `${PASSED}\n`, exit: '0' }] } });
-    const script = join(env.tmp, 'base-gate.mjs');
-    writeFileSync(script, `console.log(${JSON.stringify(baseExit ? block(...baseIds) : PASSED)}); process.exit(${baseExit});\n`);
-    controller.baseCompare = { command: [`"${process.execPath}"`, `"${script}"`], timeoutMs: 60_000 };
+    // The base gate's script lives outside the environment, so the head gate can record the same command before it exists.
+    const scriptDir = mkdtempSync(join(tmpdir(), 'aiworks-base-gate-'));
+    t.after(() => rmSync(scriptDir, { recursive: true, force: true }));
+    const script = join(scriptDir, 'base-gate.mjs');
+    const command = [`"${process.execPath}"`, `"${script}"`];
+    const { store, controller, id } = await setup(t, { scenario: { gate: [{ log: `${log(...head)}\n`, exit: '1', head: gateHead,
+      command: otherCommand ? ['npm', 'test'] : command }, { log: `${PASSED}\n`, exit: '0' }] } });
+    writeFileSync(script, `console.log(${JSON.stringify(baseExit ? log(...baseIds) : PASSED)}); process.exit(${baseExit});\n`);
+    controller.baseCompare = { command, timeoutMs: 60_000 };
     await runUntil(controller, store, id, (c) => c.control === 'finished', { timeoutMs: 120_000 });
     const [task] = store.tasks(id);
     const [base] = store.all('SELECT state, failed FROM base_checks');
@@ -128,11 +183,14 @@ test('base compare: a failed gate keeps its acceptance only when every failed te
     assert.equal(first.outcome.class, stands ? 'result' : 'invalid-result', name);
     assert.equal(task.state, 'done', name);
     if (stands) {
-      assert.deepEqual(task.verification.baseFailures, { sha: task.base_sha, failed: [A] }, name);
+      assert.deepEqual(task.verification.baseFailures, { sha: task.base_sha, failed: head, command, runner: log === block ? 'run-tests' : 'pytest' }, name);
       assert.equal(verifications(store, id).length, 1, 'no second verifier for a failure the base already has');
       assert.equal(mergeRefusal(task), null, 'the kept acceptance can merge');
-      const added = { ...task, verification: { ...task.verification, gate: { ...task.verification.gate, summary: block(A, C) } } };
+      const gate = log === block ? { summary: block(A, C) } : { failures: log(P, R) };
+      const added = { ...task, verification: { ...task.verification, gate: { ...task.verification.gate, ...gate } } };
       assert.equal(mergeRefusal(added), 'its full check did not pass', 'a failure the base does not have never merges');
+      const moved = { ...task, verification: { ...task.verification, gate: { ...task.verification.gate, command: ['npm', 'test'] } } };
+      assert.equal(mergeRefusal(moved), 'its full check did not pass', 'a gate of another command never merges on the base list');
     } else {
       assert.equal(task.verification.baseFailures, null, name);
     }
