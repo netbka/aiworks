@@ -406,6 +406,17 @@ function envelopeConstraint(envelope) {
   return `Approved outcome: ${envelope.outcome}${/[.!?]$/.test(envelope.outcome) ? '' : '.'} Planned files: ${envelope.writes.length ? envelope.writes.join(', ') : 'no repository path'}${deny.length ? `; never change ${deny.join(', ')}` : ''}. ${BEYOND_RULE}`.slice(0, 2000);
 }
 /** Where a task's work belongs in owner-facing text: `owner/name#issue`, or the project id of a project without GitHub. */
+/**
+ * The private terms that bind a publication into one target. A term that the target's own repository name (the part after
+ * the owner) or its projectId contains names that target itself: a pull request into a repository says that repository's
+ * name. Such a term is dropped for that target only and still binds every other target. The owner part never exempts a term.
+ */
+export function termsForTarget(terms, target) {
+  const own = [String(target?.repository ?? '').split('/').slice(1).join('/'), String(target?.projectId ?? '')]
+    .map((name) => name.toLowerCase()).filter(Boolean);
+  return terms.filter((term) => !own.some((name) => name.includes(String(term).toLowerCase())));
+}
+
 const whereOf = (decl, issue) => (isLocalTarget(decl) ? decl.target.projectId : `${decl.target.repository}#${issue}`);
 // A project without GitHub has no task issue and its owner runs no CLI: a decision there is answered in Settings, AIWorks itself and
 // its work is checked again with Check again on the dashboard, so its owner texts name those actions instead.
@@ -4171,7 +4182,7 @@ export class Controller {
   publicationTerms(decl) {
     const roots = [resolve(here, '../..')];
     try { roots.push(this.repo(decl).path); } catch { /* no checkout: the generic rules and the runtime's terms still apply */ }
-    return [...new Set(roots.flatMap((root) => privateTerms(root)))];
+    return termsForTarget([...new Set(roots.flatMap((root) => privateTerms(root)))], decl?.target);
   }
 
   /**
