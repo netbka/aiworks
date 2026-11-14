@@ -9,7 +9,8 @@ test('a private term is dropped only for the target it names', () => {
   const alpha = { repository: 'example-owner/alpha_notes', projectId: 'alpha' };
   const beta = { repository: 'example-owner/shop', projectId: 'beta-shop' };
   assert.deepEqual(termsForTarget(terms, alpha), ['beta-shop', 'example-owner']);
-  assert.deepEqual(termsForTarget(terms, beta), ['alpha_notes', 'example-owner']);
+  // The projectId is private, not public like the repository name: a term matching only it still binds.
+  assert.deepEqual(termsForTarget(terms, beta), terms);
   assert.deepEqual(termsForTarget(terms, { repository: 'example-owner/other', projectId: 'other' }), terms);
   assert.deepEqual(termsForTarget(terms, undefined), terms);
 });
