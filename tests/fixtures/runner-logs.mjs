@@ -308,6 +308,8 @@ export const RUNNER_LOGS = {
     { name: 'fail', log: `${DOTNET_FAIL}${DOTNET_SUMMARY(2, 6)}`, failed: ['Example.Tests.MathTests.Adds', 'Example.Tests.MathTests.Divides(a: 1, b: 0)'] },
     { name: 'fail in one of two projects', log: `${DOTNET_FAIL}${DOTNET_PASS}${DOTNET_SUMMARY(2, 9)}`, failed: ['Example.Tests.MathTests.Adds', 'Example.Tests.MathTests.Divides(a: 1, b: 0)'] },
     // Without the closing summary a log cut between two projects reads like a finished run.
+    // A project built for two frameworks: its failure lines do not say which framework failed.
+    { name: 'fail in a multi-targeted project', log: `${DOTNET_FAIL}${DOTNET_PASS.replace('(net8.0)', '(net6.0)')}${DOTNET_SUMMARY(2, 9)}`, failed: null },
     { name: 'no end of the run after a failed project', log: DOTNET_FAIL, failed: null },
     { name: 'summary before the last project', log: `${DOTNET_FAIL}${DOTNET_SUMMARY(2, 6)}${DOTNET_PASS}`, failed: null },
     { name: 'summary counts another failure', log: `${DOTNET_FAIL}${DOTNET_SUMMARY(3, 9)}`, failed: null },

@@ -339,6 +339,15 @@ const RUNNERS = [
       const count = total(lines, end, /Failed: +(\d+)/);
       if (listed.length < count) return null;
       if (!count && !listed.length) return [];
+      // A multi-targeted test project runs once per target framework, and its `Failed <name>` lines do not say which
+      // framework failed: a base failing a test on net6.0 and a head failing the same test only on net8.0 would read the
+      // same. A failed run of a test assembly built for more than one framework, or a run line without its assembly and
+      // framework when there are several runs, is therefore not a list.
+      const runs = lines.filter((line) => end.test(line)).map((line) => / - (\S+\.dll) \(([^)]+)\)\s*$/i.exec(line));
+      if (runs.length > 1 && runs.some((run) => !run)) return null;
+      const frameworks = new Map();
+      for (const run of runs.filter(Boolean)) frameworks.set(run[1].toLowerCase(), (frameworks.get(run[1].toLowerCase()) ?? new Set()).add(run[2]));
+      if ([...frameworks.values()].some((set) => set.size > 1)) return null;
       const close = /^ *Test summary: total: \d+, failed: (\d+)/;
       const at = lines.findLastIndex((line) => close.test(line));
       if (at < 0 || at < lines.findLastIndex((line) => end.test(line) || /^ *Starting test execution/.test(line))) return null;
