@@ -119,6 +119,9 @@ const retryBudgetMs = setting('AIWORKS_TEST_RETRY_MINUTES', 20) * 60_000;
 // An inherited test-worker marker makes a nested node --test silently skip its files.
 const env = { ...process.env };
 delete env.NODE_TEST_CONTEXT;
+// Inherited Git variables (from a hook, an editor's Git or a calling script) would point every test's git at the caller's
+// repository, index or config instead of the test's own temporary one: none reaches a test. Only paths to Git itself are kept.
+for (const name of Object.keys(env)) if (/^GIT_/i.test(name) && !/^GIT_(EXEC_PATH|SSH|SSH_COMMAND|SSH_VARIANT)$/i.test(name)) delete env[name];
 // Counts and failure extraction consume TAP. Node combines reporter selections, so preserve an inherited choice.
 const inheritedReporter = (env.NODE_OPTIONS?.match(/(?:[^\s"]|"[^"]*")+/g) ?? [])
   .some((arg) => /^--test-reporter(?:=|$)/.test(arg.replaceAll('"', '')));
@@ -135,6 +138,9 @@ const scratch = process.env.AIWORKS_TEST_TMP || join(dirname(outermost(root)), '
 try {
   mkdirSync(scratch, { recursive: true });
   Object.assign(env, { TMP: scratch, TEMP: scratch, TMPDIR: scratch });
+  // aiworks work item 85: a test's git must only ever reach the repositories it made under the scratch root. Git searches
+  // upward from the working folder, so it is stopped at the scratch root instead of finding a repository above it.
+  env.GIT_CEILING_DIRECTORIES = scratch;
 } catch (error) { console.log(`# temporary directories stay in the system default: ${scratch} could not be created (${error.code ?? error.message})`); }
 const times = [];
 
