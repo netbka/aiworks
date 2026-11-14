@@ -112,6 +112,42 @@ public static class SupervisorProcess {
     } catch (Exception) { /* best effort */ }
     finally { if (process != IntPtr.Zero) CloseHandle(process); }
   }
+  // A process leaves the job's process list and its active count once its last thread starts to exit, but it is signaled
+  // only when its handles are closed and its address space is gone. Until then it still holds its files (a Chrome
+  // profile) and is still listed on the computer; on a loaded host a terminated Chrome helper stayed so for tens of
+  // seconds (2026-11-01). Members cannot see it, so the job would look empty too early. IsProcessInJob still answers for
+  // it: every unsignaled process on the computer that is in the job is retained like a member. The scan asks only for
+  // query and synchronize access, never terminate access on every process. A process even that is refused is one this
+  // user cannot query, so it is not in this user's job. A member found this way is opened again with terminate access,
+  // like Members does, and a refusal then fails the stop instead of passing it. Answers whether one was added.
+  static bool Exiting(IntPtr job, Dictionary<string, IntPtr> owned) {
+    bool added = false;
+    foreach (Process candidate in Process.GetProcesses()) {
+      int pid = candidate.Id;
+      candidate.Dispose();
+      if (pid <= 4) continue; // Idle and System
+      IntPtr probe = OpenProcess(QUERY | SYNCHRONIZE, false, pid), process = IntPtr.Zero;
+      if (probe == IntPtr.Zero) continue;
+      try {
+        bool member;
+        if (!IsProcessInJob(probe, job, out member) || !member || WaitForSingleObject(probe, 0) != 258) continue;
+        string identity = pid.ToString() + ":" + Created(probe).ToString();
+        if (owned.ContainsKey(identity)) continue;
+        process = OpenProcess(QUERY | TERMINATE | SYNCHRONIZE, false, pid);
+        if (process == IntPtr.Zero) {
+          if (Marshal.GetLastWin32Error() == 87) continue; // the process object is already gone
+          throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        Check(IsProcessInJob(process, job, out member));
+        if (!member || pid.ToString() + ":" + Created(process).ToString() != identity) continue; // a reused PID
+        owned.Add(identity, process); process = IntPtr.Zero; added = true;
+      } finally {
+        if (process != IntPtr.Zero) CloseHandle(process);
+        CloseHandle(probe);
+      }
+    }
+    return added;
+  }
   // How long Empty waits for its terminated members to be signaled (the script's -WaitMs).
   public static int WaitMs = 10000;
   static void Empty(IntPtr job) {
@@ -120,6 +156,9 @@ public static class SupervisorProcess {
     Stopwatch deadline = Stopwatch.StartNew();
     bool proven = false;
     try {
+      // Processes already exiting when the stop begins hold up the teardown of the others, so they are retained (and
+      // hurried below) from the first pass.
+      Exiting(job, owned);
       while (deadline.ElapsedMilliseconds < WaitMs) {
         // Terminate only through retained, membership-checked handles. A child
         // born during discovery stays discoverable on the next pass; killing
@@ -141,7 +180,8 @@ public static class SupervisorProcess {
         }
         Accounting info;
         Check(QueryInformationJobObject(job, 1, out info, (uint)Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero));
-        if (info.active == 0 && exited) { Check(TerminateJobObject(job, 1)); proven = true; return; }
+        // Empty accounting and signaled handles prove nothing while an exiting member is still unseen: look once more.
+        if (info.active == 0 && exited && !Exiting(job, owned)) { Check(TerminateJobObject(job, 1)); proven = true; return; }
         Thread.Sleep(10);
       }
       throw new TimeoutException("Job processes did not finish termination");
