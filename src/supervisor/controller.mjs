@@ -41,8 +41,8 @@ import { mergePass, mergeSettings } from './merge.mjs';
 import { mainLedger, selfHostingSettings, trustedTip, trustsLocalMain } from './self-hosting.mjs';
 import { programPass } from './program.mjs';
 import { cleanupPass } from './cleanup.mjs';
-import { BROWSER_RUN, browserLockPath, GATE_FILES, gateFailure, gateHeadProblem, readGateRun, slotSettings } from './gate.mjs';
-import { baseCheckStep, baseCompareSettings, baseRecord, claimBaseRed, settleBaseRed, sharedBaseFailures } from './base-check.mjs';
+import { BROWSER_RUN, browserLockPath, GATE_FILES, gateFailedTests, gateFailure, gateHeadProblem, readGateRun, slotSettings } from './gate.mjs';
+import { baseCheckStep, baseCompareSettings, baseRecord, claimBaseRed, projectBaseCompare, settleBaseRed, sharedBaseFailures } from './base-check.mjs';
 import { CACHE_RULE, checkClaims, hasRunner, insertResults, offerCache, otherNodeMajor, resultsOf, testCacheSettings } from './test-cache.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
 import { checkLocalDispatch, LOCAL_ADMISSION_ON } from './local-admission.mjs';
@@ -519,9 +519,11 @@ export class Controller {
     // Check times and wait reasons are memory only: after a restart every published PR is judged once more, and a merge
     // whose outcome was unknown is settled by reading the PR first (merge.mjs).
     this.merges = mergeSettings(this.config);
-    // Base compare (base-check.mjs): off unless config.json `baseCompare` names the gate command. Malformed is off, logged.
+    // Base compare (base-check.mjs): off unless config.json `baseCompare` names the gate command, per project or as the
+    // fallback. Malformed is off, logged: everywhere at the top level, for that project only in a projects entry.
     const baseCompare = baseCompareSettings(this.config.baseCompare);
     if (baseCompare?.problem) this.log(`base compare is off: ${baseCompare.problem}`);
+    for (const problem of baseCompare?.problems ?? []) this.log(problem);
     this.baseCompare = baseCompare?.problem ? null : baseCompare;
     this.baseWaits = new Map();
     // Test result cache (test-cache.mjs): off unless config.json `testCache.enabled` is true. Malformed is off, logged.
@@ -1268,7 +1270,7 @@ export class Controller {
       this.browserRunSettled(op);
       return;
     }
-    if (op.kind === 'verify' && this.baseCompare) this.stepBaseCheck(ctx, campaign, op);
+    if (op.kind === 'verify' && this.baseCompareFor(campaign.declaration)) this.stepBaseCheck(ctx, campaign, op);
     if (result) {
       // An accepted result whose gate failed waits here while its base gate still runs (base-check.mjs), read again a
       // poll later; applyOutcome decides, and the base check's own bound ends the wait.
@@ -1418,6 +1420,11 @@ export class Controller {
 
   /** The repository a base check is keyed by: the declared repository, or the local checkout of a local target. */
   baseRepository(decl, repo) { return decl.target.repository ?? `local:${repo.path}`; }
+
+  /** The base compare settings of a campaign's project (base-check.mjs projectBaseCompare), or null when it is off for it. */
+  baseCompareFor(decl) {
+    return this.baseCompare ? projectBaseCompare(this.baseCompare, { repository: decl?.target?.repository ?? null, projectId: decl?.target?.projectId ?? null }) : null;
+  }
 
   /**
    * The environment that offers recorded test passes to a verify run of `sha` (test-cache.mjs), or null. Never throws.
@@ -1657,17 +1664,20 @@ export class Controller {
       // Base compare (base-check.mjs): a finished gate whose failed tests all fail on the task's base too does not refuse
       // the acceptance, and the verification records them. While the base gate still runs, nothing is applied yet.
       let base = null;
-      if (failure && gate && gate.exit !== null && !headProblem && this.baseCompare && before.base_sha) {
-        const campaign = this.store.campaign(ctx.id);
+      const campaignNow = failure && gate && gate.exit !== null && !headProblem && before.base_sha ? this.store.campaign(ctx.id) : null;
+      const baseSettings = campaignNow ? this.baseCompareFor(campaignNow.declaration) : null;
+      if (baseSettings) {
         let repo = null;
-        try { repo = this.repo(campaign.declaration); } catch { /* no checkout: no base record, refused as before */ }
-        const record = repo ? baseRecord(this.store, this.baseRepository(campaign.declaration, repo), before.base_sha, this.baseCompare) : null;
-        if (record?.state === 'running' && this.now() - record.started_at <= this.baseCompare.timeoutMs && campaign.control !== 'cancel-requested') {
+        try { repo = this.repo(campaignNow.declaration); } catch { /* no checkout: no base record, refused as before */ }
+        const record = repo ? baseRecord(this.store, this.baseRepository(campaignNow.declaration, repo), before.base_sha, baseSettings) : null;
+        if (record?.state === 'running' && this.now() - record.started_at <= baseSettings.timeoutMs && campaignNow.control !== 'cancel-requested') {
           this.baseWaits.set(op.id, this.now() + this.config.pollMs);
           return null;
         }
-        const shared = sharedBaseFailures(record, gate.summary);
-        if (shared) base = { sha: before.base_sha, failed: shared };
+        // The head's failed tests come from its whole gate.log (gateFailedTests), and count against the base only under
+        // the same command (gate-command.log); an unrecorded one never does.
+        const shared = sharedBaseFailures(record, gateFailedTests(gate), gate.command);
+        if (shared) base = { sha: before.base_sha, failed: shared, command: baseSettings.command };
       }
       this.baseWaits.delete(op.id);
       if (base) {
@@ -3828,6 +3838,13 @@ export class Controller {
       }
       const cacheEnv = this.offerTestCache(decl, local ? null : repo, !proof && kind === 'verify' && spec.deliverable === 'commit' ? targetSha : null, runDir);
       if (cacheEnv) prompt += `\n${CACHE_RULE}\n`;
+      // Base compare counts a failed gate only when it ran the base check's own command (gate-command.log), so the
+      // verifier is told that command; it adds nothing to what the verifier must check.
+      const baseSettings = !proof && kind === 'verify' && spec.deliverable === 'commit' ? this.baseCompareFor(decl) : null;
+      if (baseSettings) {
+        prompt += `\nBase compare: the supervisor compares a failed gate with the task's base commit only when the gate helper ran exactly the command it runs on the base, ${JSON.stringify(baseSettings.command)}. ` +
+          `Pass those arguments to the gate helper, each quoted so the shell passes them unchanged (&& included), unless the project's verification contract requires more; then its contract wins.\n`;
+      }
       // Project Claude tuning comes from the task base commit in the main checkout, never the worker-writable worktree.
       const settings = gitA.exec(this.cmd.git, ['show', `${baseSha}:.claude/settings.json`], { cwd: repo.path });
       const invocation = executors.prepare({ executor: codePolicy ? { ...executor, researchOnly: true } : executor, command: this.cmd[executor.kind.replace('-cli', '')], role,

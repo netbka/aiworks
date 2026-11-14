@@ -8,10 +8,11 @@
 //   node gate.mjs wait [--minutes 25] [--poll-seconds 10]
 //
 // Every file is a git-ignored .log in the working directory (#135): gate.log (output), gate-exit.log (exit code),
-// gate-pid.log (process id), gate-head.log (the commit it ran on and whether the checkout was clean when it started) and
-// gate-previous.log (the log of the run before). wait exits 0 when the gate passed, 1 when
-// it failed, 2 while it still runs, 3 when it died and 4 when no gate was started here. When a verification of a commit
-// task ends, the controller reads gate.log, gate-exit.log and gate-head.log through readGateRun (#43).
+// gate-pid.log (process id), gate-head.log (the commit it ran on and whether the checkout was clean when it started),
+// gate-command.log (the command it ran, as a JSON array) and gate-previous.log (the log of the run before). wait exits
+// 0 when the gate passed, 1 when it failed, 2 while it still runs, 3 when it died and 4 when no gate was started here.
+// When a verification of a commit task ends, the controller reads gate.log, gate-exit.log, gate-head.log and
+// gate-command.log through readGateRun (#43).
 //
 // Full checks share one durable host slot (gate-slot.mjs), independent of checkout, account profile and TEMP.
 // A slot is released only after its contained command has stopped. Nested components must prove membership in
@@ -24,10 +25,11 @@ import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { GATE_CONTEXT, GateSlotStore, gateActivity, gateCheckoutKey, gateHost, gateHostKey, recoverGateOwner, recoverQueuedRequests } from './gate-slot.mjs';
+import { failedOf } from '../../scripts/lib/test-retry.mjs';
 import { drainJob, gateJobMember, gateProcessIdentity, processCreationTime, POWERSHELL, windowsHelperArgs, writeAtomic } from './proc.mjs';
 
 export const GATE_FILES = Object.freeze({ log: 'gate.log', exit: 'gate-exit.log', pid: 'gate-pid.log', previous: 'gate-previous.log',
-  head: 'gate-head.log', request: 'gate-request.log', spec: 'gate-spec.log' });
+  head: 'gate-head.log', request: 'gate-request.log', spec: 'gate-spec.log', command: 'gate-command.log' });
 const SELF = fileURLToPath(import.meta.url);
 const again = (action) => `node "${SELF.replaceAll('\\', '/')}" ${action}`;
 
@@ -75,10 +77,21 @@ const headOf = (text) => {
   return { sha: /^[0-9a-f]{40}$/.test(sha ?? '') ? sha : null, clean: state === 'clean' ? true : state === 'changed' ? false : null };
 };
 
+// gate-command.log as start writes it: the command it ran, a JSON array of non-empty strings; null when absent or malformed.
+const commandOf = (text) => {
+  try {
+    const value = JSON.parse(text);
+    return Array.isArray(value) && value.length && value.every((part) => typeof part === 'string' && part) ? value : null;
+  } catch { return null; }
+};
+const commandDigest = (command) => createHash('sha256').update(JSON.stringify(command)).digest('hex');
+
 /**
  * The gate run the helper left in `dir` (#43), as the controller reads it when a verification ends: the exit code it
  * recorded (null when the gate never finished), its final node:test summary (null when the log has none), the test files
- * that exited non-zero (exitedFiles) and the commit it started on (gate-head.log; null when there is none). Null when no
+ * that exited non-zero (exitedFiles), the lines failedTests reads (failures; gateFailedTests reads them), the commit it
+ * started on (gate-head.log; null when there is none) and the command it ran (gate-command.log; null when there is none,
+ * as from a helper older than that record, or when the host request it names queued another command). Null when no
  * gate ran in `dir`. gate.log holds only the last run; the run before is gate-previous.log, which is not read. Nothing
  * here comes from the verifier's result.
  */
@@ -87,6 +100,8 @@ export function readGateRun(dir, expectedRequest = null) {
   if (log === null) return null;
   const head = read(join(dir, GATE_FILES.head));
   let exit = read(join(dir, GATE_FILES.exit))?.trim() || null;
+  const recordedCommand = read(join(dir, GATE_FILES.command));
+  let command = recordedCommand === null ? null : commandOf(recordedCommand);
   if (existsSync(join(dir, GATE_FILES.request))) {
     let store;
     try {
@@ -98,11 +113,13 @@ export function readGateRun(dir, expectedRequest = null) {
       if (!request || request.generation !== receipt.generation || request.createdAt !== receipt.createdAt ||
           request.checkoutKey !== gateCheckoutKey(dir) || request.head !== (recorded.sha ?? 'unknown') ||
           request.clean !== (recorded.clean === true) || !['finished','failed'].includes(request.state) || request.exit !== exit) exit = null;
-    } catch { exit = null; }
+      // The host request keeps the digest of the command it queued; a gate-command.log naming another is no record of it.
+      if (command && request?.commandDigest !== commandDigest(command)) command = null;
+    } catch { exit = null; command = null; }
     finally { store?.close(); }
   } else if (expectedRequest) exit = null;
-  return { exit, summary: testSummary(log), exited: exitedFiles(log),
-    head: head === null ? null : headOf(head) };
+  return { exit, summary: testSummary(log), exited: exitedFiles(log), failures: failureEvidence(log),
+    head: head === null ? null : headOf(head), command };
 }
 
 /**
@@ -122,20 +139,280 @@ export function gateHeadProblem(run, targetSha) {
 }
 
 /**
- * The failed tests a gate summary lists (scripts/run-tests.mjs `# failed: <file> :: <test>` or `# failed: <file>` lines),
- * sorted and unique. Null when they are unknown: no run-tests summary block (another runner, or the gate stopped before
- * the tests), or a list the runner cut short. An empty array means the summary names no failed test.
+ * Base compare reads the failed tests of the gate a verifier and a base check ran (base-check.mjs), from gate.log. Each
+ * runner below names its own lines: `signs` say the runner ran (its start, summary or failure lines) and `lines` are
+ * every line its `parse` reads, so a parse of only those lines is the parse of the whole log. `parse` gives the sorted
+ * failed-test ids, or null when the list is unknown: no final summary (the log was cut short, or the run stopped
+ * before it), a list the runner itself cut short, a test file or binary that crashed or was stopped before it reported
+ * every test (it may hide more failures), a collection, build or setup failure, or fewer names than the runner's own
+ * failed count. An id is only compared with the ids of the same runner under the same command on the base.
  */
-export function failedTests(summary) {
-  if (typeof summary !== 'string' || !summary.startsWith('# all test files')) return null;
-  const ids = new Set();
-  for (const line of summary.split('\n')) {
-    if (!line.startsWith('# failed: ')) continue;
-    const id = line.slice('# failed: '.length).trim();
-    if (id.startsWith('not listed')) return null;
-    if (id) ids.add(id);
-  }
-  return [...ids].sort();
+const failed = (re, text) => Number(re.exec(text)?.[1] ?? 0);
+const total = (lines, line, re) => lines.filter((each) => line.test(each)).reduce((sum, each) => sum + failed(re, each), 0);
+const sorted = (ids) => [...new Set(ids)].sort();
+const RUNNERS = [
+  {
+    // scripts/run-tests.mjs: its summary after `# all test files` lists `# failed: <file> :: <test>`, at most 50, and
+    // `# failed: not listed: ...` when the list is cut short or a file stopped before its own summary.
+    name: 'run-tests', signs: [/^# all test files/, /^# (start|end) \S+/], lines: [/^# all test files/, /^# (start|end) \S+/, /^# failed: /],
+    parse(lines) {
+      const at = lines.findLastIndex((line) => line.startsWith('# all test files'));
+      if (at < 0) return null;
+      const ids = [];
+      for (const line of lines.slice(at + 1)) {
+        if (!line.startsWith('# failed: ')) return null; // a run that started after the summary and never finished
+        const id = line.slice('# failed: '.length).trim();
+        if (id.startsWith('not listed')) return null;
+        if (id) ids.push(id);
+      }
+      return sorted(ids);
+    },
+  },
+  {
+    // node --test, TAP reporter: `not ok` lines nested by `# Subtest:`, ids `suite > test`. A file whose process exited
+    // or was killed before it reported every test is a `not ok <file>` with an `exitCode:` or `signal:` line.
+    name: 'node-tap', signs: [/^TAP version \d+$/, /^# tests \d+$/],
+    lines: [/^TAP version \d+$/, /^ *# Subtest: /, /^ *not ok \d+ - /, /^# (tests|fail|cancelled) \d+$/, /^ *exitCode: \d/, /^ *signal: '/],
+    parse(lines) {
+      const last = lines.findLastIndex((line) => /^# fail \d+$/.test(line));
+      if (last < 0 || lines.slice(last + 1).some((line) => /not ok|# Subtest:|^TAP version/.test(line))) return null;
+      if (lines.some((line) => /^ *(exitCode|signal):/.test(line)) || total(lines, /^# cancelled /, /(\d+)/) > 0) return null;
+      const names = failedOf(lines.join('\n'));
+      return names.length < total(lines, /^# fail /, /(\d+)/) ? null : sorted(names);
+    },
+  },
+  {
+    // node --test, spec reporter: `✖ <test> (<ms>)` nested two spaces per level under `▶ <suite>`, `ℹ fail N`, then a
+    // `✖ failing tests:` list that repeats each failure without its suites, where a file that crashed reads 'test failed'.
+    name: 'node-spec', signs: [/^ℹ tests \d+$/, /^✖ failing tests:$/, /^ *✖ .+ \([\d.]+m?s\)$/],
+    lines: [/^ *[▶✔✖] /, /^ℹ (tests|fail|cancelled) \d+$/, /^ *'test failed'$/],
+    parse(lines) {
+      if (!lines.some((line) => /^ℹ fail \d+$/.test(line)) || lines.some((line) => /^ *'test failed'$/.test(line))) return null;
+      if (total(lines, /^ℹ cancelled /, /(\d+)/) > 0) return null;
+      const names = [], path = [];
+      let listing = false, summed = false;
+      for (const line of lines) {
+        if (line.startsWith('ℹ ')) { summed = true; continue; }
+        if (line === '✖ failing tests:') { listing = true; continue; }
+        const match = /^( *)([▶✔✖]) (.+?)(?: \([\d.]+m?s\))?( # (?:TODO|SKIP)\b.*)?$/.exec(line);
+        if (!match || (listing && match[2] === '✖')) continue;
+        // A test reported after a summary with no failure list is a second run; after a list, the next run's first line.
+        if (summed && !listing && match[2] === '✖') return null;
+        listing = false; summed = false;
+        const depth = Math.floor(match[1].length / 2);
+        if (match[2] === '▶') { path.length = depth; path.push(match[3]); continue; }
+        if (match[2] === '✖' && !match[4]) names.push([...path.slice(0, depth), match[3]].join(' > '));
+      }
+      if (!summed && !listing) return null; // tests reported after the last summary: a run cut short
+      return names.length < total(lines, /^ℹ fail /, /(\d+)/) ? null : sorted(names);
+    },
+  },
+  {
+    // vitest: ` FAIL  <file> > <suite> > <test>` per failed test, `Test Files` and `Tests` summary lines. A failed suite
+    // (a file that did not load, a failing hook) or an unhandled error is not a list of tests.
+    name: 'vitest', signs: [/^ *RUN +v\d/, /^ *Test Files +\d/, /⎯ Failed Tests \d+ ⎯/, /⎯ Failed Suites \d+ ⎯/],
+    lines: [/^ *RUN +v\d/, /^ *Test Files +\d/, /^ *Tests {2,}\d/, /^ *FAIL +\S/, /⎯ (Failed Suites \d+|Unhandled Errors?) ⎯/, /^ *Errors +\d+ errors?/],
+    parse(lines) {
+      const ends = lines.filter((line) => /^ *Test Files +\d/.test(line)).length;
+      if (!ends || lines.filter((line) => /^ *RUN +v\d/.test(line)).length > ends) return null;
+      if (lines.some((line) => /⎯ (Failed Suites|Unhandled Error)|^ *Errors +\d/.test(line))) return null;
+      const ids = [];
+      for (const line of lines) {
+        const match = /^ *FAIL +(.+)$/.exec(line);
+        if (!match) continue;
+        if (/\[ .+ \]$/.test(match[1])) return null;
+        ids.push(match[1]);
+      }
+      const names = sorted(ids);
+      if (total(lines, /^ *Test Files +\d/, /(\d+) failed/) > 0 && !names.length) return null;
+      return names.length < total(lines, /^ *Tests {2,}\d/, /(\d+) failed/) ? null : names;
+    },
+  },
+  {
+    // jest: `FAIL <file>` then `  ● <suite> › <test>` per failed test, `Test Suites:` and `Tests:` summary lines. A suite
+    // that failed to run is not a list of tests.
+    name: 'jest', signs: [/^Test Suites: /, /^Tests: +\d/, /^ *● /],
+    lines: [/^ *(PASS|FAIL) +\S/, /^ *● /, /^Test Suites: /, /^Tests: +\d/],
+    parse(lines) {
+      if (!lines.some((line) => /^Tests: +\d/.test(line))) return null;
+      const ids = [];
+      let file = null;
+      for (const line of lines) {
+        const header = /^ *(PASS|FAIL) +(.+?)(?: \([\d.]+ m?s\))?$/.exec(line);
+        if (header) { file = header[1] === 'FAIL' ? header[2] : null; continue; }
+        const bullet = /^ *● (.+)$/.exec(line);
+        if (!bullet || file === null || bullet[1] === 'Console') continue;
+        if (bullet[1] === 'Test suite failed to run') return null;
+        ids.push(`${file} :: ${bullet[1]}`);
+      }
+      const names = sorted(ids);
+      if (total(lines, /^Test Suites: /, /(\d+) failed/) > 0 && !names.length) return null;
+      return names.length < total(lines, /^Tests: +\d/, /(\d+) failed/) ? null : names;
+    },
+  },
+  {
+    // pytest: `FAILED <node id> - <message>` and `ERROR <node id>` in the short test summary, and the final
+    // `=== N failed, M passed in 1.2s ===`. An ERROR of a whole file is a collection error; `!!! ... !!!` is a run
+    // interrupted (a collection error, -x, a keyboard interrupt).
+    name: 'pytest', signs: [/^=+ test session starts =+$/, /^=+ .*\bin [\d.]+s\b.*=+$/],
+    lines: [/^=+ test session starts =+$/, /^=+ .*\bin [\d.]+s\b.*=+$/, /^(FAILED|ERROR) \S/, /^!+ .* !+$/],
+    parse(lines) {
+      const end = /^=+ .*\bin [\d.]+s\b.*=+$/;
+      const ends = lines.filter((line) => end.test(line)).length;
+      if (!ends || lines.filter((line) => /^=+ test session starts/.test(line)).length > ends || lines.some((line) => line.startsWith('!'))) return null;
+      const ids = [];
+      for (const line of lines) {
+        const match = /^(FAILED|ERROR) (.+?)(?: - .*)?$/.exec(line);
+        if (!match) continue;
+        if (!match[2].includes('::')) return null;
+        ids.push(match[2]);
+      }
+      const names = sorted(ids);
+      return names.length < total(lines, end, /(\d+) failed/) + total(lines, end, /(\d+) errors?\b/) ? null : names;
+    },
+  },
+  {
+    // go test: `--- FAIL: TestName` (a subtest `TestName/sub`) before its package's `FAIL\t<package>\t<time>` line, ids
+    // `<package> :: <test>`. A panic stops the package's test binary; a build or setup failure runs no test. A run with a
+    // failed package ends with a bare `FAIL` line after its last package line; without it the run stopped between
+    // packages, and a later package may hold more failures.
+    name: 'go', signs: [/^(ok {2}|FAIL|\? {3})\t\S/, /^ *--- FAIL: /],
+    lines: [/^(ok {2}|FAIL|\? {3})\t\S/, /^ *--- FAIL: /, /^panic: /, /^FAIL$/],
+    parse(lines) {
+      const ids = [];
+      let pending = [], packages = 0, closed = false;
+      for (const line of lines) {
+        if (line.startsWith('panic: ')) return null;
+        // A bare FAIL with tests pending is the package's test binary ending its own output, before its package line.
+        if (line === 'FAIL') { closed = !pending.length; continue; }
+        const test = /^ *--- FAIL: (\S+)/.exec(line);
+        if (test) { pending.push(test[1]); closed = false; continue; }
+        const [status, pkg] = line.split('\t');
+        packages += 1; closed = false;
+        if (status !== 'FAIL') { if (pending.length) return null; continue; }
+        if (line.includes('[') || !pending.length) return null; // [build failed], [setup failed], or no named test
+        ids.push(...pending.map((name) => `${pkg} :: ${name}`));
+        pending = [];
+      }
+      return !packages || pending.length || (ids.length && !closed) ? null : sorted(ids);
+    },
+  },
+  {
+    // dotnet test (VSTest console): `  Failed <fully qualified name> [<time>]` per failed test and one `Passed!  - Failed:
+    // N, ...` or `Failed!  - Failed: N, ...` line per test run. An aborted run or a build error is not a list. dotnet test
+    // runs one test project after another and its console output has no end of the whole run, so a log cut between two
+    // projects reads like a finished one: a run with a failure is a list only when the SDK's closing `Test summary:
+    // total: N, failed: F, ...` line comes after the last test run and F is the failed count of the runs.
+    name: 'dotnet', signs: [/^(Passed|Failed)! +- +Failed: +\d/, /^ *Starting test execution/],
+    lines: [/^(Passed|Failed)! +- +Failed: +\d/, /^ *Starting test execution/, /^ +Failed .+ \[[^\]]*\]$/, /Test Run Aborted|test run was aborted|Build FAILED|: error [A-Z]+\d+:/i,
+      /^ *Test summary: total: \d+, failed: \d+/],
+    parse(lines) {
+      const end = /^(Passed|Failed)! +- +Failed: +\d/;
+      const ends = lines.filter((line) => end.test(line)).length;
+      if (!ends || lines.filter((line) => /^ *Starting test execution/.test(line)).length > ends) return null;
+      if (lines.some((line) => /Test Run Aborted|test run was aborted|Build FAILED|: error [A-Z]+\d+:/i.test(line))) return null;
+      const listed = lines.map((line) => /^ +Failed (.+) \[[^\]]*\]$/.exec(line)?.[1]).filter(Boolean);
+      const count = total(lines, end, /Failed: +(\d+)/);
+      if (listed.length < count) return null;
+      if (!count && !listed.length) return [];
+      const close = /^ *Test summary: total: \d+, failed: (\d+)/;
+      const at = lines.findLastIndex((line) => close.test(line));
+      if (at < 0 || at < lines.findLastIndex((line) => end.test(line) || /^ *Starting test execution/.test(line))) return null;
+      return failed(close, lines[at]) === count ? sorted(listed) : null;
+    },
+  },
+  {
+    // cargo test: `test <name> ... FAILED` between a binary's `running N tests` and its `test result:` line, ids
+    // `<target> :: <name>` with the target from its `Running <source> (...)` or `Doc-tests <crate>` line. Each
+    // failed binary prints `error: test failed, to rerun pass ...`. Without --no-fail-fast cargo stops there, so later
+    // binaries never ran; with it the run ends with `error: N target(s) failed:`, N the failed binaries. A run with a
+    // failure is a list only when it ends with that line: a log cut between two binaries reads like a finished one. A
+    // binary that crashed prints no `test result:`; a compile error runs nothing.
+    name: 'cargo', signs: [/^test result: (ok|FAILED)\./, /^running \d+ tests?$/],
+    lines: [/^test result: (ok|FAILED)\./, /^running \d+ tests?$/, /^ *Running \S/, /^ *Doc-tests \S/, /^test .+ \.\.\. FAILED$/, /^error/],
+    parse(lines) {
+      const ids = [];
+      let target = '', open = false, count = 0, results = 0, failedResults = 0, reruns = 0, closing = null;
+      for (const line of lines) {
+        if (closing !== null) return null; // a line after the end of the run
+        const end = /^error: (\d+) targets? failed:$/.exec(line);
+        if (end) { if (open) return null; closing = Number(end[1]); continue; }
+        if (line.startsWith('error: test failed, to rerun pass ')) { reruns += 1; continue; }
+        if (line.startsWith('error')) return null;
+        const running = /^ *Running (.+?)(?: \(.+\))?$/.exec(line) ?? /^ *(Doc-tests \S+)$/.exec(line);
+        if (running) { if (open) return null; target = running[1]; continue; }
+        if (/^running \d+ tests?$/.test(line)) { if (open) return null; open = true; continue; }
+        const test = /^test (.+) \.\.\. FAILED$/.exec(line);
+        if (test) { if (!open) return null; ids.push(`${target} :: ${test[1]}`); continue; }
+        if (!open) return null; // a result with no run before it
+        open = false; results += 1;
+        count += failed(/(\d+) failed/, line);
+        if (line.startsWith('test result: FAILED.')) failedResults += 1;
+      }
+      if (open || !results || ids.length < count) return null;
+      if (closing === null) return failedResults || reruns ? null : sorted(ids);
+      return closing === failedResults && failedResults > 0 ? sorted(ids) : null;
+    },
+  },
+];
+
+// Colours are removed, and a line rewritten in place with \r counts as its last text.
+const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+const logLines = (text) => text.replace(ANSI, '').replaceAll('\r\n', '\n').split('\n').map((line) => line.slice(line.lastIndexOf('\r') + 1).trimEnd());
+const matches = (patterns, line) => patterns.some((pattern) => pattern.test(line));
+// The runners whose signs are in the log. scripts/run-tests.mjs prints each file's node:test output, so it is one runner.
+function runnersOf(lines) {
+  const found = RUNNERS.filter((runner) => lines.some((line) => matches(runner.signs, line)));
+  return found.some((runner) => runner.name === 'run-tests') ? found.filter((runner) => !runner.name.startsWith('node-')) : found;
+}
+// More failed tests than this, or a longer failure excerpt, is no list: it would not fit a verification record.
+const MAX_FAILED = 500, MAX_EVIDENCE = 200_000;
+
+/**
+ * The failed tests a gate log lists, sorted and unique, from the whole gate.log or a part of it that keeps the lines
+ * its runner's parse reads (a run-tests summary block, or failureEvidence): scripts/run-tests.mjs, node:test (TAP or
+ * spec), vitest, jest, pytest, go test, dotnet test or cargo test (RUNNERS). Null when they are unknown: an unrecognised
+ * runner, more than one runner in the log, a list cut short or a test file that crashed (each runner's parse). An empty
+ * array means the run reports no failed test.
+ */
+export function failedTests(text) {
+  if (typeof text !== 'string') return null;
+  const lines = logLines(text);
+  const runners = runnersOf(lines);
+  if (runners.length !== 1) return null;
+  const [runner] = runners;
+  const ids = runner.parse(lines.filter((line) => matches(runner.lines, line)));
+  return ids && ids.length <= MAX_FAILED ? ids : null;
+}
+
+/**
+ * The lines of a gate log that failedTests reads: every runner's signs and the found runner's own lines, so
+ * failedTests(failureEvidence(log)) is failedTests(log). readGateRun keeps it with the run, so the merge gate parses the
+ * same text again (result-review.mjs baseExplained). Null when there is no log or it is too long to keep, which reads
+ * as an unknown list.
+ */
+export function failureEvidence(text) {
+  if (typeof text !== 'string') return null;
+  const lines = logLines(text);
+  const runners = runnersOf(lines);
+  const own = runners.length === 1 ? runners[0].lines : [];
+  const kept = lines.filter((line) => matches(own, line) || RUNNERS.some((runner) => matches(runner.signs, line))).join('\n');
+  return kept.length <= MAX_EVIDENCE ? kept : null;
+}
+
+/**
+ * The failed tests of a recorded gate run: failedTests of the failure lines readGateRun kept. A run-tests summary must
+ * name the same list, so the two views of one run never disagree. A run recorded before the failure lines were kept is
+ * read from its run-tests summary, as then.
+ */
+export function gateFailedTests(run) {
+  if (!run || typeof run !== 'object') return null;
+  const block = typeof run.summary === 'string' && run.summary.startsWith('# all test files');
+  const listed = block ? failedTests(run.summary) : null;
+  if (!Object.hasOwn(run, 'failures')) return listed;
+  const found = failedTests(run.failures);
+  if (found && block && (listed === null || listed.join('\n') !== found.join('\n'))) return null;
+  return found;
 }
 
 // Why a gate exited with a numeric non-zero code while its summary counts no failed test, from its own log only. Comes
@@ -236,6 +513,8 @@ async function start(command, requestSelected = () => {}) {
   }
   rmSync(GATE_FILES.exit, { force: true });
   writeFileSync(GATE_FILES.head, `${state}\n`);
+  // The command this run uses, so base compare (base-check.mjs) compares a head and a base only under the same command.
+  writeFileSync(GATE_FILES.command, `${JSON.stringify(command)}\n`);
   writeAtomic(GATE_FILES.request, JSON.stringify({ id: queued.request.id, generation: null, createdAt: queued.request.createdAt }));
   const out = openSync(GATE_FILES.log, 'a');
   if (commandError) {

@@ -20,7 +20,8 @@ import { heldSlotCount } from './gate.mjs';
 import { startGateRecovery } from './gate-slot.mjs';
 import { checkServicesEnvironment, SERVICES_ENV } from './check-services.mjs';
 import { cpuSettings, createCpuMonitor } from './worker-cpu.mjs';
-import { configuredGovernanceRoot, requireGovernanceRoot } from './governance.mjs';
+import { configuredGovernanceRoot, projectContracts, requireGovernanceRoot } from './governance.mjs';
+import { baseCompareInventory } from './base-check.mjs';
 import { clearCoordinatorViolation, coordinatorView, postOwnerMessage } from './coordinator.mjs';
 import { approvalFromFile, CODE_ROOT, declarationFromFile, revisionNotMerged, runtimeTrust } from './provenance.mjs';
 import { recordAnchor, selfHostingSettings, trustedTip } from './self-hosting.mjs';
@@ -67,6 +68,11 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   messages                              list coordinator message receipts (received, read, answered)
   coordinator-clear                     after inspecting a boundary violation, let the coordinator read again
   baseline [--since <date>] [--json]    print the cost and outcome baseline (read-only; --json prints the report only)
+  base-compare-inventory                list each registered project's check command, detected test runner, whether it gives
+                                        a failed-test list, and the exact config.json baseCompare.projects entry to add; projects
+                                        that need a readable list first are follow-up candidates. Read-only: opens no store,
+                                        runs no check, makes no network call; reads the governance checkout, config.json and the
+                                        project checkouts' files
   release-stop                          create <data>/RELEASE-STOP: every release stops before its next step (Auto Release
                                         is built switched off; removing the file is the owner's action)
   release-mode <project> <destination> review-only
@@ -205,6 +211,13 @@ try {
     if (ownershipUnreadable) report.errors.push({ reason: 'ownership-unreadable' });
     await new Promise((done) => process.stdout.write(JSON.stringify(report, null, 2) + '\n', done));
     process.exit(report.errors.length ? 1 : 0);
+  }
+  // Read-only inventory for per-project base compare (base-check.mjs): never opens the store, runs nothing, no network.
+  if (command === 'base-compare-inventory') {
+    const governanceRoot = explicitGovernance ? resolve(explicitGovernance) : configuredGovernanceRoot(dataDir);
+    const report = baseCompareInventory({ contracts: projectContracts(governanceRoot), config: dataConfig() });
+    await new Promise((done) => process.stdout.write(JSON.stringify(report, null, 2) + '\n', done));
+    process.exit(0);
   }
   // A conflicting shell default is evidence of an ambiguous status target, never a reason to create a store.
   const environmentData = process.env.AIWORKS_DATA;
