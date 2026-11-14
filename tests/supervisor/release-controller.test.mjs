@@ -158,6 +158,14 @@ test('one release pass over many finished campaigns of a repository reads its ba
   await r.c.releaseJob.promise;
 });
 
+test('a project given a grant before its first merge has its grant recorded on the first pass, so no cached gate is offered', { skip: skipWithoutSqlite }, async (t) => {
+  const r = rig(t), fresh = r.project('sample-fresh'); r.c = r.controller();
+  r.store.run("DELETE FROM journal WHERE kind = 'merged' AND campaign_id = ?", fresh.id);
+  await releasePass(r.c);
+  assert.ok(!r.c.releaseJob, 'nothing is released without a merge');
+  assert.equal(r.store.get('SELECT revoked FROM release_grants WHERE project = ?', fresh.id)?.revoked, 0);
+});
+
 test('ordinary worker changes cannot amend standing release authority and grant versions cannot regress or revive', (t) => {
   const r = rig(t), p = r.project('sample-grant'); r.c = r.controller();
   writeFileSync(join(p.repo, 'deploy/AGENTS.md'), JSON.stringify({ ...p.record, version: 2 }));

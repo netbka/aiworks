@@ -498,7 +498,9 @@ async function releaseSteps(c) {
   // others (report-only and unmerged campaigns, most of a long history) are skipped before their lease and grant are
   // read: visiting each of them cost a pass minutes (work item 82).
   const merging = new Set(c.store.all("SELECT DISTINCT campaign_id FROM journal WHERE kind = 'merged'").map((row) => row.campaign_id));
-  for (const campaign of c.store.all("SELECT * FROM campaigns WHERE control IN ('registered', 'finished') ORDER BY created_at DESC")) {
+  const campaigns = c.store.all("SELECT * FROM campaigns WHERE control IN ('registered', 'finished') ORDER BY created_at DESC");
+  await observeProjectGrants(c, campaigns, merging);
+  for (const campaign of campaigns) {
     if (!merging.has(campaign.id)) continue;
     const key = 'campaign:' + campaign.id;
     if ((c.releaseNextAt.get(key) ?? 0) > c.now()) continue;
@@ -549,6 +551,38 @@ async function releaseSteps(c) {
         }
       }
     } catch (error) { waiting(c, ctx, null, null, String(error.message).slice(0, 400)); }
+  }
+}
+
+/**
+ * Records each registered project's release grant once per pass, apart from its campaigns. The campaign loop reads a
+ * grant only for a campaign with a merge (work item 82), so a project given a grant before its first merge had no
+ * release_grants row, and the test cache could still offer its first verify cached results that release then refuses
+ * (work item 84). One campaign of the project, preferably one with a merge, supplies the checkout and the fence. A
+ * failed read of one project's grant is logged and leaves the others to be read.
+ */
+async function observeProjectGrants(c, campaigns, merging) {
+  const projects = new Map();
+  for (const campaign of campaigns) {
+    const target = campaign.declaration?.target;
+    if (!target?.repository) continue;
+    const key = target.repository + '\0' + (target.projectId ?? '');
+    const chosen = projects.get(key);
+    if (!chosen || (!merging.has(chosen.id) && merging.has(campaign.id))) projects.set(key, campaign);
+  }
+  for (const [key, campaign] of projects) {
+    const poll = 'grant:' + key;
+    if ((c.releaseNextAt.get(poll) ?? 0) > c.now()) continue;
+    c.releaseNextAt.set(poll, c.now() + POLL_MS);
+    try {
+      const decl = campaign.declaration;
+      if (!projectReleasePointer(c, decl)) continue;
+      const repo = c.repo(decl);
+      if (ownRuntime(c, decl, repo)) continue;
+      const ctx = context(c, campaign.id);
+      if (!ctx) continue;
+      await readProjectGrant(c, ctx, decl, repo, { fresh: false });
+    } catch (error) { c.log(`release grant of ${campaign.declaration?.target?.projectId ?? campaign.id}: ${error.message}`); }
   }
 }
 
