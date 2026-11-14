@@ -219,7 +219,7 @@ export async function mergePass(controller) {
       for (const item of ordered) {
         if (busy.has(item.decl.target.baseBranch)) continue;
         try {
-          const result = mergeLocal(controller, item, settings, repoPath, null, true);
+          const result = await mergeLocal(controller, item, settings, repoPath, null, true);
           if (result === PRIORITY_BUSY) { busy.add(item.decl.target.baseBranch); continue; }
           if (result) break;
         } catch (error) {
@@ -269,7 +269,7 @@ export async function mergePass(controller) {
       if (!SHA.test(bases.get(branch) ?? '')) { controller.log(`merge of ${item.campaignId}/${item.task.task_id} waits: ${branch} could not be fetched`); continue; }
       checkShape(branch);
       try {
-        const result = mergeOne(controller, item, settings, repoPath, bases.get(branch));
+        const result = await mergeOne(controller, item, settings, repoPath, bases.get(branch));
         if (result === PRIORITY_BUSY) { busy.add(branch); continue; }
         if (result) break;
       } catch (error) {
@@ -574,7 +574,7 @@ const commitTree = (git, repoPath, sha) => {
  * Judge one published pull request against the gate and act on it. Returns true when it acted on the repository (a
  * merge call, a recorded merge or an integration repair), so the pass moves on to the next repository.
  */
-function mergeOne(controller, item, settings, repoPath, baseSha) {
+async function mergeOne(controller, item, settings, repoPath, baseSha) {
   if (authorityBlocked(controller, item, repoPath, baseSha)) return false;
   const git = controller.cmd.git, sha = item.task.verified_sha;
   const { pr, acted } = inspect(controller, item, settings, repoPath, baseSha);
@@ -594,7 +594,7 @@ function mergeOne(controller, item, settings, repoPath, baseSha) {
   if (!gitA.isAncestor({ git, path: repoPath, ancestor: baseSha, descendant: sha })) {
     const ctx = lease(controller, item.campaignId);
     if (!ctx) return priority ? priorityBusy(controller, item) : false;
-    const step = settings.refresh ? refreshStep(controller, ctx, item, repoPath, baseSha, settings.refresh) : { next: 'repair' };
+    const step = settings.refresh ? await refreshStep(controller, ctx, item, repoPath, baseSha, settings.refresh) : { next: 'repair' };
     if (step.next === 'wait') { wait(controller, item, step.reason); return true; }
     if (step.next === 'repair') return controller.fenced(ctx, () => repair(controller, ctx, item, repoPath, baseSha, step.detail));
     // The merge carries the gated merge result, which the shape check expects (checkMergeShape).
@@ -744,7 +744,7 @@ export function localBlocker(controller, item, settings, repoPath) {
  * tree `tree` that step predicted. Priority singles may return PRIORITY_BUSY on a lost lease acquisition; group steps
  * keep their boolean result and recorded order.
  */
-export function mergeLocal(controller, item, settings, repoPath, step = null, prioritize = false) {
+export async function mergeLocal(controller, item, settings, repoPath, step = null, prioritize = false) {
   const { store } = controller, { campaignId, decl, task } = item;
   const git = controller.cmd.git, sha = task.verified_sha, url = task.pr_url, repository = decl.target.repository;
   const blocked = localBlocker(controller, item, settings, repoPath);
@@ -816,7 +816,7 @@ export function mergeLocal(controller, item, settings, repoPath, step = null, pr
   } else if (!gitA.isAncestor({ git, path: repoPath, ancestor: tip.tip, descendant: sha })) {
     const ctx = lease(controller, campaignId);
     if (!ctx) return priority ? priorityBusy(controller, item) : false;
-    const step = settings.refresh ? refreshStep(controller, ctx, item, repoPath, tip.tip, settings.refresh) : { next: 'repair' };
+    const step = settings.refresh ? await refreshStep(controller, ctx, item, repoPath, tip.tip, settings.refresh) : { next: 'repair' };
     if (step.next === 'wait') { wait(controller, item, step.reason); return true; }
     if (step.next !== 'merge' || !SHA.test(step.tree ?? '')) return controller.fenced(ctx, () => repair(controller, ctx, item, repoPath, tip.tip, step.detail ?? null));
     gated = step.tree;

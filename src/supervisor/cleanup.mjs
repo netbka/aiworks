@@ -138,7 +138,12 @@ async function cleanRepository(ctl, repo, report, keep) {
     const wt = registered.get(path);
     if (!wt || !owner.finished) continue;
     if (!insideRoot(repo.root, wt.path)) { keep(owner.campaignId, { path: wt.path, task: owner.task, reason: 'outside-root' }); continue; }
-    removeWorktree(ctl, repo.path, wt, owner, report, keep);
+    // Without blocking the event loop (aiworks#39): a removal deletes every file of the checkout and can take minutes. The
+    // removals before it awaited, so its owner is checked again: no other instance holds it and no run of its task opened.
+    if (foreignLease(ctl, owner.campaignId) || ctl.store.get(`SELECT 1 AS v FROM operations WHERE campaign_id = ? AND task_id = ? AND state IN (${OPEN.map(() => '?').join(', ')})`,
+      owner.campaignId, owner.task, ...OPEN)) continue;
+    const removal = startRemoval(ctl, repo.path, wt, owner, keep);
+    if (removal) finishRemoval(ctl, removal, await gitA.removeWorktreeAsync({ git, repoPath: repo.path, path: wt.path }), report, keep);
   }
   if (!SHA.test(main ?? '')) return;
   const checkedOut = new Set((gitA.worktreeList({ git, repoPath: repo.path }) ?? list).map((wt) => wt.branch).filter(Boolean));
@@ -160,9 +165,10 @@ async function cleanRepository(ctl, repo, report, keep) {
  * Remove one finished, owned, registered worktree inside its folder. git deletes ignored files with it, so any ignored
  * entry keeps the worktree unless it is an installed node_modules directory or a gate file. The verifier's gate files at
  * its root are copied into the owning run directory first: git would delete them when ignored, and refuse the removal
- * when untracked.
+ * when untracked. The removal itself is git's: startRemoval journals it and returns what finishRemoval records once git
+ * ended, or null when the worktree is kept. Between the two, nothing but the `git worktree remove` runs.
  */
-function removeWorktree(ctl, repoPath, wt, owner, report, keep) {
+function startRemoval(ctl, repoPath, wt, owner, keep) {
   const git = ctl.cmd.git, item = { path: wt.path, task: owner.task, run: owner.run };
   if (wt.locked) { keep(owner.campaignId, { ...item, reason: 'locked' }); return; }
   const present = existsSync(wt.path);
@@ -182,10 +188,13 @@ function removeWorktree(ctl, repoPath, wt, owner, report, keep) {
   const started = ctl.store.journal(owner.campaignId, 'cleanup-started', { action: 'remove-worktree', ...item, repoPath }, ctl.now());
   // Only the untracked gate files, each one file and already copied; every other file is git's to refuse or delete.
   for (const entry of changes) if (entry.startsWith('?? ')) unlinkSync(join(wt.path, entry.slice(3)));
-  const result = gitA.removeWorktree({ git, repoPath, path: wt.path });
+  return { started, item, campaignId: owner.campaignId, path: wt.path };
+}
+
+function finishRemoval(ctl, { started, item, campaignId, path }, result, report, keep) {
   const reason = result.ok ? null : (result.stderr || result.error || `exit ${result.status}`).slice(0, 300);
-  ctl.store.journal(owner.campaignId, 'cleanup-finished', { started, outcome: result.ok ? 'removed' : 'kept', reason }, ctl.now());
-  if (result.ok) report.removed.push(wt.path); else keep(owner.campaignId, { ...item, reason: 'git-refused' });
+  ctl.store.journal(campaignId, 'cleanup-finished', { started, outcome: result.ok ? 'removed' : 'kept', reason }, ctl.now());
+  if (result.ok) report.removed.push(path); else keep(campaignId, { ...item, reason: 'git-refused' });
 }
 
 /** Copy each gate file into the run directory under a name of this worktree; an identical earlier copy counts. */
@@ -231,11 +240,13 @@ function cleanCoordinator(ctl, report, keep) {
     if (!wt) continue;
     if (!insideRoot(root, wt.path)) { keep(COORDINATOR_LANE, { path: wt.path, run: owner.run, reason: 'outside-root' }); continue; }
     // Checkouts are reused across runs, and a run is recorded inside an IMMEDIATE transaction (coordinator.mjs). The last
-    // check of its runs and the removal share one, so no run is recorded for this checkout between them.
+    // check of its runs and the removal share one, so no run is recorded for this checkout between them. That removal
+    // therefore stays blocking: a transaction is never held across an await.
     ctl.store.tx(() => {
       const current = coordinatorOwners(ctl).get(key(owner.path));
       if (current?.finished !== true || !coordinatorFree(ctl)) return;
-      removeWorktree(ctl, list[0].path, wt, current, report, keep);
+      const removal = startRemoval(ctl, list[0].path, wt, current, keep);
+      if (removal) finishRemoval(ctl, removal, gitA.removeWorktree({ git: ctl.cmd.git, repoPath: list[0].path, path: wt.path }), report, keep);
     });
   }
 }

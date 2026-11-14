@@ -24,10 +24,10 @@ test('BASE-HOLD preserves a checked base without merging stale or unverified wor
       assert.ok(lease); r.controller.held.set(id, lease.generation);
       const ctx = { id, generation: lease.generation }, item = { campaignId: id, decl: campaign.declaration, task };
       const step = () => refreshStep(r.controller, ctx, item, r.env.repo, base, refreshSettings({ command: GATE }));
-      assert.equal(step().next, 'wait');
+      assert.equal((await step()).next, 'wait');
       const started = r.journal(id, 'merge-refresh-started').at(-1);
       await r.gateEnds(started.path);
-      assert.deepEqual(step(), { tree: started.tree, next: 'merge' });
+      assert.deepEqual(await step(), { tree: started.tree, next: 'merge' });
       assert.equal(passedTree(r.store, id, task.task_id, task.verified_sha, base), started.tree);
       return started;
     };

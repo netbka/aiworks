@@ -233,7 +233,7 @@ test('LO L8 refresh: a trusted tip moved under a verified review merges only the
   const started = await passing.gated(async (checked) => {
     const { controller, store, id } = passing, task = store.task(id, 'T1');
     const ctx = { id, generation: controller.held.get(id) };
-    assert.deepEqual(refreshStep(controller, ctx, { campaignId: id, decl: store.campaign(id).declaration, task },
+    assert.deepEqual(await refreshStep(controller, ctx, { campaignId: id, decl: store.campaign(id).declaration, task },
       passing.env.repo, passing.owner, controller.merges.refresh), { tree: checked.tree, next: 'merge' });
     store.releaseLease(id, controller.instanceId, ctx.generation, controller.now());
     const competitor = store.acquireLease(id, 'another-local-supervisor', controller.now(), 60_000, controller.codeRevision);

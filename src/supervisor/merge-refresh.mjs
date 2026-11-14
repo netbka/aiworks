@@ -65,16 +65,17 @@ export function startGate(path, command) {
 
 /**
  * A clean detached checkout of `commit` in `path`, reusing one that is already there. `root` is the configured worktree
- * root: a `path` outside it, or reached through a link or junction, is refused before anything is created.
+ * root: a `path` outside it, or reached through a link or junction, is refused before anything is created. The worktree is
+ * created without blocking the event loop (aiworks#39), so the lease timer keeps renewing while a large checkout is written.
  */
-export function checkout(git, repoPath, path, commit, root) {
+export async function checkout(git, repoPath, path, commit, root) {
   gitA.assertManagedWorktree(root, path);
   if (existsSync(path)) {
     const head = gitA.exec(git, ['rev-parse', 'HEAD'], { cwd: path });
     if (head.ok && head.stdout === commit) return;
     throw new Error(`refresh worktree ${path} exists at ${head.stdout || 'an unreadable head'}, not ${commit}`);
   }
-  const added = gitA.exec(git, ['worktree', 'add', '--detach', path, commit], { cwd: repoPath });
+  const added = await gitA.execAsync(git, ['worktree', 'add', '--detach', path, commit], { cwd: repoPath });
   if (!added.ok) throw new Error(`create refresh worktree failed: ${added.stderr || `exit ${added.status}`}`.slice(0, 500));
 }
 
@@ -106,7 +107,7 @@ export function passedTree(store, campaignId, taskId, sha, base) {
  * Returns { tree, next: 'merge' } when the exact merge result, `tree`, passed the gate, { next: 'wait', reason } while the gate runs, or
  * { next: 'repair', detail } when the integration repair must run instead (`detail` goes into its finding).
  */
-export function refreshStep(controller, ctx, item, repoPath, baseSha, settings) {
+export async function refreshStep(controller, ctx, item, repoPath, baseSha, settings) {
   const { store } = controller, git = controller.cmd.git, { campaignId, decl, task } = item;
   const sha = task.verified_sha, key = { task: task.task_id, sha, base: baseSha }, now = controller.now();
   const journal = (kind, detail) => controller.fenced(ctx, () => store.journal(campaignId, kind, { ...key, ...detail }, now));
@@ -129,7 +130,7 @@ export function refreshStep(controller, ctx, item, repoPath, baseSha, settings) 
     try {
       const commit = gitA.exec(git, [...IDENTITY, 'commit-tree', plan.tree, '-p', baseSha, '-p', sha, '-m', `AIWorks refresh: ${sha} merged with ${baseSha} (local only)`], { cwd: repoPath });
       if (!commit.ok) throw new Error(`commit-tree failed: ${commit.stderr || `exit ${commit.status}`}`);
-      checkout(git, repoPath, path, commit.stdout, controller.repo(decl).worktreeRoot);
+      await checkout(git, repoPath, path, commit.stdout, controller.repo(decl).worktreeRoot);
       // Recorded before the gate starts: after a crash here the next pass finds the worktree and starts the gate.
       journal('merge-refresh-started', { tree: plan.tree, commit: commit.stdout, path, command: settings.command });
       startGate(path, settings.command);

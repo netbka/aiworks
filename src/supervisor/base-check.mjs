@@ -102,7 +102,7 @@ export function baseRecord(store, repository, baseSha, settings) {
  * (`ctx`). Starts the base gate when there is no record, reads it while it runs, and settles it once. Returns the
  * record: { state: 'running' | 'passed' | 'failed', failed: sorted test ids or null when unknown, reason }.
  */
-export function baseCheckStep(controller, ctx, { repository, repoPath, worktreeRoot, baseSha }, settings) {
+export async function baseCheckStep(controller, ctx, { repository, repoPath, worktreeRoot, baseSha }, settings) {
   const { store } = controller, git = controller.cmd.git, now = controller.now();
   const repo = repository.toLowerCase(), command = key(settings.command);
   const write = (fields) => controller.fenced(ctx, () => store.run(`UPDATE base_checks SET state = ?, failed = ?, summary = ?, reason = ?, red = ?, runner = ?, updated_at = ?
@@ -118,7 +118,7 @@ export function baseCheckStep(controller, ctx, { repository, repoPath, worktreeR
     record = row(store, repository, baseSha, settings.command);
     if (!inserted) return record;
     try {
-      checkout(git, repoPath, path, baseSha, worktreeRoot);
+      await checkout(git, repoPath, path, baseSha, worktreeRoot);
       startGate(path, settings.command);
     } catch (error) {
       write({ state: 'failed', failed: null, reason: `the base check could not start: ${error.message}`.slice(0, 500) });
@@ -139,7 +139,7 @@ export function baseCheckStep(controller, ctx, { repository, repoPath, worktreeR
     // A gate that ended without an exit code (a restart, a reboot) starts again in the same worktree, as a refresh does.
     const pid = gatePid(record.path);
     if (pid === null || !alive(pid)) {
-      try { checkout(git, repoPath, record.path, baseSha, worktreeRoot); startGate(record.path, settings.command); } catch (error) {
+      try { await checkout(git, repoPath, record.path, baseSha, worktreeRoot); startGate(record.path, settings.command); } catch (error) {
         write({ state: 'failed', failed: null, reason: `the base gate could not restart: ${error.message}`.slice(0, 500) });
         return row(store, repository, baseSha, settings.command);
       }
