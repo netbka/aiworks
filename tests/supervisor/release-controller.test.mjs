@@ -148,14 +148,25 @@ test('one release pass over many finished campaigns of a repository reads its ba
     campaignStart(r.store, later, r.clock);
     r.store.run("UPDATE campaigns SET control='finished' WHERE id=?", later.campaignId);
   }
+  // A newer campaign that merged something older than the newest merge cannot release it either.
+  r.store.journal('later-0', 'merged', { task: 'T0', sha: one.base, mergeCommit: one.base }, r.clock);
   let reads = 0;
   const readBase = r.c.readBase.bind(r.c);
-  r.c.readBase = (...args) => { reads++; return readBase(...args); };
+  // The release job it launches reads its grant afresh beside the pass; only the pass's own reads count.
+  r.c.readBase = (...args) => { if (!r.c.releaseJob) reads++; return readBase(...args); };
   await releasePass(r.c);
   assert.equal(r.c.releaseJob?.campaignId, one.id, 'the pass still reaches the campaign whose merge is the newest');
   assert.equal(reads, 1, 'one network read of the base for the whole pass');
-  for (let n = 0; n < 4; n++) assert.equal(r.store.lease(`later-${n}`), null, 'a campaign without a merge is not leased by the release pass');
+  for (let n = 0; n < 4; n++) assert.equal(r.store.lease(`later-${n}`), null, 'only the owner of the newest merge is leased by the release pass');
   await r.c.releaseJob.promise;
+});
+
+test('a project given a grant before its first merge has its grant recorded on the first pass, so no cached gate is offered', { skip: skipWithoutSqlite }, async (t) => {
+  const r = rig(t), fresh = r.project('sample-fresh'); r.c = r.controller();
+  r.store.run("DELETE FROM journal WHERE kind = 'merged' AND campaign_id = ?", fresh.id);
+  await releasePass(r.c);
+  assert.ok(!r.c.releaseJob, 'nothing is released without a merge');
+  assert.equal(r.store.get('SELECT revoked FROM release_grants WHERE project = ?', fresh.id)?.revoked, 0);
 });
 
 test('ordinary worker changes cannot amend standing release authority and grant versions cannot regress or revive', (t) => {

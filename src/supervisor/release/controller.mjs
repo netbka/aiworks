@@ -494,62 +494,113 @@ async function releaseSteps(c) {
     launch(c, ctx, row, repo); return;
   }
   if (c.config.release?.enabled !== true || maintenance(c)) return;
-  // Only a campaign with a merge can own its project's newest merge, the one thing either path below releases. The
-  // others (report-only and unmerged campaigns, most of a long history) are skipped before their lease and grant are
-  // read: visiting each of them cost a pass minutes (work item 82).
+  // At most one campaign per project can release: the one that owns its newest merge, the one thing either path below
+  // releases. Visiting every campaign took each one's lease and read its grant first, which cost a pass minutes with a
+  // long history (work item 82). The pass now groups campaigns by project, finds the owner of the newest merge once from
+  // the base the pass shares, and takes a lease and reads a grant for that campaign only. A project without such an
+  // owner still has its grant read once through one of its campaigns, so a grant given before the first merge is
+  // recorded and the test cache offers it no cached gate (work item 84). Releases already planned are driven by the
+  // recovery loop above, keyed by release, whichever campaign the pass picks here.
   const merging = new Set(c.store.all("SELECT DISTINCT campaign_id FROM journal WHERE kind = 'merged'").map((row) => row.campaign_id));
+  const projects = new Map();
   for (const campaign of c.store.all("SELECT * FROM campaigns WHERE control IN ('registered', 'finished') ORDER BY created_at DESC")) {
-    if (!merging.has(campaign.id)) continue;
-    const key = 'campaign:' + campaign.id;
-    if ((c.releaseNextAt.get(key) ?? 0) > c.now()) continue;
-    c.releaseNextAt.set(key, c.now() + POLL_MS);
-    const ctx = context(c, campaign.id);
-    if (!ctx) continue;
-    try {
-      const decl = campaign.declaration;
-      const pointer = projectReleasePointer(c, decl);
-      const repo = c.repo(decl);
-      // Never AIWorks's own live runtime or repository, by a grant or by instructions.
-      if (ownRuntime(c, decl, repo)) continue;
-      if (!pointer) {
-        const row = await publishCandidate(c, ctx, campaign, repo);
-        if (row) { launch(c, ctx, row, repo); return; }
-        continue;
-      }
-      const grant = await readProjectGrant(c, ctx, decl, repo, { fresh: false });
-      if (grant.reason) { waiting(c, ctx, null, null, grant.reason); continue; }
-      const newest = newestMerge(c, decl.target.projectId, repo, grant.base);
-      if (newest?.campaign_id !== campaign.id) continue;
-      const task = c.store.task(campaign.id, newest.detail.task);
-      if (task?.state !== 'done' || task.verified_sha !== newest.detail.sha || !ancestor(c, repo, newest.detail.mergeCommit, grant.base)) continue;
-      expectRelease(c, ctx, grant, task, repo);
-      for (const destination of grant.record.destinations) {
-        if (destination.kind !== 'deploy') {
-          waiting(c, ctx, null, destination.id, 'Automatic continuation supports deploy after the merge gate; this destination kind is not connected'); continue;
-        }
-        for (const task of [c.store.task(campaign.id, newest.detail.task)]) {
-          if (task.state !== 'done' || !task.verified_sha) continue;
-          const candidate = { project: decl.target.projectId, destination: destination.id, task_id: task.task_id, verified_sha: task.verified_sha };
-          const event = mergedEventReader(c.store, campaign.id)({ taskId: task.task_id, verifiedSha: task.verified_sha });
-          if (!event || !ancestor(c, repo, event.mergeCommit, grant.base)) continue;
-          if (c.store.get('SELECT id FROM releases WHERE project = ? AND destination = ? AND verified_sha = ? LIMIT 1', candidate.project, candidate.destination, candidate.verified_sha)) continue;
-          const result = evaluate(c, ctx, candidate, grant, repo, null);
-          const gatePassed = result.inputs?.evidence?.checks?.required?.every((check) => check.conclusion === 'success') === true;
-          const failure = result.failed.find((item) => item.check !== 'E9' && !(item.check === 'E8' && gatePassed));
-          if (failure) { waiting(c, ctx, task, destination.id, failure.reason, result); continue; }
-          const row = c.fenced(ctx, () => {
-            if (c.store.get('SELECT id FROM releases WHERE project = ? AND destination = ? AND verified_sha = ? LIMIT 1', candidate.project, candidate.destination, candidate.verified_sha)) return null;
-            return createRelease(c.store, { project: candidate.project, destination: destination.id, campaignId: campaign.id, taskId: task.task_id,
-              verifiedSha: task.verified_sha, grantVersion: grant.record.version, grantDigest: grant.digest,
-              steps: ['deploy', 'check'], lease: leaseOf(c, ctx), now: c.now() });
-          });
-          if (!row) continue;
-          c.fenced(ctx, () => pinGrant(c.dataDir, row, grant.loaded));
-          launch(c, ctx, row, repo); return;
-        }
-      }
-    } catch (error) { waiting(c, ctx, null, null, String(error.message).slice(0, 400)); }
+    const target = campaign.declaration?.target;
+    const key = [target?.repository, target?.projectId, target?.baseBranch].join('\0');
+    if (!projects.has(key)) projects.set(key, []);
+    projects.get(key).push(campaign);
   }
+  for (const [key, campaigns] of projects) {
+    const poll = 'project:' + key;
+    if ((c.releaseNextAt.get(poll) ?? 0) > c.now()) continue;
+    c.releaseNextAt.set(poll, c.now() + POLL_MS);
+    const choice = await releaseCandidate(c, campaigns, merging);
+    if (!choice) continue;
+    const ctx = context(c, choice.campaign.id);
+    if (!ctx) continue;
+    if (!choice.merging) {
+      // Only the grant is recorded: a campaign without a merge has nothing to release.
+      try { await readProjectGrant(c, ctx, choice.campaign.declaration, choice.repo, { fresh: false }); }
+      catch (error) { c.log(`release grant of ${choice.campaign.declaration.target.projectId ?? choice.campaign.id}: ${error.message}`); }
+      continue;
+    }
+    if (await releaseCampaign(c, ctx, choice.campaign)) return;
+  }
+}
+
+/**
+ * Picks, before any lease is taken, the one campaign of a project the pass visits: the owner of the project's newest
+ * merge on the shared base when it is among them, otherwise the newest campaign with a merge, otherwise the newest one.
+ * A campaign without a merge is visited only to record a registered grant. A failed read leaves the merging campaign
+ * to be visited, so its failure is recorded where it was before.
+ */
+async function releaseCandidate(c, campaigns, merging) {
+  const lead = campaigns.find((campaign) => merging.has(campaign.id)) ?? campaigns[0];
+  const decl = lead.declaration;
+  let repo = null, pointer = null, chosen = lead;
+  try {
+    repo = c.repo(decl);
+    // Never AIWorks's own live runtime or repository, by a grant or by instructions.
+    if (ownRuntime(c, decl, repo)) return null;
+    pointer = projectReleasePointer(c, decl);
+    if (merging.has(lead.id)) {
+      const fetched = await c.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository);
+      const newest = fetched.sha ? newestMerge(c, decl.target.projectId, repo, fetched.sha) : null;
+      chosen = campaigns.find((campaign) => campaign.id === newest?.campaign_id) ?? lead;
+    }
+  } catch (error) {
+    if (!merging.has(lead.id)) { c.log(`release grant of ${decl?.target?.projectId ?? lead.id}: ${error.message}`); return null; }
+  }
+  if (merging.has(chosen.id)) return { campaign: chosen, merging: true };
+  return pointer ? { campaign: chosen, merging: false, repo } : null;
+}
+
+/** One campaign's release step. Returns true when it launched a release job. */
+async function releaseCampaign(c, ctx, campaign) {
+  try {
+    const decl = campaign.declaration;
+    const pointer = projectReleasePointer(c, decl);
+    const repo = c.repo(decl);
+    // Never AIWorks's own live runtime or repository, by a grant or by instructions.
+    if (ownRuntime(c, decl, repo)) return false;
+    if (!pointer) {
+      const row = await publishCandidate(c, ctx, campaign, repo);
+      if (row) { launch(c, ctx, row, repo); return true; }
+      return false;
+    }
+    const grant = await readProjectGrant(c, ctx, decl, repo, { fresh: false });
+    if (grant.reason) { waiting(c, ctx, null, null, grant.reason); return false; }
+    const newest = newestMerge(c, decl.target.projectId, repo, grant.base);
+    if (newest?.campaign_id !== campaign.id) return false;
+    const task = c.store.task(campaign.id, newest.detail.task);
+    if (task?.state !== 'done' || task.verified_sha !== newest.detail.sha || !ancestor(c, repo, newest.detail.mergeCommit, grant.base)) return false;
+    expectRelease(c, ctx, grant, task, repo);
+    for (const destination of grant.record.destinations) {
+      if (destination.kind !== 'deploy') {
+        waiting(c, ctx, null, destination.id, 'Automatic continuation supports deploy after the merge gate; this destination kind is not connected'); continue;
+      }
+      for (const task of [c.store.task(campaign.id, newest.detail.task)]) {
+        if (task.state !== 'done' || !task.verified_sha) continue;
+        const candidate = { project: decl.target.projectId, destination: destination.id, task_id: task.task_id, verified_sha: task.verified_sha };
+        const event = mergedEventReader(c.store, campaign.id)({ taskId: task.task_id, verifiedSha: task.verified_sha });
+        if (!event || !ancestor(c, repo, event.mergeCommit, grant.base)) continue;
+        if (c.store.get('SELECT id FROM releases WHERE project = ? AND destination = ? AND verified_sha = ? LIMIT 1', candidate.project, candidate.destination, candidate.verified_sha)) continue;
+        const result = evaluate(c, ctx, candidate, grant, repo, null);
+        const gatePassed = result.inputs?.evidence?.checks?.required?.every((check) => check.conclusion === 'success') === true;
+        const failure = result.failed.find((item) => item.check !== 'E9' && !(item.check === 'E8' && gatePassed));
+        if (failure) { waiting(c, ctx, task, destination.id, failure.reason, result); continue; }
+        const row = c.fenced(ctx, () => {
+          if (c.store.get('SELECT id FROM releases WHERE project = ? AND destination = ? AND verified_sha = ? LIMIT 1', candidate.project, candidate.destination, candidate.verified_sha)) return null;
+          return createRelease(c.store, { project: candidate.project, destination: destination.id, campaignId: campaign.id, taskId: task.task_id,
+            verifiedSha: task.verified_sha, grantVersion: grant.record.version, grantDigest: grant.digest,
+            steps: ['deploy', 'check'], lease: leaseOf(c, ctx), now: c.now() });
+        });
+        if (!row) continue;
+        c.fenced(ctx, () => pinGrant(c.dataDir, row, grant.loaded));
+        launch(c, ctx, row, repo); return true;
+      }
+    }
+  } catch (error) { waiting(c, ctx, null, null, String(error.message).slice(0, 400)); }
+  return false;
 }
 
 export async function drainReleases(c) {
