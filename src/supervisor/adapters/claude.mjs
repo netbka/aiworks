@@ -71,7 +71,14 @@ export const CRITERIA_SCHEMA = {
   },
 };
 export const EYES_ON_SCHEMA = { type: 'array', maxItems: 8, items: REVIEW_TEXT };
-export const CRITERIA_RULE = 'Also return verdictSummary = one or two plain sentences for the owner on whether the result does what was promised; criteria = one entry per acceptance criterion of the packet, { criterion (its 1-based position), result (pass, fail or not-checked), check (what you ran or inspected), evidence (what you observed, in words, never a raw log, path outside the repository or secret) }; and eyesOn = at most 8 short items where the owner’s own judgement matters (for example wording or look) that no check can settle. A failed criterion is never accepted.';
+/**
+ * A criterion that applies only under a stated condition (for example only to one verdict of a report) and whose condition
+ * does not hold for this result is satisfied, not unchecked: passedCheck withholds a result while any criterion is
+ * not-checked, so an inapplicable criterion reported that way would withhold an otherwise accepted result (work item 87).
+ */
+export const CONDITIONAL_CRITERION_RULE = 'A criterion whose stated condition does not hold for this result (for example one that applies only to a verdict or case the result did not reach) is "pass", with evidence naming the condition and why it does not hold here; "not-checked" is only for a criterion that applies but could not be checked.';
+
+export const CRITERIA_RULE = `Also return verdictSummary = one or two plain sentences for the owner on whether the result does what was promised; criteria = one entry per acceptance criterion of the packet, { criterion (its 1-based position), result (pass, fail or not-checked), check (what you ran or inspected), evidence (what you observed, in words, never a raw log, path outside the repository or secret) }; and eyesOn = at most 8 short items where the owner’s own judgement matters (for example wording or look) that no check can settle. A failed criterion is never accepted. ${CONDITIONAL_CRITERION_RULE}`;
 
 // Owner decision (work item "independent failure analyst", routing 2): a defect the verifier finds in this repository's
 // product OUTSIDE the task's write scope. Optional and never part of the task's own verdict: the controller records each
