@@ -1,23 +1,48 @@
 // Privacy rules for text that leaves this computer: staged source and commit messages (scripts/check-public-scope.mjs)
 // and every GitHub publication body (aiworks#8). Findings name a category only; a matched value is never returned.
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { containsKnownSecretValue } from './credential-metadata.mjs';
 
 // The public AIWorks repository. Naming the upstream owner's other projects is refused only here; other registered
 // repositories keep their own naming and rely on the generic rules and the installation's private terms.
 export const PUBLIC_REPOSITORY = 'netbka/aiworks';
 
-/** Installation-specific private terms from `<root>/.local/publication.json`; none when the file is absent. */
-export function privateTerms(root) {
+function publicationSettings(root) {
   try {
     const value = JSON.parse(readFileSync(resolve(root, '.local/publication.json'), 'utf8'));
-    if (!Array.isArray(value.privateTerms) || !value.privateTerms.every(term => typeof term === 'string' && term.trim().length >= 3)) throw new Error();
-    return value.privateTerms;
+    const strings = (list, min) => list === undefined || (Array.isArray(list) && list.every(item => typeof item === 'string' && item.trim().length >= min));
+    if (!Array.isArray(value.privateTerms) || !strings(value.privateTerms, 3) || !strings(value.repositoryRoots, 1) || !strings(value.ignoreRepositories, 1)) throw new Error();
+    return value;
   } catch (error) {
-    if (error.code === 'ENOENT') return [];
+    if (error.code === 'ENOENT') return null;
     throw new Error('Invalid private publication settings in .local/publication.json.');
   }
+}
+
+/** Installation-specific private terms from `<root>/.local/publication.json`; none when the file is absent. */
+export function privateTerms(root) {
+  return publicationSettings(root)?.privateTerms ?? [];
+}
+
+/**
+ * The names of the Git checkouts under the `repositoryRoots` of `<root>/.local/publication.json` (relative roots resolve
+ * against `root`), so a project the operator adds later is private without anyone listing it. Only the public
+ * repository's own commit and push checks use them: the supervisor's publications to a target name that target, so they
+ * keep to the listed terms. Names shorter than five characters, names in `ignoreRepositories` and `own`, the checking
+ * repository's own folder name, are left out (exact names, ignoring case).
+ */
+export function repositoryNameTerms(root, own) {
+  const value = publicationSettings(root);
+  if (!value?.repositoryRoots) return [];
+  const skip = new Set([...(value.ignoreRepositories ?? []), own].filter(Boolean).map(name => name.toLowerCase()));
+  const names = value.repositoryRoots.flatMap(entry => {
+    const dir = resolve(root, entry);
+    try { return readdirSync(dir, { withFileTypes: true }).filter(item => item.isDirectory() && existsSync(join(dir, item.name, '.git'))).map(item => item.name); }
+    catch { return []; } // a root absent on this machine lists nothing
+  }).filter(name => name.length >= 5 && !skip.has(name.toLowerCase()));
+  // A folder name is written with hyphens or underscores interchangeably in prose and URLs.
+  return [...new Set(names.flatMap(name => [name, name.replace(/_/g, '-'), name.replace(/-/g, '_')]))];
 }
 
 export function contentFindings(text, terms = []) {

@@ -1,0 +1,44 @@
+# Binary files allowed in the public repository, one per line: <blob id> <path>.
+# Before adding a line, open the file and confirm it shows no private data: people, emails, local paths, hosts or project names.
+# scripts/check-public-scope.mjs refuses any other binary blob in a commit or a push.
+192d98149fa8bd62ea129504c450085f2288e361 docs/assets/readme/needs-me.png
+c03214e6494df2b77ff17dbca397e7e9b458b8c0 docs/assets/readme/projects.png
+26cdbd76bbc8df98645a58006716518df0490567 docs/assets/readme/start-work.png
+a3a772fd8c85cd9514d14fe764662d2e7865477b docs/assets/readme/step.png
+9ba8678dfaa00f4d357ca5d089d97b9d15b96692 docs/assets/readme/work.png
+0caf79094b3476386a6d1550660f643e126fc679 docs/design/previews/needs-mobile.png
+cc96215f94890463627a98e0f89f62135337b9d2 docs/design/previews/owner-ui-v2/01-first-run.png
+d37fd14f988581f39e57d5d7b9779fed9016669b docs/design/previews/owner-ui-v2/02-home.png
+1091fbba042362fe2cc3610bb71b96ea3aad0a26 docs/design/previews/owner-ui-v2/03-overview.png
+29bc0a26cdb4eec8179cc0415175f8b0792b8d5b docs/design/previews/owner-ui-v2/04-plan.png
+e4976f501a095c66bede844fb3635245fa11a63c docs/design/previews/owner-ui-v2/05-decision.png
+203f7c9f3ee5267142f7eb1aa5af4f690cd38347 docs/design/previews/owner-ui-v2/06-review.png
+beb2602e8734256d05f50ca2cd9453f33b5babfc docs/design/previews/owner-ui-v2/07-releases.png
+953e10d8b20a433486f5d7e8a0918bc11b36adb7 docs/design/previews/owner-ui-v2/08-knowledge.png
+c76994cef9916f20863832125e168af69ff1af70 docs/design/previews/owner-ui-v2/09-project-settings.png
+8de6dd8db2854f7fe9d6ba63098c5b9bbb6b756c docs/design/previews/owner-ui-v2/10-settings.png
+ad05d133184aba29211feed86f109f057d4a0eb6 docs/design/previews/owner-ui-v2/11-states.png
+6b0d8dd50ddd007ba9405775476d1c903632ea94 docs/design/previews/owner-ui-v2/12-phone-home.png
+e06f6ff77fa903389aff83ab7162e7ba658ef5a1 docs/design/previews/owner-ui-v2/13-phone-decision.png
+cb4240892999be19be7b283e2269b60e164857c9 docs/design/previews/owner-ui-v2/14-review-try-this-version.png
+5904d5fe0efde16642993e0efbeab4d8121b029a docs/design/previews/owner-ui-v2/15-phone-review-try-this-version.png
+32f6529b2918b929b81feacc06abda013e00183a docs/design/previews/plan-work.png
+2153927bf4c9ad29470c1e8523ce8b7bb026ed8c docs/design/previews/projects.png
+95eaf3d20b77960bde729b18a8855d2104a3b988 site/assets/alerts.png
+b0e67d5078d8d8321fa4b20eabb668019514641d site/assets/alerts.png
+572c0bc95eea954674c81f3530bc17d5258baa17 site/assets/decision.png
+f40ee419b8259350ec6fceb05c97cf6d48eac6f5 site/assets/decision.png
+569e719c874b98f1a68d4365d1198f09b3d41431 site/assets/home-empty.png
+b1a9f5c776e752408cb668aef9dddc8e9e011deb site/assets/home-empty.png
+da1983b64c1115057c78fd609a526a40782da637 site/assets/phone-home.png
+ef7013d37e1191579cff5c121d008817a8d52056 site/assets/phone-home.png
+24518d81bea388750d2b11c067bd4f2f91a77276 site/assets/phone-review.png
+d2fc5f6662154834813ee949bb882745145d610a site/assets/phone-review.png
+aacc54c65ec546d45d9cc0af8f7c3abd913ae90f site/assets/plan-review.png
+c13da3ab0a99c3842d1f5850a4ac80e472acb76b site/assets/plan-review.png
+9be445d3f377431b220035741e27717e876afd3e site/assets/plan-versions.png
+ac2820990de3ee1d38c0578b8d176d7890ed55cf site/assets/plan-versions.png
+cabaa5bbac4895f6c25716ea9270326f2a7662a7 site/assets/releases.png
+e6eaec5412d2717536bfda025d3e5ffce0648d8d site/assets/releases.png
+0045874200d1dcdacfd691f71da2b8715b51ffbd site/assets/result-review.png
+d81d39dc936be4bbab482978fa6aff308d895571 site/assets/result-review.png
