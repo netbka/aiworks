@@ -1,0 +1,13 @@
+{
+  "termsFiles": ["<repos-root>/aiworks/.local/publication.json"],
+  "repositoryRoots": ["<repos-root>"],
+  "ignoreRepositories": [],
+  "privateTerms": ["first.last@example.invalid"],
+  "privatePatterns": [],
+  "strict": ["example-owner/aiworks"],
+  "allow": {
+    "*": ["my-public-product"],
+    "example-owner/notes-site": ["fictional-ledger"]
+  },
+  "binaries": []
+}
