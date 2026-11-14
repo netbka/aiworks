@@ -34,10 +34,14 @@ export function exec(command, args, { cwd, input, timeoutMs = 180_000, env = {} 
  * every campaign lease lapsed). The same result, environment, hidden window, timeout and output limit: past the timeout
  * the process is ended (SIGTERM) and `error` is ETIMEDOUT, past 64 MiB on either stream it is ended and `error` is
  * ENOBUFS, and a command that cannot start gives its spawn error code; `status` is then null, as spawnSync reports it.
- * For the Git effects of the controller tick (worktree creation and removal, the push of a verified commit); the
- * bounded reads with containment are execBounded and execContained below. Never rejects.
+ * Unlike a process that waits for its output to close, a stopped call never waits for a helper that still holds it (a
+ * hook's shell, a credential helper, git-remote-https): the child's whole tree is stopped first (treeKill, the child
+ * leading its own process group outside Windows), its streams are closed, and the call settles at most `killMs` after its
+ * deadline whether or not that tree stop was shown to finish. For the Git effects of the controller tick (worktree
+ * creation and removal, the push of a verified commit); the bounded reads with containment are execBounded and
+ * execContained below. Never rejects.
  */
-export function execAsync(command, args, { cwd, input, timeoutMs = 180_000, env = {} } = {}) {
+export function execAsync(command, args, { cwd, input, timeoutMs = 180_000, killMs = 10_000, env = {} } = {}) {
   return new Promise((settle) => {
     const out = [], err = [], size = [0, 0];
     let failure = null, done = false, timer = null, child;
@@ -48,10 +52,20 @@ export function execAsync(command, args, { cwd, input, timeoutMs = 180_000, env 
       settle({ ok: !failure && status === 0, status: failure ? null : status, stdout: Buffer.concat(out).toString('utf8').trim(),
         stderr: Buffer.concat(err).toString('utf8').trim(), error: failure?.code });
     };
-    const stop = (code) => { failure ??= Object.assign(new Error(code), { code }); try { child.kill(); } catch { /* already ended */ } };
+    const stop = (code) => {
+      if (failure) return;
+      failure = Object.assign(new Error(code), { code });
+      clearTimeout(timer);
+      // The child is killed only after its tree was stopped, so its identity stays valid while its descendants are found.
+      treeKill(child, killMs).catch(() => false).then(() => {
+        try { child.kill('SIGKILL'); } catch { /* already ended */ }
+        for (const stream of [child.stdin, child.stdout, child.stderr]) { try { stream?.destroy(); } catch { /* closed */ } }
+        finish(null);
+      });
+    };
     try {
       child = spawn(command[0], [...command.slice(1), ...args], { cwd, windowsHide: true, stdio: 'pipe',
-        env: { ...process.env, ...env, ...DEVELOPMENT_ENV, ...SUPERVISOR_GIT_ENV } });
+        detached: process.platform !== 'win32', env: { ...process.env, ...env, ...DEVELOPMENT_ENV, ...SUPERVISOR_GIT_ENV } });
     } catch (error) { failure = error; finish(null); return; }
     timer = setTimeout(() => stop('ETIMEDOUT'), timeoutMs);
     const take = (list, at) => (chunk) => {
@@ -61,8 +75,8 @@ export function execAsync(command, args, { cwd, input, timeoutMs = 180_000, env 
     };
     child.stdout.on('data', take(out, 0));
     child.stderr.on('data', take(err, 1));
-    child.on('error', (error) => { failure ??= error; if (child.pid === undefined) finish(null); });
-    child.on('close', (status) => finish(status));
+    child.on('error', (error) => { if (child.pid === undefined) { failure ??= error; finish(null); } });
+    child.on('close', (status) => { if (!failure) finish(status); });
     child.stdin.on('error', () => { /* the command ended without reading its input */ });
     child.stdin.end(input ?? undefined);
   });

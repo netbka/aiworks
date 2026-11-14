@@ -739,7 +739,7 @@ export class Controller {
    * hangs on an await then lets its leases lapse, so the dashboard and a rebuild see a stopped supervisor, not a running one.
    */
   renewOnTimer() {
-    const bound = Math.max(10 * this.config.leaseMs, 15 * 60_000);
+    const bound = this.renewalBound();
     if (this.tickStartedAt != null && this.now() - this.tickStartedAt > bound) {
       if (!this.renewalHeldBack) this.log(`tick running for more than ${Math.round(bound / 60_000)} min: leases are no longer renewed until it ends`);
       this.renewalHeldBack = true;
@@ -747,6 +747,11 @@ export class Controller {
     }
     this.renewalHeldBack = false;
     this.renewHeld();
+  }
+
+  /** How long a tick, or one Git step of it, keeps its leases renewed: max(10 leases, 15 min). */
+  renewalBound() {
+    return Math.max(10 * this.config.leaseMs, 15 * 60_000);
   }
 
   fenced(ctx, fn) {
@@ -775,6 +780,7 @@ export class Controller {
    * lease check, receiving the result at that point, or the error thrown there as before. Every check ahead of it is made
    * again under the write lock, so nothing is decided on a read older than the Git work. The body must not catch the
    * signal: no try around a `ready` call. Its effects outside the store before a `ready` call run once per pass.
+   * `ready.done(key)` says whether that operation already finished, so a pass that gives up after it can say so.
    */
   async fencedPrepared(ctx, body) {
     if (this.store.depth) throw new Error('fencedPrepared cannot hold a transaction across its Git operation');
@@ -787,12 +793,15 @@ export class Controller {
         wanted = { key, start };
         throw PREPARE;
       };
+      ready.done = (key) => prepared.has(key) && !prepared.get(key).failed;
       const outcome = this.fenced(ctx, () => {
         db.exec('SAVEPOINT aiworks_prepared');
         let value;
         try { value = body(ready); } catch (error) {
-          // A failed statement may have ended the transaction already: then the original error stands.
-          try { db.exec('ROLLBACK TO aiworks_prepared'); db.exec('RELEASE aiworks_prepared'); } catch { throw error; }
+          // A failed statement may have ended the transaction already: then the original error stands, never the signal.
+          try { db.exec('ROLLBACK TO aiworks_prepared'); db.exec('RELEASE aiworks_prepared'); } catch (rollback) {
+            throw error === PREPARE ? new Error(`the fenced step could not be rolled back for its Git operation: ${rollback.message}`) : error;
+          }
           if (error === PREPARE && wanted) return { wanted };
           throw error;
         }
@@ -802,10 +811,16 @@ export class Controller {
       if (!outcome.wanted) return outcome.value;
       if (pass >= PREPARE_PASSES) throw new Error(`more than ${PREPARE_PASSES} Git operations in one fenced step`);
       // The step's own lease is kept while its Git operation runs, also without the serve timer (as when the write lock was
-      // held through it); every Git operation has its timeout, and a lease that lapsed or changed hands is never revived.
+      // held through it), but no longer than renewOnTimer keeps a tick's: past renewalBound() since this operation or its
+      // tick started, the lease lapses. A lease that lapsed or changed hands is never revived, nor one taken for longer cut.
+      const since = this.now(), bound = this.renewalBound();
       const keep = setInterval(() => {
-        try { if (!this.store.renewLease(ctx.id, this.instanceId, ctx.generation, this.now(), this.config.leaseMs)) clearInterval(keep); }
-        catch { /* store busy: the next renewal tries again */ }
+        const now = this.now();
+        if (now - since > bound || (this.tickStartedAt != null && now - this.tickStartedAt > bound)) { clearInterval(keep); return; }
+        try {
+          if (!this.store.run('UPDATE leases SET expires_at = MAX(expires_at, ?) WHERE campaign_id = ? AND instance_id = ? AND generation = ? AND expires_at > ?',
+            now + this.config.leaseMs, ctx.id, this.instanceId, ctx.generation, now).changes) clearInterval(keep);
+        } catch { /* store busy: the next renewal tries again */ }
       }, Math.max(50, Math.floor(this.config.leaseMs / 4)));
       try { prepared.set(wanted.key, { value: await wanted.start() }); }
       catch (error) { prepared.set(wanted.key, { failed: true, error }); }
@@ -4074,13 +4089,17 @@ export class Controller {
     const branch = gitA.branchName(ctx.id, task.task_id);
     const bodyFile = join(this.dataDir, 'runs', `${ctx.id}.${task.task_id}.publish.md`);
     // The push of exactly the verified SHA runs outside the transaction (fencedPrepared, aiworks#39); everything the body
-    // decided before it is decided again under the write lock before anything is recorded or opened.
-    const push = (ready) => {
-      const options = { git: this.cmd.git, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha, base: forkPoint };
-      return ready(`push\u0000${JSON.stringify(options)}`, () => gitA.pushVerifiedAsync(options));
-    };
+    // decided before it is decided again under the write lock before anything is recorded or opened. A pass that then
+    // stops early (paused, changed, refused, no open PR) after the push finished records that push: push-unrecorded.
+    const pushOptions = { git: this.cmd.git, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha, base: forkPoint };
+    const pushKey = `push\u0000${JSON.stringify(pushOptions)}`;
+    const push = (ready) => ready(pushKey, () => gitA.pushVerifiedAsync(pushOptions));
     try {
       await this.fencedPrepared(ctx, (ready) => {
+        const pushed = ready.done(pushKey);
+        let recorded = false, threw = false;
+        // The catch only notes a failure and rethrows it at once: the signal and every error pass through unchanged.
+        try {
         const current = this.store.campaign(ctx.id);
         const fresh = this.store.task(ctx.id, task.task_id);
         if (current.control !== 'registered' || fresh.state !== 'verified' || fresh.version !== task.version) return;
@@ -4126,7 +4145,7 @@ export class Controller {
           if (!existing) {
             const now = this.now();
             this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, fresh.version, { retry_at: null,
-              blocked: { class: 'stalled', reason: `${REPAIR_WORDS[repairKind]} repair ${task.verified_sha} verified, but ${branch} has no open PR; nothing was pushed or opened`, at: now } }, now);
+              blocked: { class: 'stalled', reason: `${REPAIR_WORDS[repairKind]} repair ${task.verified_sha} verified, but ${branch} has no open PR; ${pushed ? 'the verified head was pushed to it before the PR was found closed, and no PR was opened' : 'nothing was pushed or opened'}`, at: now } }, now);
             this.store.journal(ctx.id, `${repairKind}-repair-unpublished`, { task: task.task_id, sha: task.verified_sha }, now);
             return;
           }
@@ -4197,6 +4216,7 @@ export class Controller {
         this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, fresh.version,
           { state: 'done', pr_url: url, retry_at: null, last_error: null, ...(repair || this.publicationFinding(fresh) ? { findings: null } : {}) }, now);
         this.store.journal(ctx.id, 'published', { task: task.task_id, sha: task.verified_sha, url }, now);
+        recorded = true;
         if (integration) this.store.journal(ctx.id, 'integration-repaired', { task: task.task_id, from: integration.verified, base: integration.base, sha: task.verified_sha, url }, now);
         else if (repair?.id === OWNER_CHANGES) this.store.journal(ctx.id, 'owner-changes-repaired', { task: task.task_id, from: repair.verified, sha: task.verified_sha, url }, now);
         else if (repair) this.store.journal(ctx.id, 'ci-repaired', { task: task.task_id, from: repair.verified, checks: repair.checks.map((check) => check.name), sha: task.verified_sha, url }, now);
@@ -4217,6 +4237,10 @@ export class Controller {
           ? `**${task.task_id}** (#${spec.issue}) passed independent verification; the verified report is kept on the supervisor's computer (campaign API report route), not posted here.`
           : `**${task.task_id}** (#${spec.issue}) passed independent verification; the verified report is posted: ${url} (revision \`${task.verified_sha}\`).`) + ciNote, now);
         this.log(`published ${task.task_id}: ${url}`);
+        } catch (error) { threw = true; throw error; } finally {
+          // A failure rolls this pass back and retries later; an early return after the push is recorded with it.
+          if (pushed && !recorded && !threw) this.store.journal(ctx.id, 'push-unrecorded', { task: task.task_id, sha: task.verified_sha, branch }, this.now());
+        }
       });
     } catch (error) {
       if (error instanceof FencedError) throw error;
