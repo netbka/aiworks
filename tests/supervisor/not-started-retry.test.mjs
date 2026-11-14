@@ -1,9 +1,11 @@
 // 2026-10-29: Wiki package checks (maxRetriesPerTask: 1) stalled after one retry when the worker never started
 // (`spawn-failed: runner-process-identity-unavailable`, the runner never attached its job). A launch that never
 // started is retried without using one of the task's attempts; the repeat guard still stops one that keeps failing.
+// Owner decision 2026-10-10: a campaign has no capacity limits by default, so the no-progress guards are the one stop
+// for a task that fails the same way forever, and every attempt is a paid worker run.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Controller } from '../../src/supervisor/controller.mjs';
+import { Controller, NO_PROGRESS_LIMIT } from '../../src/supervisor/controller.mjs';
 import { declaration } from './helpers.mjs';
 
 const decl = declaration({ tasks: [declaration().tasks[0]], limits: { maxRetriesPerTask: 1 } });
@@ -38,4 +40,26 @@ test('launches that never start stop at the bound even when their errors alterna
   assert.match(stopped.blocked.reason, /never started a worker/);
   const cleared = step({ task_id: 'T1', state: 'pending', failures: { 'not-started': 3 } }, { class: 'timeout', detail: 'x' });
   assert.equal(cleared.failures['not-started'], undefined, 'a run that started clears earlier launch failures');
+});
+
+test('without limits, repeated evidence-unavailable results or identical failures stop paid attempts for system recovery', () => {
+  const unlimited = declaration({ tasks: [declaration().tasks[0]], limits: { maxWorkerRuns: null, slots: 1, maxRepairRounds: null, maxRetriesPerTask: null } });
+  // No earlier attempt had the same input, so only the no-progress counters can stop the task.
+  const ctl = Object.assign(Object.create(Controller.prototype), { config: { retryBackoffMs: [1000, 5000] }, brokeredAttempts: () => [] });
+  const op = { kind: 'implement', executor_kind: 'claude-cli' };
+  const outcomes = {
+    'evidence-unavailable': { class: 'result', value: { result: 'evidence-unavailable', summary: 'cannot proceed', tried: 'synthetic: nothing assigned' } },
+    'identical failure': { class: 'exit-without-result', detail: 'the worker exited without a result' },
+  };
+  for (const [name, v] of Object.entries(outcomes)) {
+    let task = { task_id: 'T1', state: 'pending', failures: {} };
+    for (let i = 1; i < NO_PROGRESS_LIMIT; i++) {
+      task = { ...task, ...ctl.transition({ id: 'c' }, task, op, v, unlimited, i) };
+      assert.equal(task.blocked, undefined, `${name}: attempt ${i} is retried`);
+    }
+    const stopped = ctl.transition({ id: 'c' }, task, op, v, unlimited, NO_PROGRESS_LIMIT);
+    assert.equal(stopped.blocked?.class, 'stalled', name);
+    assert.equal(stopped.blocked.recovery, 'system', `${name}: held for system recovery`);
+    assert.equal(stopped.retry_at, null, `${name}: no further paid attempt is scheduled`);
+  }
 });

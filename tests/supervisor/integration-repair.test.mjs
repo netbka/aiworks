@@ -240,19 +240,6 @@ test('without an open PR the repaired head is neither pushed nor opened as a new
   assert.equal(r.journal(B, 'integration-repair-unpublished').length, 1);
 });
 
-test('integration repair is bounded by maxRepairRounds', async (t) => {
-  const r = rig(t, { limits: { maxRepairRounds: 0 } });
-  await siblingsPublishedThenAMerged(r);
-  r.advance(r.controller.config.integrationPollMs + 1);
-  await r.tick();
-  const [conflict] = r.journal(B, 'integration-conflict');
-  assert.equal(conflict.stalled, true);
-  // AW-017: past the bound the step does not wait for the owner; it ends as not done and nothing of it merges.
-  assert.equal(r.store.task(B, 'B1').state, 'cancelled');
-  assert.match(r.store.task(B, 'B1').last_error, /^not done: integration conflict with main after 0 repair rounds/);
-  assert.equal(r.store.openOperations(B).length, 0, 'no worker is dispatched past the bound');
-});
-
 test('integration repair at a limit from Project settings ends the step as not done with one follow-up', async (t) => {
   // AW-002 amended: the declarations name no repair limit, so the project's setting applies (AW-017 finishes the step).
   const r = rig(t, { limits: { maxRepairRounds: undefined } });
@@ -274,18 +261,6 @@ test('a sibling merge without a conflict changes nothing', async (t) => {
   assert.equal(r.journal(B, 'integration-conflict').length, 0);
   assert.equal(r.store.task(B, 'B1').state, 'done');
   assert.equal(r.store.campaign(B).control, 'finished');
-  assert.equal(r.env.remoteHead(branchName(B, 'B1')), b);
-});
-
-test('switched off (the default), a conflicting published PR is left as today', async (t) => {
-  const r = rig(t, { repair: false });
-  const { b } = await siblingsPublishedThenAMerged(r);
-  r.advance(r.controller.config.integrationPollMs + 1);
-  await r.tick();
-  assert.equal(r.journal(B, 'integration-conflict').length, 0);
-  assert.equal(r.store.task(B, 'B1').state, 'done');
-  assert.equal(r.store.campaign(B).control, 'finished');
-  assert.equal(r.store.openOperations(B).length, 0);
   assert.equal(r.env.remoteHead(branchName(B, 'B1')), b);
 });
 

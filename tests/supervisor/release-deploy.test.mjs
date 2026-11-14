@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
 import { acquireLock, createRelease, destinationState, markUnknownAfterRestart, reconcile, release, runStep } from '../../src/supervisor/release/state.mjs';
 import { deployAdapter } from '../../src/supervisor/release/deploy.mjs';
+import { healthCheckBlocker } from '../../src/supervisor/release/health.mjs';
 
 const GRANT = 'g'.repeat(64);
 const ELIGIBLE = () => ({ eligible: true, failed: [], inputs: { grantDigest: GRANT } });
@@ -154,6 +155,24 @@ test('a deploy interrupted by a crash is settled by observe after the restart, n
   const checkout = realpathSync.native(join(r.dataDir, 'releases', id, 'checkout'));
   assert.ok(r.calls().every((call) => realpathSync.native(call.cwd) === checkout), 'every command ran in the release checkout, never in the repository');
   assert.equal(r.lock().free, true, 'accepted frees the lock');
+  // Check the site now (release/health.mjs) on the settled release runs only the check command and changes nothing.
+  const before = r.calls().length;
+  assert.equal(await adapter.health(release(r.store, id), id + '.health.1'), 'passed');
+  assert.deepEqual(r.calls().slice(before).map((call) => call.name), ['check'], 'nothing was deployed or rolled back');
+  assert.equal(release(r.store, id).state, 'accepted');
+  assert.notEqual(healthCheckBlocker({ release: release(r.store, id), config: { release: { enabled: false } }, stop: false }), null, 'with release off it is refused');
+});
+
+test('a grant revoked between planning and the lock refuses the release before any command runs', async (t) => {
+  const r = rig(t);
+  const id = createRelease(r.store, { project: 'sampleapp', destination: 'prod', campaignId: 'c', taskId: 'T1', verifiedSha: r.verified,
+    grantVersion: 1, grantDigest: GRANT, steps: ['deploy', 'check'], ...r.at() }).id;
+  const revoked = () => ({ eligible: false, failed: [{ check: 'E2', reason: 'grant version 1 is revoked' }], inputs: { grantDigest: GRANT } });
+  const lock = acquireLock(r.store, id, { ...r.at(), recheck: revoked });
+  assert.equal(lock.refused, true);
+  assert.equal(release(r.store, id).state, 'refused');
+  assert.equal(r.lock().free, true, 'the destination lock was never taken');
+  assert.deepEqual(r.calls(), [], 'no project command ran');
 });
 
 test('a deploy proven not done after it may have started goes to the owner and is not run again', async (t) => {
