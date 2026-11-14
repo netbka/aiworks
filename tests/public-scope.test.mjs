@@ -124,3 +124,54 @@ test('a real merge header names a branch without exempting private messages, bra
   writeFileSync(join(root, '.local/publication.json'), JSON.stringify({ privateTerms: [header] }));
   assert.throws(() => check(commit(header)), /commit message contains private/);
 });
+
+test('a binary file is refused in a commit and in pushed history until its blob id is listed', t => {
+  const root = mkdtempSync(join(tmpdir(), 'aiworks-binary-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const git = (...args) => {
+    const out = spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', ...args], { cwd: root, encoding: 'utf8', windowsHide: true });
+    assert.equal(out.status, 0, out.stderr);
+    return out.stdout.trim();
+  };
+  git('init', '-q');
+  writeFileSync(join(root, 'README.md'), 'Public source');
+  git('add', '.'); git('commit', '-qm', 'Public baseline');
+  const base = git('rev-parse', 'HEAD');
+  // A screenshot named like text and one with an image extension: neither carries a private term the text check sees.
+  writeFileSync(join(root, 'notes.txt'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]));
+  writeFileSync(join(root, 'shot.png'), 'looks like text');
+  git('add', '.');
+  assert.throws(() => checkPublicScope(root), /Binary files not in/);
+  git('commit', '-qm', 'Add screenshots');
+  writeFileSync(join(root, 'notes.txt'), 'Public notes');
+  git('rm', '-q', 'shot.png'); git('add', '.'); git('commit', '-qm', 'Remove screenshots');
+  // Removed later, the screenshots are still in the pushed history.
+  assert.throws(() => checkPublicHistory(root, [`${base}..HEAD`]), /Binary files not in/);
+  const ids = [git('rev-parse', 'HEAD~1:notes.txt'), git('rev-parse', 'HEAD~1:shot.png')];
+  writeFileSync(join(root, '.public-binaries'), `# reviewed\n${ids[0]} notes.txt\n${ids[1]} shot.png\n`);
+  git('add', '.'); git('commit', '-qm', 'List reviewed screenshots');
+  assert.doesNotThrow(() => checkPublicScope(root));
+  assert.doesNotThrow(() => checkPublicHistory(root, [`${base}..HEAD`]));
+});
+
+test('a Git checkout under a configured repository root is a private term without being listed', t => {
+  const root = mkdtempSync(join(tmpdir(), 'aiworks-repo-names-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repos = join(root, 'repos'), self = join(repos, 'public-tool');
+  for (const name of ['fictional_ledger', 'public-tool', 'scratch-folder']) mkdirSync(join(repos, name), { recursive: true });
+  mkdirSync(join(repos, 'fictional_ledger', '.git'));
+  mkdirSync(join(self, '.git')); mkdirSync(join(self, '.local'));
+  writeFileSync(join(self, '.local/publication.json'), JSON.stringify({ privateTerms: [], repositoryRoots: [repos, join(root, 'absent')] }));
+  const git = (...args) => {
+    const out = spawnSync('git', args, { cwd: self, encoding: 'utf8', windowsHide: true });
+    assert.equal(out.status, 0, out.stderr);
+  };
+  rmSync(join(self, '.git'), { recursive: true });
+  git('init', '-q');
+  writeFileSync(join(self, 'README.md'), 'public-tool works with scratch-folder notes.');
+  git('add', 'README.md');
+  assert.doesNotThrow(() => checkPublicScope(self));
+  writeFileSync(join(self, 'README.md'), 'Data comes from the fictional-ledger service.');
+  git('add', 'README.md');
+  assert.throws(() => checkPublicScope(self), /Public content check failed/);
+});

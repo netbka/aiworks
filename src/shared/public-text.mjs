@@ -1,23 +1,40 @@
 // Privacy rules for text that leaves this computer: staged source and commit messages (scripts/check-public-scope.mjs)
 // and every GitHub publication body (aiworks#8). Findings name a category only; a matched value is never returned.
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
 import { containsKnownSecretValue } from './credential-metadata.mjs';
 
 // The public AIWorks repository. Naming the upstream owner's other projects is refused only here; other registered
 // repositories keep their own naming and rely on the generic rules and the installation's private terms.
 export const PUBLIC_REPOSITORY = 'netbka/aiworks';
 
-/** Installation-specific private terms from `<root>/.local/publication.json`; none when the file is absent. */
+/**
+ * Installation-specific private terms from `<root>/.local/publication.json`; none when the file is absent. Besides the
+ * listed `privateTerms`, each folder under a `repositoryRoots` entry that holds a Git checkout is a term, so a project
+ * the operator adds later is private without anyone listing it. Names shorter than five characters, names listed in
+ * `ignoreRepositories` and names related to the checking checkout's own folder name are left out.
+ */
 export function privateTerms(root) {
+  let value;
   try {
-    const value = JSON.parse(readFileSync(resolve(root, '.local/publication.json'), 'utf8'));
-    if (!Array.isArray(value.privateTerms) || !value.privateTerms.every(term => typeof term === 'string' && term.trim().length >= 3)) throw new Error();
-    return value.privateTerms;
+    value = JSON.parse(readFileSync(resolve(root, '.local/publication.json'), 'utf8'));
+    const strings = (list, min) => list === undefined || (Array.isArray(list) && list.every(item => typeof item === 'string' && item.trim().length >= min));
+    if (!Array.isArray(value.privateTerms) || !strings(value.privateTerms, 3) || !strings(value.repositoryRoots, 1) || !strings(value.ignoreRepositories, 1)) throw new Error();
   } catch (error) {
     if (error.code === 'ENOENT') return [];
     throw new Error('Invalid private publication settings in .local/publication.json.');
   }
+  const own = basename(resolve(root)).toLowerCase();
+  const ignored = new Set((value.ignoreRepositories ?? []).map(name => name.toLowerCase()));
+  const names = (value.repositoryRoots ?? []).flatMap(dir => {
+    try { return readdirSync(dir, { withFileTypes: true }).filter(entry => entry.isDirectory() && existsSync(join(dir, entry.name, '.git'))).map(entry => entry.name); }
+    catch { return []; } // a root absent on this machine lists nothing
+  }).filter(name => {
+    const lower = name.toLowerCase();
+    return lower.length >= 5 && !ignored.has(lower) && !lower.includes(own) && !own.includes(lower);
+  });
+  // A folder name is written with hyphens or underscores interchangeably in prose and URLs.
+  return [...new Set([...value.privateTerms, ...names.flatMap(name => [name, name.replace(/_/g, '-'), name.replace(/-/g, '_')])])];
 }
 
 export function contentFindings(text, terms = []) {
