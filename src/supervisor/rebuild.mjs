@@ -390,6 +390,9 @@ export async function rebuild(options, services) {
 // holds. Only a lock this command left behind with a process that no longer exists is taken over: its state file says
 // where it stopped, and this invocation continues from there. Another session's lock is never removed.
 const LOCK_OWNER = 'aiworks rebuild';
+// Open guards stay reachable here until released. A guard referenced only by a suspended rebuild could otherwise be
+// garbage collected while that rebuild awaits, and finalizing its connection would release the OS lock early.
+const heldGuards = new Set();
 function acquireLock(paths, services, now) {
   // Keep an OS-backed SQLite write lock for the entire invocation, including token cleanup. Unlike another PID file,
   // this guard is released by the OS after a crash; it never needs a racy stale-file takeover of its own. Keep this
@@ -397,6 +400,7 @@ function acquireLock(paths, services, now) {
   const guard = new DatabaseSync(join(paths.dir, 'maintenance-guard.db'));
   try {
     guard.exec('PRAGMA busy_timeout = 0; BEGIN IMMEDIATE');
+    heldGuards.add(guard);
   } catch (error) {
     guard.close();
     if (error.errcode === 5 || error.errcode === 6) {
@@ -412,7 +416,7 @@ function acquireLock(paths, services, now) {
         try { writeSync(fd, JSON.stringify({ owner: LOCK_OWNER, pid: process.pid, token, at: new Date(now()).toISOString() })); } finally { closeSync(fd); }
         return () => {
           try { if (readJson(paths.lock)?.token === token) rmSync(paths.lock, { force: true }); }
-          finally { guard.close(); }
+          finally { heldGuards.delete(guard); guard.close(); }
         };
       } catch (error) {
         if (error.code !== 'EEXIST') throw error;
@@ -428,6 +432,7 @@ function acquireLock(paths, services, now) {
     }
     throw new RebuildError('REBUILD_IN_PROGRESS', 'the maintenance lock could not be taken; nothing was changed');
   } catch (error) {
+    heldGuards.delete(guard);
     guard.close();
     throw error;
   }
