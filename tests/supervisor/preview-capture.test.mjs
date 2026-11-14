@@ -72,9 +72,10 @@ test('cancellation and the deadline stop the browser with its whole process tree
       return { code: 'PREVIEW_CAPTURE_CANCELLED', promise: capturePreview({ chrome: [CHROME], workDir, page, entry: 'index.html', sha: SHA, signal: controller.signal }) };
     }],
     ['timed out', (workDir, seen) => {
-      // A page that never finishes loading holds the capture until its deadline.
+      // A page that never finishes loading holds the capture until its deadline. The deadline must outlast a cold
+      // Chrome start on a loaded computer, or it ends the capture before the browser has asked for the page.
       const page = (path) => { seen.count = processesIn(workDir); return path === 'index.html' ? html('<script>for (;;) {}</script>') : missing; };
-      return { code: 'PREVIEW_CAPTURE_TIMEOUT', promise: capturePreview({ chrome: [CHROME], workDir, page, entry: 'index.html', sha: SHA, timeoutMs: 12_000 }) };
+      return { code: 'PREVIEW_CAPTURE_TIMEOUT', promise: capturePreview({ chrome: [CHROME], workDir, page, entry: 'index.html', sha: SHA, timeoutMs: 45_000 }) };
     }],
   ]) {
     const workDir = mkdtempSync(join(tmpdir(), 'aiworks-capture-')), seen = { count: 0 };
