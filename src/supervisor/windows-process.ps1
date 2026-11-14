@@ -116,23 +116,35 @@ public static class SupervisorProcess {
   // only when its handles are closed and its address space is gone. Until then it still holds its files (a Chrome
   // profile) and is still listed on the computer; on a loaded host a terminated Chrome helper stayed so for tens of
   // seconds (2026-11-01). Members cannot see it, so the job would look empty too early. IsProcessInJob still answers for
-  // it: every unsignaled process on the computer that is in the job is retained like a member. A process this user cannot
-  // open is not in its job. Answers whether one was added.
+  // it: every unsignaled process on the computer that is in the job is retained like a member. The scan asks only for
+  // query and synchronize access, never terminate access on every process. A process even that is refused is one this
+  // user cannot query, so it is not in this user's job. A member found this way is opened again with terminate access,
+  // like Members does, and a refusal then fails the stop instead of passing it. Answers whether one was added.
   static bool Exiting(IntPtr job, Dictionary<string, IntPtr> owned) {
     bool added = false;
     foreach (Process candidate in Process.GetProcesses()) {
       int pid = candidate.Id;
       candidate.Dispose();
       if (pid <= 4) continue; // Idle and System
-      IntPtr process = OpenProcess(QUERY | TERMINATE | SYNCHRONIZE, false, pid);
-      if (process == IntPtr.Zero) continue;
+      IntPtr probe = OpenProcess(QUERY | SYNCHRONIZE, false, pid), process = IntPtr.Zero;
+      if (probe == IntPtr.Zero) continue;
       try {
         bool member;
-        if (!IsProcessInJob(process, job, out member) || !member || WaitForSingleObject(process, 0) != 258) continue;
-        string identity = pid.ToString() + ":" + Created(process).ToString();
+        if (!IsProcessInJob(probe, job, out member) || !member || WaitForSingleObject(probe, 0) != 258) continue;
+        string identity = pid.ToString() + ":" + Created(probe).ToString();
         if (owned.ContainsKey(identity)) continue;
+        process = OpenProcess(QUERY | TERMINATE | SYNCHRONIZE, false, pid);
+        if (process == IntPtr.Zero) {
+          if (Marshal.GetLastWin32Error() == 87) continue; // the process object is already gone
+          throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        Check(IsProcessInJob(process, job, out member));
+        if (!member || pid.ToString() + ":" + Created(process).ToString() != identity) continue; // a reused PID
         owned.Add(identity, process); process = IntPtr.Zero; added = true;
-      } finally { if (process != IntPtr.Zero) CloseHandle(process); }
+      } finally {
+        if (process != IntPtr.Zero) CloseHandle(process);
+        CloseHandle(probe);
+      }
     }
     return added;
   }
