@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { checkPublicScope, checkPublicHistory } from '../scripts/check-public-scope.mjs';
-import { assertPublishable, contentFindings, PUBLIC_REPOSITORY } from '../src/shared/public-text.mjs';
+import { assertPublishable, contentFindings, privateTerms, PUBLIC_REPOSITORY } from '../src/shared/public-text.mjs';
 
 test('publication accepts the public repository followed by punctuation but refuses other repository names', () => {
   for (const name of [PUBLIC_REPOSITORY, `${PUBLIC_REPOSITORY}.git`, PUBLIC_REPOSITORY.toUpperCase()]) {
@@ -174,4 +174,6 @@ test('a Git checkout under a configured repository root is a private term withou
   writeFileSync(join(self, 'README.md'), 'Data comes from the fictional-ledger service.');
   git('add', 'README.md');
   assert.throws(() => checkPublicScope(self), /Public content check failed/);
+  // The supervisor's publications to a target name that target: they keep to the listed terms only.
+  assert.deepEqual(privateTerms(self), []);
 });
