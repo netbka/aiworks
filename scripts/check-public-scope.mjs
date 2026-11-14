@@ -110,7 +110,11 @@ export function checkPublicHistory(root, revisions, tip = revisions.at(-1).split
  */
 export function publishedTips(root, remote) {
   if (!remote || remote.startsWith('-')) return null;
-  const listed = spawnSync('git', ['ls-remote', '--heads', '--tags', '--', remote], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 60_000 });
+  // A hidden credential prompt would only stall; no prompt, and a failure falls back to the whole history.
+  const listed = spawnSync('git', ['ls-remote', '--heads', '--tags', '--', remote], {
+    cwd: root, encoding: 'utf8', windowsHide: true, timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  });
   if (listed.error || listed.status !== 0) return null;
   const tips = [...new Set(listed.stdout.split('\n').map(line => line.split('\t')[0]).filter(sha => /^[0-9a-f]{40}$/.test(sha)))];
   return tips.filter(sha => spawnSync('git', ['cat-file', '-e', `${sha}^{commit}`], { cwd: root, windowsHide: true }).status === 0);
@@ -119,7 +123,8 @@ export function publishedTips(root, remote) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     if (process.argv[2] === '--pre-push') {
-      // Git passes the remote's name (or URL) to the hook; a new branch then skips only what that remote already serves.
+      // The hook passes the URL the push goes to, never the remote's name: a name answers ls-remote from its fetch URL,
+      // which a pushurl or pushInsteadOf can point elsewhere. A new branch skips only what that push URL already serves.
       let published;
       for (const line of readFileSync(0, 'utf8').trim().split('\n').filter(Boolean)) {
         const [localRef, local, remoteRef, remote] = line.split(/\s+/);
