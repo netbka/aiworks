@@ -177,6 +177,34 @@ test('a Git checkout under a configured repository root is a private term withou
   // The supervisor's publications to a target name that target: they keep to the listed terms only.
   assert.deepEqual(privateTerms(self), []);
 });
+
+test('a local merge counts every commit message a push of main would refuse, and malformed private terms never block it', async t => {
+  const { privateMessages } = await import('../src/supervisor/merge.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'aiworks-private-messages-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const git = (...args) => {
+    const out = spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', ...args], { cwd: root, encoding: 'utf8', windowsHide: true });
+    assert.equal(out.status, 0, out.stderr);
+    return out.stdout.trim();
+  };
+  git('init', '-q');
+  writeFileSync(join(root, '.gitignore'), '.local/\n');
+  git('add', '.'); git('commit', '-qm', 'Public baseline');
+  const trusted = git('rev-parse', 'HEAD');
+  git('commit', '--allow-empty', '-qm', 'work fictional-session-term');
+  git('commit', '--allow-empty', '-qm', 'Public follow-up');
+  const sha = git('rev-parse', 'HEAD');
+  const count = (also = []) => privateMessages({ git: ['git'], repoPath: root, trusted, sha, also });
+  assert.equal(count(), 0, 'without private terms both messages are public');
+  mkdirSync(join(root, '.local'));
+  writeFileSync(join(root, '.local/publication.json'), JSON.stringify({ privateTerms: ['fictional-session-term'] }));
+  assert.equal(count(), 1, 'an installation private term in a message main would take');
+  assert.equal(count([['ghp', 'E'.repeat(36)].join('_')]), 2, 'the merge message itself is checked too');
+  writeFileSync(join(root, '.local/publication.json'), '{ not json');
+  assert.equal(count(), 0, 'malformed settings never block a local review');
+  assert.equal(count([['ghp', 'E'.repeat(36)].join('_')]), 1, 'the built-in checks still apply');
+});
+
 test('a new branch skips only the history its real push URL already serves, never what the fetch URL holds', t => {
   const base = mkdtempSync(join(tmpdir(), 'aiworks-push-remote-'));
   t.after(() => rmSync(base, { recursive: true, force: true }));

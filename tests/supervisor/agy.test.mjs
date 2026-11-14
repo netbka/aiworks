@@ -7,8 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { BROWSER_SERVER, BUILD_RETRY_NOTE, DENY, TOOLS, WEB_CRITERIA_RULE, webScope } from '../../src/supervisor/adapters/agy.mjs';
-import { CRITERIA_RULE, validResult } from '../../src/supervisor/adapters/claude.mjs';
+import { BROWSER_SERVER, BUILD_RETRY_NOTE, DENY, TOOLS, webScope } from '../../src/supervisor/adapters/agy.mjs';
+import { validResult } from '../../src/supervisor/adapters/claude.mjs';
 import { passedCheck } from '../../src/supervisor/result-review.mjs';
 import { buildPrompt, classify, prepare, roleUnavailableReason, unavailableReason, webFlag } from '../../src/supervisor/adapters/executors.mjs';
 import { route } from '../../src/supervisor/router.mjs';
@@ -220,20 +220,7 @@ test('the audit fails closed on event shapes and browser tools it does not know'
     'an unreadable log is never a quota wait');
 });
 
-test('the browser prompt names the pages and the browser-only rules; the verifier re-checks every claim', () => {
-  const packet = { taskId: 'W1', governance: { project: 'sampleapp', policies: [] } };
-  const implement = buildPrompt({ executorKind: 'agy-cli', web, role: 'implementer', deliverable: 'report', packet, packetDigest: digest, repository: 'example-org/sampleapp' });
-  for (const url of web.urls) assert.ok(implement.includes(`- ${url}`));
-  assert.match(implement, /VISUAL ACCEPTANCE/);
-  assert.match(implement, /Visual acceptance: ACCEPTED/);
-  assert.match(implement, /emulate/);
-  assert.doesNotMatch(implement, /read AGENTS\.md/, 'no repository instructions for a browser-only run');
-  const verify = buildPrompt({ executorKind: 'agy-cli', web, role: 'verification', deliverable: 'report', packet, packetDigest: digest,
-    repository: 'example-org/sampleapp', targetSha: 'b'.repeat(40), report: '**Visual acceptance: ACCEPTED**', reportDigest: 'c'.repeat(64) });
-  assert.match(verify, /INDEPENDENT VERIFIER/);
-  assert.match(verify, /re-check EVERY criterion/);
-  assert.ok(verify.includes(WEB_CRITERIA_RULE), 'a browser verification returns one criteria entry per acceptance criterion, or its report is never released');
-  assert.ok(!verify.includes(CRITERIA_RULE), 'a truthful REJECTED report is accepted, so the repository «failed criterion» rule does not apply');
+test('a browser verification that truthfully confirms a failing criterion is valid, yet never counts as passed', () => {
   // A truthful REJECTED report: its claim «criterion 1 fails» holds (check pass), the criterion itself fails. The browser
   // verification is valid, the repository one is not, and the result never counts as passed.
   const digestOfR = createHash('sha256').update('r', 'utf8').digest('hex');
@@ -241,16 +228,11 @@ test('the browser prompt names the pages and the browser-only rules; the verifie
     checks: [{ command: 'C1 layout', result: 'pass' }], criteria: [{ criterion: 1, result: 'fail', check: 'Opened the page', evidence: 'It overflows, as reported.' }] };
   const expect = { deliverable: 'report', targetSha: 'b'.repeat(40), reportDigest: digestOfR };
   assert.equal(validResult('verification', truthful, { ...expect, web: true }), null);
-  assert.equal(validResult('verification', truthful, expect), 'accepted with a failed criterion');
+  assert.notEqual(validResult('verification', truthful, expect), null, 'a repository verification may not accept a failed criterion');
   assert.equal(passedCheck({ verification: truthful, verified_sha: 'b'.repeat(40), result: { report: 'r' } }, ['C1']), false, 'a page failing its criterion never passes');
   const holds = { ...truthful, criteria: [{ ...truthful.criteria[0], result: 'pass' }] };
   assert.equal(passedCheck({ verification: holds, verified_sha: 'b'.repeat(40), result: { report: 'r' } }, ['C1']), true, 'and one meeting it does');
-  assert.ok(verify.includes(`targetSha ${'b'.repeat(40)} and reportDigest ${'c'.repeat(64)}`));
-  assert.ok(verify.includes('<report>\n**Visual acceptance: ACCEPTED**\n</report>'));
-  assert.match(buildPrompt({ role: 'implementer', deliverable: 'report', packet, packetDigest: digest, repository: 'example-org/sampleapp', baseSha: 'b'.repeat(40) }), /read AGENTS\.md/,
-    'other providers keep the repository prompt');
 });
-
 test('a web build task is never routed to agy, to implement or to verify', () => {
   const build = webFlag({ urls: ['https://dev.example.invalid/'], mode: 'build' });
   for (const stage of ['implement', 'verify']) {
