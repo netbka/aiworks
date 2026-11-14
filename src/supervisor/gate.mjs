@@ -25,7 +25,6 @@ import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { GATE_CONTEXT, GateSlotStore, gateActivity, gateCheckoutKey, gateHost, gateHostKey, recoverGateOwner, recoverQueuedRequests } from './gate-slot.mjs';
-import { failedOf } from '../../scripts/lib/test-retry.mjs';
 import { drainJob, gateJobMember, gateProcessIdentity, processCreationTime, POWERSHELL, windowsHelperArgs, writeAtomic } from './proc.mjs';
 
 export const GATE_FILES = Object.freeze({ log: 'gate.log', exit: 'gate-exit.log', pid: 'gate-pid.log', previous: 'gate-previous.log',
@@ -150,6 +149,24 @@ export function gateHeadProblem(run, targetSha) {
 const failed = (re, text) => Number(re.exec(text)?.[1] ?? 0);
 const total = (lines, line, re) => lines.filter((each) => line.test(each)).reduce((sum, each) => sum + failed(re, each), 0);
 const sorted = (ids) => [...new Set(ids)].sort();
+// A pytest node id from its short-summary line: the text up to ` - <message>`, where that separator counts only outside
+// the brackets of a parametrize id (`test_x[a - b]` is one id). Null when its brackets do not balance or it has a space
+// outside them: the id is then unknown, never a shorter one that another test could share.
+function pytestId(text) {
+  let depth = 0;
+  for (let at = 0; at < text.length; at += 1) {
+    const char = text[at];
+    if (char === '[') depth += 1;
+    else if (char === ']') { depth -= 1; if (depth < 0) return null; }
+    else if (depth === 0 && char === ' ') return text.startsWith(' - ', at) ? text.slice(0, at) : null;
+  }
+  return depth === 0 ? text : null;
+}
+
+// A cargo test binary's own name, from the path in its `Running <source> (<path>)` line: the file name without `.exe` and
+// without cargo's `-<16 hex>` hash, so the unit tests of two crates in one workspace never share a target.
+const cargoBinary = (path) => path.split(/[\\/]/).pop().replace(/\.exe$/i, '').replace(/-[0-9a-f]{16}$/, '');
+
 const RUNNERS = [
   {
     // scripts/run-tests.mjs: its summary after `# all test files` lists `# failed: <file> :: <test>`, at most 50, and
@@ -169,21 +186,23 @@ const RUNNERS = [
     },
   },
   {
-    // node --test, TAP reporter: `not ok` lines nested by `# Subtest:`, ids `suite > test`. A file whose process exited
-    // or was killed before it reported every test is a `not ok <file>` with an `exitCode:` or `signal:` line.
+    // node --test, TAP reporter. Its `not ok` lines name a test (`suite > test`) but not its file, so with several files
+    // a failure of `works` in one file and of `works` in another read the same: any failure is an unknown list. Only a
+    // finished run with no failure, cancellation or crashed file is read, as an empty list. scripts/run-tests.mjs, which
+    // prefixes each id with its file, is the runner that gives a list for node:test.
     name: 'node-tap', signs: [/^TAP version \d+$/, /^# tests \d+$/],
     lines: [/^TAP version \d+$/, /^ *# Subtest: /, /^ *not ok \d+ - /, /^# (tests|fail|cancelled) \d+$/, /^ *exitCode: \d/, /^ *signal: '/],
     parse(lines) {
       const last = lines.findLastIndex((line) => /^# fail \d+$/.test(line));
       if (last < 0 || lines.slice(last + 1).some((line) => /not ok|# Subtest:|^TAP version/.test(line))) return null;
-      if (lines.some((line) => /^ *(exitCode|signal):/.test(line)) || total(lines, /^# cancelled /, /(\d+)/) > 0) return null;
-      const names = failedOf(lines.join('\n'));
-      return names.length < total(lines, /^# fail /, /(\d+)/) ? null : sorted(names);
+      if (lines.some((line) => /^ *(exitCode|signal):|^ *not ok /.test(line)) || total(lines, /^# cancelled /, /(\d+)/) > 0) return null;
+      return total(lines, /^# fail /, /(\d+)/) > 0 ? null : [];
     },
   },
   {
     // node --test, spec reporter: `✖ <test> (<ms>)` nested two spaces per level under `▶ <suite>`, `ℹ fail N`, then a
     // `✖ failing tests:` list that repeats each failure without its suites, where a file that crashed reads 'test failed'.
+    // As with TAP its ids carry no file, so any failure is an unknown list; only a finished run without one reads as [].
     name: 'node-spec', signs: [/^ℹ tests \d+$/, /^✖ failing tests:$/, /^ *✖ .+ \([\d.]+m?s\)$/],
     lines: [/^ *[▶✔✖] /, /^ℹ (tests|fail|cancelled) \d+$/, /^ *'test failed'$/],
     parse(lines) {
@@ -204,18 +223,20 @@ const RUNNERS = [
         if (match[2] === '✖' && !match[4]) names.push([...path.slice(0, depth), match[3]].join(' > '));
       }
       if (!summed && !listing) return null; // tests reported after the last summary: a run cut short
-      return names.length < total(lines, /^ℹ fail /, /(\d+)/) ? null : sorted(names);
+      return names.length || total(lines, /^ℹ fail /, /(\d+)/) > 0 ? null : [];
     },
   },
   {
     // vitest: ` FAIL  <file> > <suite> > <test>` per failed test, `Test Files` and `Tests` summary lines. A failed suite
-    // (a file that did not load, a failing hook) or an unhandled error is not a list of tests.
+    // (a file that did not load, a failing hook) or an unhandled error is not a list of tests, and neither is a run with
+    // a skipped test file: --bail skips the files after the first failures, and they may hold more.
     name: 'vitest', signs: [/^ *RUN +v\d/, /^ *Test Files +\d/, /⎯ Failed Tests \d+ ⎯/, /⎯ Failed Suites \d+ ⎯/],
     lines: [/^ *RUN +v\d/, /^ *Test Files +\d/, /^ *Tests {2,}\d/, /^ *FAIL +\S/, /⎯ (Failed Suites \d+|Unhandled Errors?) ⎯/, /^ *Errors +\d+ errors?/],
     parse(lines) {
       const ends = lines.filter((line) => /^ *Test Files +\d/.test(line)).length;
       if (!ends || lines.filter((line) => /^ *RUN +v\d/.test(line)).length > ends) return null;
       if (lines.some((line) => /⎯ (Failed Suites|Unhandled Error)|^ *Errors +\d/.test(line))) return null;
+      if (total(lines, /^ *Test Files +\d/, /(\d+) skipped/) > 0) return null;
       const ids = [];
       for (const line of lines) {
         const match = /^ *FAIL +(.+)$/.exec(line);
@@ -230,11 +251,13 @@ const RUNNERS = [
   },
   {
     // jest: `FAIL <file>` then `  ● <suite> › <test>` per failed test, `Test Suites:` and `Tests:` summary lines. A suite
-    // that failed to run is not a list of tests.
+    // that failed to run is not a list of tests, and neither is a run that stopped early (--bail): its summary counts
+    // `N of M total`, and the suites that never ran may hold more failures.
     name: 'jest', signs: [/^Test Suites: /, /^Tests: +\d/, /^ *● /],
     lines: [/^ *(PASS|FAIL) +\S/, /^ *● /, /^Test Suites: /, /^Tests: +\d/],
     parse(lines) {
       if (!lines.some((line) => /^Tests: +\d/.test(line))) return null;
+      if (lines.some((line) => /^(Test Suites|Tests):.*\bof \d+ total\b/.test(line))) return null;
       const ids = [];
       let file = null;
       for (const line of lines) {
@@ -262,10 +285,11 @@ const RUNNERS = [
       if (!ends || lines.filter((line) => /^=+ test session starts/.test(line)).length > ends || lines.some((line) => line.startsWith('!'))) return null;
       const ids = [];
       for (const line of lines) {
-        const match = /^(FAILED|ERROR) (.+?)(?: - .*)?$/.exec(line);
+        const match = /^(FAILED|ERROR) (.+)$/.exec(line);
         if (!match) continue;
-        if (!match[2].includes('::')) return null;
-        ids.push(match[2]);
+        const id = pytestId(match[2]);
+        if (!id?.includes('::')) return null;
+        ids.push(id);
       }
       const names = sorted(ids);
       return names.length < total(lines, end, /(\d+) failed/) + total(lines, end, /(\d+) errors?\b/) ? null : names;
@@ -323,7 +347,8 @@ const RUNNERS = [
   },
   {
     // cargo test: `test <name> ... FAILED` between a binary's `running N tests` and its `test result:` line, ids
-    // `<target> :: <name>` with the target from its `Running <source> (...)` or `Doc-tests <crate>` line. Each
+    // `<target> :: <name>` with the target `<source> (<binary>)` from its `Running <source> (<path>)` line (a Running line
+    // without its binary path is no list), or `Doc-tests <crate>`. Each
     // failed binary prints `error: test failed, to rerun pass ...`. Without --no-fail-fast cargo stops there, so later
     // binaries never ran; with it the run ends with `error: N target(s) failed:`, N the failed binaries. A run with a
     // failure is a list only when it ends with that line: a log cut between two binaries reads like a finished one. A
@@ -339,8 +364,14 @@ const RUNNERS = [
         if (end) { if (open) return null; closing = Number(end[1]); continue; }
         if (line.startsWith('error: test failed, to rerun pass ')) { reruns += 1; continue; }
         if (line.startsWith('error')) return null;
-        const running = /^ *Running (.+?)(?: \(.+\))?$/.exec(line) ?? /^ *(Doc-tests \S+)$/.exec(line);
-        if (running) { if (open) return null; target = running[1]; continue; }
+        if (/^ *Running /.test(line)) {
+          const running = /^ *Running (.+?) \((.+)\)$/.exec(line);
+          if (open || !running) return null;
+          target = `${running[1]} (${cargoBinary(running[2])})`;
+          continue;
+        }
+        const doc = /^ *(Doc-tests \S+)$/.exec(line);
+        if (doc) { if (open) return null; target = doc[1]; continue; }
         if (/^running \d+ tests?$/.test(line)) { if (open) return null; open = true; continue; }
         const test = /^test (.+) \.\.\. FAILED$/.exec(line);
         if (test) { if (!open) return null; ids.push(`${target} :: ${test[1]}`); continue; }
@@ -376,13 +407,22 @@ const MAX_FAILED = 500, MAX_EVIDENCE = 200_000;
  * array means the run reports no failed test.
  */
 export function failedTests(text) {
+  return failureList(text)?.ids ?? null;
+}
+
+/**
+ * failedTests with the runner that named them: { runner, ids }, or null when the list is unknown. Ids of two runners are
+ * never compared (a jest `file :: suite › test` and a run-tests `file :: test` are different tests), so base compare
+ * keeps the runner with the base record and with a kept acceptance.
+ */
+export function failureList(text) {
   if (typeof text !== 'string') return null;
   const lines = logLines(text);
   const runners = runnersOf(lines);
   if (runners.length !== 1) return null;
   const [runner] = runners;
   const ids = runner.parse(lines.filter((line) => matches(runner.lines, line)));
-  return ids && ids.length <= MAX_FAILED ? ids : null;
+  return ids && ids.length <= MAX_FAILED ? { runner: runner.name, ids } : null;
 }
 
 /**
@@ -406,12 +446,17 @@ export function failureEvidence(text) {
  * read from its run-tests summary, as then.
  */
 export function gateFailedTests(run) {
+  return gateFailureList(run)?.ids ?? null;
+}
+
+/** gateFailedTests with its runner ({ runner, ids }, failureList), or null when the list is unknown. */
+export function gateFailureList(run) {
   if (!run || typeof run !== 'object') return null;
   const block = typeof run.summary === 'string' && run.summary.startsWith('# all test files');
-  const listed = block ? failedTests(run.summary) : null;
+  const listed = block ? failureList(run.summary) : null;
   if (!Object.hasOwn(run, 'failures')) return listed;
-  const found = failedTests(run.failures);
-  if (found && block && (listed === null || listed.join('\n') !== found.join('\n'))) return null;
+  const found = failureList(run.failures);
+  if (found && block && (listed === null || listed.runner !== found.runner || listed.ids.join('\n') !== found.ids.join('\n'))) return null;
   return found;
 }
 

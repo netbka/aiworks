@@ -118,7 +118,7 @@ test('base compare: a failed gate keeps its acceptance only when every failed te
   const A = 'tests/a.test.mjs :: a', B = 'tests/b.test.mjs :: b', C = 'tests/c.test.mjs';
   // A list the runner cut short, a summary from another runner, or one naming no failed test never lets an acceptance stand.
   const CHECK = ['npm', 'run', 'check'];
-  const base = { state: 'failed', failed: [A, B], command: JSON.stringify(CHECK) };
+  const base = { state: 'failed', failed: [A, B], command: JSON.stringify(CHECK), runner: 'run-tests' };
   assert.deepEqual(sharedBaseFailures(base, block(A), CHECK), [A]);
   assert.equal(sharedBaseFailures(base, `${block(A)}\n# failed: not listed: 3 more`, CHECK), null);
   assert.equal(failedTests(`# tests 7\n# fail 1\n# failed: ${A}`), null);
@@ -128,6 +128,9 @@ test('base compare: a failed gate keeps its acceptance only when every failed te
   // The head counts against the base only when its gate ran the base's command; an unrecorded command never does.
   assert.equal(sharedBaseFailures(base, block(A), ['npm', 'test']), null);
   assert.equal(sharedBaseFailures(base, block(A), null), null);
+  // Ids of another runner, or a base recorded without its runner, never count.
+  assert.equal(sharedBaseFailures(base, { runner: 'jest', ids: [A] }, CHECK), null);
+  assert.equal(sharedBaseFailures({ ...base, runner: null }, block(A), CHECK), null);
   // Per project: its own command, else the top-level one; a malformed entry is off for that project, never the fallback.
   const settings = baseCompareSettings({ command: CHECK, projects: { 'Example-Org/Good': { command: ['npm', 'test'] }, 'example-org/bad': { command: [] } } });
   assert.deepEqual(projectBaseCompare(settings, { repository: 'example-org/good' }).command, ['npm', 'test']);
@@ -180,7 +183,7 @@ test('base compare: a failed gate keeps its acceptance only when every failed te
     assert.equal(first.outcome.class, stands ? 'result' : 'invalid-result', name);
     assert.equal(task.state, 'done', name);
     if (stands) {
-      assert.deepEqual(task.verification.baseFailures, { sha: task.base_sha, failed: head, command }, name);
+      assert.deepEqual(task.verification.baseFailures, { sha: task.base_sha, failed: head, command, runner: log === block ? 'run-tests' : 'pytest' }, name);
       assert.equal(verifications(store, id).length, 1, 'no second verifier for a failure the base already has');
       assert.equal(mergeRefusal(task), null, 'the kept acceptance can merge');
       const gate = log === block ? { summary: block(A, C) } : { failures: log(P, R) };

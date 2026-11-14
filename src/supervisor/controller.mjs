@@ -41,7 +41,7 @@ import { mergePass, mergeSettings } from './merge.mjs';
 import { mainLedger, selfHostingSettings, trustedTip, trustsLocalMain } from './self-hosting.mjs';
 import { programPass } from './program.mjs';
 import { cleanupPass } from './cleanup.mjs';
-import { BROWSER_RUN, browserLockPath, GATE_FILES, gateFailedTests, gateFailure, gateHeadProblem, readGateRun, slotSettings } from './gate.mjs';
+import { BROWSER_RUN, browserLockPath, GATE_FILES, gateFailureList, gateFailure, gateHeadProblem, readGateRun, slotSettings } from './gate.mjs';
 import { baseCheckStep, baseCompareSettings, baseRecord, claimBaseRed, projectBaseCompare, settleBaseRed, sharedBaseFailures } from './base-check.mjs';
 import { CACHE_RULE, checkClaims, hasRunner, insertResults, offerCache, otherNodeMajor, resultsOf, testCacheSettings } from './test-cache.mjs';
 import { isLocalTarget, recordCandidate } from './local-candidates.mjs';
@@ -1674,10 +1674,11 @@ export class Controller {
           this.baseWaits.set(op.id, this.now() + this.config.pollMs);
           return null;
         }
-        // The head's failed tests come from its whole gate.log (gateFailedTests), and count against the base only under
-        // the same command (gate-command.log); an unrecorded one never does.
-        const shared = sharedBaseFailures(record, gateFailedTests(gate), gate.command);
-        if (shared) base = { sha: before.base_sha, failed: shared, command: baseSettings.command };
+        // The head's failed tests come from its whole gate.log (gateFailureList), and count against the base only under
+        // the same command (gate-command.log) and runner; an unrecorded one never does.
+        const list = gateFailureList(gate);
+        const shared = sharedBaseFailures(record, list, gate.command);
+        if (shared) base = { sha: before.base_sha, failed: shared, command: baseSettings.command, runner: list.runner };
       }
       this.baseWaits.delete(op.id);
       if (base) {

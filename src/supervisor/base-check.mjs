@@ -7,8 +7,8 @@
 // (repository, base SHA, gate command), in its own detached worktree, through the gate helper (gate.mjs) as a separate
 // process, exactly as the merge-gate refresh does (merge-refresh.mjs). An acceptance whose own gate failed still stands
 // only when the base gate failed too and every failed test the head's summary names is one the base summary names
-// (failedTests in gate.mjs reads them from the whole gate.log of scripts/run-tests.mjs, node:test, vitest, jest, pytest, go
-// test, dotnet test and cargo test). The acceptance then records those base failures. In every other case, among them a summary
+// (failedTests in gate.mjs reads them from the whole gate.log of scripts/run-tests.mjs, vitest, jest, pytest, go test,
+// dotnet test and cargo test, and only under the same runner). The acceptance then records those base failures. In every other case, among them a summary
 // that names no tests, a base that passed, or a base check that could not run or did not finish in time, the acceptance
 // is refused as before. While the base gate still runs, the accepted result is left unconsumed and read again later,
 // up to the base check's own bound. A base gate is never killed; its worktree stays in place like every supervisor
@@ -22,7 +22,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as gitA from './adapters/git.mjs';
-import { failedTests, gateFailedTests, gateFailure, readGateRun } from './gate.mjs';
+import { failureList, gateFailureList, gateFailure, readGateRun } from './gate.mjs';
 import { alive, checkout, gatePid, startGate } from './merge-refresh.mjs';
 import { recordGateResults } from './test-cache.mjs';
 
@@ -105,9 +105,9 @@ export function baseRecord(store, repository, baseSha, settings) {
 export function baseCheckStep(controller, ctx, { repository, repoPath, worktreeRoot, baseSha }, settings) {
   const { store } = controller, git = controller.cmd.git, now = controller.now();
   const repo = repository.toLowerCase(), command = key(settings.command);
-  const write = (fields) => controller.fenced(ctx, () => store.run(`UPDATE base_checks SET state = ?, failed = ?, summary = ?, reason = ?, red = ?, updated_at = ?
+  const write = (fields) => controller.fenced(ctx, () => store.run(`UPDATE base_checks SET state = ?, failed = ?, summary = ?, reason = ?, red = ?, runner = ?, updated_at = ?
     WHERE repository = ? AND base_sha = ? AND command = ? AND state = 'running'`,
-  fields.state, fields.failed === null ? null : JSON.stringify(fields.failed), fields.summary ?? null, fields.reason ?? null, fields.red ? 1 : 0, now, repo, baseSha, command));
+  fields.state, fields.failed === null ? null : JSON.stringify(fields.failed), fields.summary ?? null, fields.reason ?? null, fields.red ? 1 : 0, fields.runner ?? null, now, repo, baseSha, command));
   let record = row(store, repository, baseSha, settings.command);
   if (!record) {
     const digest = createHash('sha256').update(command, 'utf8').digest('hex').slice(0, 8);
@@ -153,7 +153,8 @@ export function baseCheckStep(controller, ctx, { repository, repoPath, worktreeR
   } else if (gateFailure(run)) {
     // Only here is the base itself red: its own gate finished on its checkout and failed. It gets one repair item
     // (controller.mjs recordBaseRed); a start failure, a timeout or a moved checkout says nothing about the base.
-    write({ state: 'failed', failed: gateFailedTests(run), summary: run.summary, reason: `the base gate ${gateFailure(run)}`, red: true });
+    const list = gateFailureList(run);
+    write({ state: 'failed', failed: list?.ids ?? null, runner: list?.runner ?? null, summary: run.summary, reason: `the base gate ${gateFailure(run)}`, red: true });
     recordGateResults(controller, ctx, { repository, repoPath, sha: baseSha, dir: record.path, green: false });
   } else {
     write({ state: 'passed', failed: [], summary: run.summary, reason: null });
@@ -182,16 +183,19 @@ export function settleBaseRed(store, record, item, now) {
 
 /**
  * Whether an acceptance whose own gate failed stands against the base record: only when the head's gate ran under the
- * same command as the base gate (gate-command.log; an unrecorded command never matches), the base failed with known
- * tests and the head's failed tests, which must be known and at least one, are all among them. Returns the base
- * failures the head shares, or null when the acceptance is refused as before. `head` is the head's failed-test list
- * (gateFailedTests of its gate run), or a gate log or summary that failedTests reads.
+ * same command as the base gate (gate-command.log; an unrecorded command never matches), its failed tests were named by
+ * the same runner as the base's (a record without a runner never matches), the base failed with known tests and the
+ * head's failed tests, which must be known and at least one, are all among them. Returns the base failures the head
+ * shares, or null when the acceptance is refused as before. `head` is the head's list with its runner ({ runner, ids },
+ * gateFailureList of its gate run), or a gate log or summary that failureList reads.
  */
 export function sharedBaseFailures(record, head, headCommand) {
   if (record?.state !== 'failed' || !Array.isArray(record.failed) || !record.failed.length) return null;
   if (!validCommand(headCommand) || key(headCommand) !== record.command) return null;
-  const ids = Array.isArray(head) ? head : failedTests(head);
-  if (!ids?.length || !ids.every((id) => typeof id === 'string')) return null;
+  const list = typeof head === 'string' ? failureList(head) : head;
+  if (typeof record.runner !== 'string' || list?.runner !== record.runner) return null;
+  const ids = list.ids;
+  if (!Array.isArray(ids) || !ids.length || !ids.every((id) => typeof id === 'string')) return null;
   const base = new Set(record.failed);
   return ids.every((id) => base.has(id)) ? [...ids] : null;
 }
@@ -202,8 +206,9 @@ const readText = (file) => { try { return readFileSync(file, 'utf8'); } catch { 
 const readJson = (file) => { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return null; } };
 // Test runners recognised in a package script. Those in LIST_RUNNERS print output failedTests (gate.mjs) reads with their
 // default console reporter; another reporter, or a runner not listed, gives no list and its failed gates are refused.
+// Plain node:test names no file with a failed test, so it gives no list (scripts/run-tests.mjs does).
 const SCRIPT_RUNNERS = [['vitest', /\bvitest\b/], ['jest', /\bjest\b/], ['mocha', /\bmocha\b/], ['playwright', /\bplaywright\b/], ['node:test', /\bnode\b[^&|;]*--test\b/]];
-const LIST_RUNNERS = new Set(['scripts/run-tests.mjs', 'vitest', 'jest', 'node:test', 'cargo test', 'go test', 'pytest']);
+const LIST_RUNNERS = new Set(['scripts/run-tests.mjs', 'vitest', 'jest', 'cargo test', 'go test', 'pytest']);
 
 /**
  * What one project checkout's full check is, from its files only (nothing runs): { command, runner, failedTestList }.

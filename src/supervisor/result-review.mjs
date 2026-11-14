@@ -7,7 +7,7 @@
 // only through the supervisor's merge gate, and a local result is applied only by the owner's Apply. In a project whose
 // acceptance mode is "owner" (AW-015) the merge gate also waits for that acceptance (awaitingAcceptance).
 import { createHash } from 'node:crypto';
-import { gateFailedTests, gateFailure } from './gate.mjs';
+import { gateFailureList, gateFailure } from './gate.mjs';
 import { acceptanceMode, projectOf } from './project-settings.mjs';
 
 /** The finding that reopens a finished step at the owner's request. */
@@ -82,7 +82,10 @@ export const fullCheckPassed = (gate) => Boolean(gate) && gate.exit === '0' && !
 export function baseExplained(v) {
   if (!v?.gate || v.gate.exit === null || !Array.isArray(v.baseFailures?.failed)) return false;
   if (Array.isArray(v.baseFailures.command) && JSON.stringify(v.gate.command ?? null) !== JSON.stringify(v.baseFailures.command)) return false;
-  const ids = gateFailedTests(v.gate);
+  const list = gateFailureList(v.gate);
+  // A list recorded with its runner is explained only by the same runner's list; one recorded before carries none.
+  if (typeof v.baseFailures.runner === 'string' && list?.runner !== v.baseFailures.runner) return false;
+  const ids = list?.ids;
   return Boolean(ids?.length) && ids.every((id) => v.baseFailures.failed.includes(id));
 }
 

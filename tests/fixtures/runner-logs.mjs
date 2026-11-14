@@ -256,13 +256,14 @@ export const RUNNER_LOGS = {
   ],
   'node-tap': [
     { name: 'pass', log: tap('# Subtest: passes\nok 1 - passes', 0), failed: [] },
-    { name: 'fail', log: tap(TAP_FAIL, 2), failed: ['fails', 'suite', 'suite > inner bad'] },
+    // Its ids name no file: `fails` in one file and `fails` in another would read the same, so any failure is unknown.
+    { name: 'fail, no file in its ids', log: tap(TAP_FAIL, 2), failed: null },
     { name: 'cut short', log: `TAP version 13\n${TAP_FAIL}\n`, failed: null },
     { name: 'file crashed', log: tap(TAP_CRASH, 1), failed: null },
   ],
   'node-spec': [
     { name: 'pass', log: spec('✔ passes (0.7ms)\n✔ again (0.2ms)\n✔ more (0.1ms)', 0), failed: [] },
-    { name: 'fail', log: spec(SPEC_FAIL_TREE, 2, SPEC_FAIL_LIST), failed: ['fails', 'suite', 'suite > inner bad'] },
+    { name: 'fail, no file in its ids', log: spec(SPEC_FAIL_TREE, 2, SPEC_FAIL_LIST), failed: null },
     { name: 'cut short', log: `${SPEC_FAIL_TREE}\n`, failed: null },
     { name: 'file crashed', log: spec('✔ passes (0.7ms)\n✖ tests/crash.test.mjs (75.9ms)', 1, "\n✖ failing tests:\n\ntest at tests/crash.test.mjs:1:1\n✖ tests/crash.test.mjs (75.9ms)\n  'test failed'\n"), failed: null },
   ],
@@ -271,18 +272,26 @@ export const RUNNER_LOGS = {
     { name: 'fail', log: VITEST_FAIL, failed: ['src/b.test.ts > b > fails', 'src/b.test.ts > b > nested > also fails'] },
     { name: 'cut short', log: VITEST_FAIL.split(' Test Files')[0], failed: null },
     { name: 'a suite failed to load', log: VITEST_SUITE, failed: null },
+    // --bail skips the files after the first failures; a skipped file may hold more.
+    { name: 'a test file skipped', log: VITEST_FAIL.replace('1 failed | 1 passed (2)', '1 failed | 1 passed | 3 skipped (5)'), failed: null },
   ],
   jest: [
     { name: 'pass', log: 'PASS src/a.test.js\n\nTest Suites: 1 passed, 1 total\nTests:       4 passed, 4 total\n', failed: [] },
     { name: 'fail', log: JEST_FAIL, failed: ['src/b.test.js :: b › fails'] },
     { name: 'cut short', log: JEST_FAIL.split('Summary of all')[0], failed: null },
     { name: 'a suite failed to run', log: JEST_SUITE, failed: null },
+    // --bail: the suites after the first failure never ran.
+    { name: 'stopped early by --bail', log: JEST_FAIL.replace('1 failed, 1 passed, 2 total', '1 failed, 1 passed, 2 of 5 total'), failed: null },
   ],
   pytest: [
     { name: 'pass', log: `${PYTEST_HEAD}t/test_a.py ..                                                       [100%]\n============================== 2 passed in 0.01s ==============================\n`, failed: [] },
     { name: 'fail', log: PYTEST_FAIL, failed: ['t/test_a.py::TestK::test_m', 't/test_a.py::test_bad', 't/test_a.py::test_err', 't/test_a.py::test_p[2]'] },
     { name: 'cut short', log: PYTEST_FAIL.split('==================== 3 failed')[0], failed: null },
     { name: 'collection error', log: PYTEST_COLLECT, failed: null },
+    // A parametrize id may hold ` - `: the id ends at the separator outside its brackets, so two ids never shorten to one.
+    { name: 'parametrize ids with a dash', log: `${PYTEST_HEAD}FAILED t/test_a.py::test_x[a - b] - assert 0\nFAILED t/test_a.py::test_x[a - c] - assert [1] == [2]\n==================== 2 failed in 0.11s =====================\n`,
+      failed: ['t/test_a.py::test_x[a - b]', 't/test_a.py::test_x[a - c]'] },
+    { name: 'unbalanced brackets in an id', log: `${PYTEST_HEAD}FAILED t/test_a.py::test_x[a - b - assert 0\n==================== 1 failed in 0.11s =====================\n`, failed: null },
   ],
   go: [
     { name: 'pass', log: 'ok  \texample.com/app/pkg\t0.003s\n?   \texample.com/app/cmd\t[no test files]\n', failed: [] },
@@ -307,14 +316,18 @@ export const RUNNER_LOGS = {
   ],
   cargo: [
     { name: 'pass', log: CARGO_PASS, failed: [] },
-    { name: 'fail', log: CARGO_FAIL, failed: ['tests/it.rs :: checks_io', 'unittests src/lib.rs :: tests::b'] },
+    { name: 'fail', log: CARGO_FAIL, failed: ['tests/it.rs (it) :: checks_io', 'unittests src/lib.rs (example) :: tests::b'] },
+    // Two crates of one workspace: the same source and test name, told apart by their binaries.
+    { name: 'two crates of a workspace', log: CARGO_FAIL.replace('Running tests/it.rs (target/debug/deps/it-fedcba9876543210)', 'Running unittests src/lib.rs (target/debug/deps/other_crate-fedcba9876543210)').replace('test checks_io ... FAILED', 'test tests::b ... FAILED'),
+      failed: ['unittests src/lib.rs (example) :: tests::b', 'unittests src/lib.rs (other_crate) :: tests::b'] },
+    { name: 'a Running line without its binary', log: CARGO_FAIL.replace(' (target/debug/deps/it-fedcba9876543210)', ''), failed: null },
     { name: 'cut short', log: CARGO_FAIL.split('test result: FAILED. 0 passed')[0], failed: null },
     { name: 'stopped at the first failed binary', log: CARGO_FAIL.split('     Running tests/it.rs')[0], failed: null },
     // Cut right after a binary's result, before the closing `error: N targets failed:` of --no-fail-fast.
     { name: 'cut after a failed binary', log: CARGO_FAIL.split('error: test failed, to rerun pass `-p example --lib`')[0], failed: null },
     { name: 'cut after the last binary', log: CARGO_FAIL.split('error: 2 targets failed')[0], failed: null },
     { name: 'closing line counts another binary', log: CARGO_FAIL.replace('error: 2 targets', 'error: 3 targets'), failed: null },
-    { name: 'one target failed', log: `${CARGO_FAIL.split('     Running tests/it.rs')[0]}error: 1 target failed:\n    \`-p example --lib\`\n`, failed: ['unittests src/lib.rs :: tests::b'] },
+    { name: 'one target failed', log: `${CARGO_FAIL.split('     Running tests/it.rs')[0]}error: 1 target failed:\n    \`-p example --lib\`\n`, failed: ['unittests src/lib.rs (example) :: tests::b'] },
     { name: 'a passing binary after the closing line', log: `${CARGO_FAIL}${CARGO_PASS}`, failed: null },
   ],
 };
