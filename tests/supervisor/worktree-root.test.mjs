@@ -15,7 +15,7 @@ const git = (cwd, ...args) => {
   return result.stdout.trim();
 };
 
-test('no managed worktree is created outside the configured root or through a junction; a dirty one inside is kept', (t) => {
+test('no managed worktree is created outside the configured root or through a junction; a dirty one inside is kept', async (t) => {
   const tmp = mkdtempSync(join(tmpdir(), 'aiworks-root-'));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
   const repo = join(tmp, 'repo'), root = join(tmp, 'worktrees'), outside = join(tmp, 'outside');
@@ -35,13 +35,13 @@ test('no managed worktree is created outside the configured root or through a ju
   assert.equal(readFileSync(join(made.path, 'unsaved.txt'), 'utf8'), 'keep\n');
 
   // A destination outside the root (refresh, group and base checks take theirs from the journal) is refused.
-  assert.throws(() => checkout(['git'], repo, join(outside, 'refresh'), base, root), { code: 'WORKTREE_ROOT' });
-  assert.throws(() => checkout(['git'], repo, join(root, '..', 'outside', 'refresh'), base, root), { code: 'WORKTREE_ROOT' });
+  await assert.rejects(checkout(['git'], repo, join(outside, 'refresh'), base, root), { code: 'WORKTREE_ROOT' });
+  await assert.rejects(checkout(['git'], repo, join(root, '..', 'outside', 'refresh'), base, root), { code: 'WORKTREE_ROOT' });
   // A junction (a symbolic link elsewhere) inside the root that leads outside it is refused, at the destination or above.
   symlinkSync(outside, join(root, 'camp-T2'), process.platform === 'win32' ? 'junction' : 'dir');
   assert.throws(() => implement('T2'), { code: 'WORKTREE_ROOT' });
   symlinkSync(outside, join(root, 'nested'), process.platform === 'win32' ? 'junction' : 'dir');
-  assert.throws(() => checkout(['git'], repo, join(root, 'nested', 'refresh'), base, root), { code: 'WORKTREE_ROOT' });
+  await assert.rejects(checkout(['git'], repo, join(root, 'nested', 'refresh'), base, root), { code: 'WORKTREE_ROOT' });
   assert.deepEqual(readdirSync(outside), [], 'nothing was written outside the root');
   assert.equal(existsSync(join(repo, '.git', 'worktrees', 'camp-T2')), false, 'no worktree was registered');
   assert.equal(git(repo, 'worktree', 'list', '--porcelain').split('\n').filter((line) => line.startsWith('worktree ')).length, 2);

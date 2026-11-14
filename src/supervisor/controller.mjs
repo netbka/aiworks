@@ -70,6 +70,9 @@ export const NO_PROGRESS_LIMIT = 4;
 const REPEAT_GUARDED = new Set(['invalid-result', 'exit-without-result', 'timeout', 'spawn-failed', 'error', 'lost']);
 // GitHub rejects issue/PR bodies and comments over 65,536 characters.
 const BODY_LIMIT = 65536;
+// fencedPrepared(): the signal that rolls a pass back so its Git operation runs outside the transaction, and the bound.
+const PREPARE = Object.freeze({ prepare: true });
+const PREPARE_PASSES = 8;
 // An outbox row bound for the local work list (enqueue for the self-hosted repository): `aiworks-work:<item number>`.
 const WORK_TARGET = /^aiworks-work:([1-9]\d*)$/;
 // The longest refusal detail a retried verifier is told (aiworks#59): enough for every refusal the controller writes.
@@ -552,6 +555,8 @@ export class Controller {
     this.cmd = { codex: commands.codex, cursor: commands.cursor, agy: commands.agy, chrome: commands.chrome,
       claude: commands.claude ?? ['claude'], git: commands.git ?? ['git'], gh: commands.gh ?? ['gh'] };
     this.held = new Map();
+    // Leases the tick stopped renewing, by campaign: the generation each had, released on a graceful stop (release()).
+    this.dropped = new Map();
     // Host safety (after the crash of 2026-10-31): the Docker limit is the Docker gate, which cli.mjs serve puts in front of
     // every process it starts (docker-gate.mjs). Here: stray stacks of docker.cleanup repositories are taken down
     // (host-safety.mjs) and every worker job is capped.
@@ -618,6 +623,7 @@ export class Controller {
       WHERE events.kind = 'result-changes' AND events.processed_at IS NULL AND campaigns.control = 'finished'`)) {
       if (!ids.includes(id)) ids.push(id);
     }
+    this.dropUnvisited(ids);
     this.candidates = [];
     this.baseFetches = new Map();
     this.tickCache = new Map();
@@ -689,6 +695,30 @@ export class Controller {
     if (this.releaseJob) throw new Error('Drain release commands before releasing campaign leases');
     for (const [id, generation] of this.held) this.store.releaseLease(id, this.instanceId, generation, this.now());
     this.held.clear();
+    // Also each lease the tick stopped renewing (a campaign it no longer visits), exactly as it was held, so a restarted
+    // instance takes that one over at once too; one since taken by another instance or generation is left alone.
+    for (const [id, generation] of this.dropped) this.store.releaseLease(id, this.instanceId, generation, this.now());
+    this.dropped.clear();
+  }
+
+  /**
+   * A campaign this pass no longer visits (finished, cancelled) is no longer held, so the lease timer stops renewing it and
+   * its lease lapses instead of being renewed for as long as the process runs (aiworks#39). The merge, release and other
+   * passes take it again for a write they still make (each acquires the lease first); the coordinator lane and a running
+   * release job keep theirs. A dropped lease that lapsed or changed hands is forgotten.
+   */
+  dropUnvisited(ids) {
+    const visited = new Set(ids);
+    for (const [id, generation] of this.held) {
+      if (id === COORDINATOR_LANE || id === this.releaseJob?.campaignId || visited.has(id)) continue;
+      this.held.delete(id);
+      this.dropped.set(id, generation);
+    }
+    const now = this.now();
+    for (const [id, generation] of this.dropped) {
+      const lease = this.store.lease(id);
+      if (this.held.has(id) || lease?.instance_id !== this.instanceId || lease.generation !== generation || lease.expires_at <= now) this.dropped.delete(id);
+    }
   }
 
   /**
@@ -735,6 +765,52 @@ export class Controller {
         Math.max(renewedTo, lease.expires_at), lease.campaign_id, this.instanceId, lease.generation, lease.expires_at);
       return value;
     });
+  }
+
+  /**
+   * fenced() for a body that needs slow Git work (aiworks#39): the body calls `ready(key, start)` where it needs the
+   * result of `start()`, an asynchronous Git operation. The first time, the body's writes are rolled back to a savepoint
+   * but the transaction commits, so fenced() extends the held leases as it always does; `start()` then runs outside any
+   * transaction while the event loop and the lease timer keep running, and the body runs again from the top under a fresh
+   * lease check, receiving the result at that point, or the error thrown there as before. Every check ahead of it is made
+   * again under the write lock, so nothing is decided on a read older than the Git work. The body must not catch the
+   * signal: no try around a `ready` call. Its effects outside the store before a `ready` call run once per pass.
+   */
+  async fencedPrepared(ctx, body) {
+    if (this.store.depth) throw new Error('fencedPrepared cannot hold a transaction across its Git operation');
+    const prepared = new Map(), db = this.store.db;
+    for (let pass = 0; ; pass++) {
+      let wanted = null;
+      const ready = (key, start) => {
+        const known = prepared.get(key);
+        if (known) { if (known.failed) throw known.error; return known.value; }
+        wanted = { key, start };
+        throw PREPARE;
+      };
+      const outcome = this.fenced(ctx, () => {
+        db.exec('SAVEPOINT aiworks_prepared');
+        let value;
+        try { value = body(ready); } catch (error) {
+          // A failed statement may have ended the transaction already: then the original error stands.
+          try { db.exec('ROLLBACK TO aiworks_prepared'); db.exec('RELEASE aiworks_prepared'); } catch { throw error; }
+          if (error === PREPARE && wanted) return { wanted };
+          throw error;
+        }
+        db.exec('RELEASE aiworks_prepared');
+        return { value };
+      });
+      if (!outcome.wanted) return outcome.value;
+      if (pass >= PREPARE_PASSES) throw new Error(`more than ${PREPARE_PASSES} Git operations in one fenced step`);
+      // The step's own lease is kept while its Git operation runs, also without the serve timer (as when the write lock was
+      // held through it); every Git operation has its timeout, and a lease that lapsed or changed hands is never revived.
+      const keep = setInterval(() => {
+        try { if (!this.store.renewLease(ctx.id, this.instanceId, ctx.generation, this.now(), this.config.leaseMs)) clearInterval(keep); }
+        catch { /* store busy: the next renewal tries again */ }
+      }, Math.max(50, Math.floor(this.config.leaseMs / 4)));
+      try { prepared.set(wanted.key, { value: await wanted.start() }); }
+      catch (error) { prepared.set(wanted.key, { failed: true, error }); }
+      finally { clearInterval(keep); }
+    }
   }
 
   async step(id) {
@@ -1270,7 +1346,7 @@ export class Controller {
       this.browserRunSettled(op);
       return;
     }
-    if (op.kind === 'verify' && this.baseCompareFor(campaign.declaration)) this.stepBaseCheck(ctx, campaign, op);
+    if (op.kind === 'verify' && this.baseCompareFor(campaign.declaration)) await this.stepBaseCheck(ctx, campaign, op);
     if (result) {
       // An accepted result whose gate failed waits here while its base gate still runs (base-check.mjs), read again a
       // poll later; applyOutcome decides, and the base check's own bound ends the wait.
@@ -1307,14 +1383,14 @@ export class Controller {
   }
 
   /** The base check of a commit task's base for its verify operation (base-check.mjs): started once, read while it runs. */
-  stepBaseCheck(ctx, campaign, op) {
+  async stepBaseCheck(ctx, campaign, op) {
     if (op.task_id === PLAN_TASK || this.deliverable(ctx, op.task_id) !== 'commit') return;
     const task = this.store.task(ctx.id, op.task_id), decl = campaign.declaration;
     if (!task?.base_sha) return;
     let repo;
     try { repo = this.repo(decl); } catch { return; }
     try {
-      const record = baseCheckStep(this, ctx, { repository: this.baseRepository(decl, repo), repoPath: repo.path, worktreeRoot: repo.worktreeRoot, baseSha: task.base_sha }, this.baseCompare);
+      const record = await baseCheckStep(this, ctx, { repository: this.baseRepository(decl, repo), repoPath: repo.path, worktreeRoot: repo.worktreeRoot, baseSha: task.base_sha }, this.baseCompare);
       if (record?.red) this.recordBaseRed(ctx, decl, task, record);
     } catch (error) {
       if (error instanceof FencedError) throw error;
@@ -3471,7 +3547,10 @@ export class Controller {
 
   async dispatch(ctx, campaign, task, kind, { admission = null } = {}) {
     const prefetched = await this.dispatchBase(campaign.declaration, task, kind);
-    const op = this.fenced(ctx, () => {
+    // Worktree creation runs outside the transaction (fencedPrepared, aiworks#39); the sandbox probe result is kept across
+    // its passes, so it still runs at most once per dispatch.
+    let probed = null;
+    const op = await this.fencedPrepared(ctx, (ready) => {
       const current = this.store.campaign(ctx.id);
       // The one-slot check, or with the scheduler the full admission predicate again, inside the transaction that
       // records the operation: two instances admitting at once serialise here (ADAPTIVE_SCHEDULER 4.1).
@@ -3548,7 +3627,6 @@ export class Controller {
         }
       }
       // The Codex sandbox probe runs at most once per dispatch, also when a routed choice checked the host first.
-      let probed = null;
       const probe = this.config.codexSandboxProbe === false ? null
         : () => (probed ??= { reason: executors.codexSandboxProbe(this.cmd.codex, { timeoutMs: this.config.codexProbeTimeoutMs ?? 45_000 }) }).reason;
       const sessionId = randomUUID();
@@ -3637,10 +3715,11 @@ export class Controller {
         }
         // An integration or CI repair continues the published branch: a missing worktree and branch are recreated at the verified head.
         // A local plan starts from the baseline of AIWorks's copy it names, so nothing is fetched.
-        const ws = gitA.prepareImplementWorkspace({ git: this.cmd.git, repoPath: repo.path, worktreeRoot: repo.worktreeRoot,
+        const prepare = { git: this.cmd.git, repoPath: repo.path, worktreeRoot: repo.worktreeRoot,
           campaignId: ctx.id, taskId: task.task_id, baseBranch: decl.target.baseBranch,
           baseSha: repair ? repair.verified : local ? decl.target.baseline.commit : integrationBase,
-          track: !repair && !local && !this.selfHosted(decl.target.repository) });
+          track: !repair && !local && !this.selfHosted(decl.target.repository) };
+        const ws = ready(`implement\u0000${JSON.stringify(prepare)}`, () => gitA.prepareImplementWorkspaceAsync(prepare));
         if (repair && !gitA.isAncestor({ git: this.cmd.git, path: ws.path, ancestor: repair.verified, descendant: ws.head })) {
           const prefix = ci ? 'ci' : owner ? 'owner-changes' : 'integration';
           this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
@@ -3659,8 +3738,9 @@ export class Controller {
         revision = ws.head;
       } else {
         targetSha = task.head_sha;
-        workspace = gitA.prepareVerifyWorkspace({ git: this.cmd.git, repoPath: repo.path, worktreeRoot: repo.worktreeRoot,
-          campaignId: ctx.id, taskId: task.task_id, targetSha, attempt: seq }).path;
+        const prepare = { git: this.cmd.git, repoPath: repo.path, worktreeRoot: repo.worktreeRoot,
+          campaignId: ctx.id, taskId: task.task_id, targetSha, attempt: seq };
+        workspace = ready(`verify\u0000${JSON.stringify(prepare)}`, () => gitA.prepareVerifyWorkspaceAsync(prepare)).path;
         revision = targetSha;
       }
       const baseSha = task.base_sha ?? revision;
@@ -3993,8 +4073,14 @@ export class Controller {
     const gitLocal = { git: this.cmd.git, repoPath: repo.path, base: forkPoint, head: task.verified_sha };
     const branch = gitA.branchName(ctx.id, task.task_id);
     const bodyFile = join(this.dataDir, 'runs', `${ctx.id}.${task.task_id}.publish.md`);
+    // The push of exactly the verified SHA runs outside the transaction (fencedPrepared, aiworks#39); everything the body
+    // decided before it is decided again under the write lock before anything is recorded or opened.
+    const push = (ready) => {
+      const options = { git: this.cmd.git, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha, base: forkPoint };
+      return ready(`push\u0000${JSON.stringify(options)}`, () => gitA.pushVerifiedAsync(options));
+    };
     try {
-      this.fenced(ctx, () => {
+      await this.fencedPrepared(ctx, (ready) => {
         const current = this.store.campaign(ctx.id);
         const fresh = this.store.task(ctx.id, task.task_id);
         if (current.control !== 'registered' || fresh.state !== 'verified' || fresh.version !== task.version) return;
@@ -4044,7 +4130,7 @@ export class Controller {
             this.store.journal(ctx.id, `${repairKind}-repair-unpublished`, { task: task.task_id, sha: task.verified_sha }, now);
             return;
           }
-          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha, base: forkPoint });
+          push(ready);
           this.injectFault('after-push');
           url = existing.url;
           const prefix = `https://github.com/${decl.target.repository}/pull/`;
@@ -4067,7 +4153,7 @@ export class Controller {
             { identity: task.task_id });
             return;
           }
-          gitA.pushVerified({ git: this.cmd.git, gh: this.cmd.gh, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha, base: forkPoint });
+          push(ready);
           this.injectFault('after-push');
           url = github.openPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, baseBranch: decl.target.baseBranch, branch,
             title, body, bodyFile, terms, local: gitLocal });

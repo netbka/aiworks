@@ -1,12 +1,15 @@
 // A controller that holds several campaigns keeps all their leases while one long step runs, so a second controller never
 // takes a campaign over mid-step and dispatches its work again. A lease that already lapsed is never revived.
 import assert from 'node:assert/strict';
+import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { environment, skipWithoutSqlite, SQLITE } from './helpers.mjs';
+import { declaration, environment, skipWithoutSqlite, sleep, SQLITE } from './helpers.mjs';
 
 const { Store } = SQLITE ? await import('../../src/supervisor/store.mjs') : {};
 const { Controller } = SQLITE ? await import('../../src/supervisor/controller.mjs') : {};
+const { campaignStart } = SQLITE ? await import('../../src/supervisor/api.mjs') : {};
+const { exec, execAsync } = await import('../../src/supervisor/adapters/git.mjs');
 
 test('a slow fenced effect preserves live held leases without reviving expired, released or replaced leases', { skip: skipWithoutSqlite }, (t) => {
   const env = environment();
@@ -80,4 +83,62 @@ test('held leases are renewed past one long step; a lapsed lease stays with its 
   const bound = Math.max(10 * ttl, 15 * 60_000);
   for (let elapsed = 0; elapsed <= bound + 2 * ttl; elapsed += ttl / 4) { time += ttl / 4; controller.renewOnTimer(); }
   assert.ok(store.acquireLease('first', 'other-controller', time, ttl), 'a hung tick no longer keeps its campaigns');
+});
+
+// aiworks#39: a Git call of minutes inside spawnSync blocked the event loop, the timer could not renew, and every campaign
+// lease lapsed and was taken over. A slow worktree creation inside a dispatch now runs outside the transaction: the timer
+// keeps renewing every held lease, no write lock is held meanwhile, and the dispatch is recorded with its result.
+test('a Git step slower than the lease inside a dispatch holds no write lock and lets the timer renew every lease', { skip: skipWithoutSqlite }, async (t) => {
+  const env = environment();
+  // Long enough that the quick blocking reads around the slow step, and a busy machine, stay well inside one lease.
+  const ttl = 4_000;
+  const started = join(env.tmp, 'worktree-started'), ended = join(env.tmp, 'worktree-ended');
+  // Real git, except that creating a worktree first waits one and a half leases: without renewal meanwhile, every lease lapses.
+  const slowGit = join(env.tmp, 'slow-git.mjs');
+  writeFileSync(slowGit, `import { spawnSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+const args = process.argv.slice(2), slow = args[0] === 'worktree' && args[1] === 'add';
+if (slow) writeFileSync(${JSON.stringify(started)}, '');
+setTimeout(() => {
+  const status = spawnSync('git', args, { stdio: 'inherit', windowsHide: true }).status ?? 1;
+  if (slow) writeFileSync(${JSON.stringify(ended)}, '');
+  process.exit(status);
+}, slow ? ${1.5 * ttl} : 0);\n`);
+  const file = join(env.dataDir, 'supervisor.db');
+  const store = new Store(file), competitor = new Store(file);
+  competitor.db.exec('PRAGMA busy_timeout = 0');
+  const controller = new Controller({ store, config: { ...env.config, leaseMs: ttl, commands: { ...env.config.commands, git: [process.execPath, slowGit] } },
+    dataDir: env.dataDir, fault: null });
+  controller.launch = async () => {}; // records the operation; nothing is spawned
+  const timer = setInterval(() => controller.renewOnTimer(), ttl / 4);
+  t.after(() => { clearInterval(timer); competitor.close(); store.close(); env.cleanup(); });
+  const d = declaration({ tasks: [declaration().tasks[0]] });
+  campaignStart(store, d);
+  controller.held.set('other-campaign', store.acquireLease('other-campaign', controller.instanceId, Date.now(), ttl).generation);
+
+  const stepping = controller.step(d.campaignId);
+  const deadline = Date.now() + 60_000;
+  while (!existsSync(started) && Date.now() < deadline) await sleep(20);
+  assert.ok(existsSync(started), 'the dispatch created its worktree');
+  assert.equal(existsSync(ended), false, 'the controller kept running while the worktree was created');
+  assert.ok(competitor.acquireLease('probe', 'other-controller', Date.now(), ttl), 'no write lock is held while Git runs');
+  await stepping;
+  assert.ok(existsSync(ended));
+  assert.equal(competitor.acquireLease('other-campaign', 'other-controller', Date.now(), ttl), null, 'no other campaign lapsed during the Git step');
+  assert.equal(competitor.acquireLease(d.campaignId, 'other-controller', Date.now(), ttl), null);
+  assert.equal(store.openOperations(d.campaignId).length, 1, 'the dispatch is recorded after the Git step');
+  controller.release();
+});
+
+// A Git call that hangs must still end at its bound, or the tick that awaits it never ends: the async call fails exactly
+// as the blocking one did, also for a command that cannot start.
+test('a hanging or missing Git command fails the async call as it failed the blocking call', async () => {
+  const hang = [process.execPath, '-e', 'setTimeout(() => {}, 60000)'];
+  const started = Date.now();
+  const outcome = ({ ok, status, error }) => ({ ok, status, error });
+  assert.deepEqual(outcome(await execAsync(hang, [], { timeoutMs: 500 })), { ok: false, status: null, error: 'ETIMEDOUT' });
+  assert.ok(Date.now() - started < 30_000, 'the hanging process was ended at its timeout');
+  assert.deepEqual(outcome(await execAsync(hang, [], { timeoutMs: 500 })), outcome(exec(hang, [], { timeoutMs: 500 })));
+  const missing = ['aiworks-no-such-git-command'];
+  assert.deepEqual(outcome(await execAsync(missing, ['status'])), outcome(exec(missing, ['status'])));
 });

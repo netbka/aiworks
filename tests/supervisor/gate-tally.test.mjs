@@ -209,18 +209,18 @@ test('base compare: a red base gets exactly one repair item, whatever the tasks,
   writeFileSync(script, `console.log(${JSON.stringify(`${FAILED.split('\n')[0]}\n# failed: ${A}\n${FAILED.split('\n').slice(1).join('\n')}`)}); process.exit(1);\n`);
   const settings = { command: [`"${process.execPath}"`, `"${script}"`], timeoutMs: 60_000 };
   // One verify step of the task of `campaignId` under `c`, holding that campaign's lease as a running controller does.
-  const step = (c, campaignId) => {
+  const step = async (c, campaignId) => {
     c.baseCompare = settings;
     const { generation } = store.acquireLease(campaignId, c.instanceId, c.now(), 60_000);
     c.held.set(campaignId, generation);
-    c.stepBaseCheck({ id: campaignId, generation }, store.campaign(campaignId), { kind: 'verify', task_id: store.tasks(campaignId)[0].task_id });
+    await c.stepBaseCheck({ id: campaignId, generation }, store.campaign(campaignId), { kind: 'verify', task_id: store.tasks(campaignId)[0].task_id });
   };
   const deadline = Date.now() + 60_000;
-  do { step(controller, id); step(controller, other.campaignId); await sleep(100); }
+  do { await step(controller, id); await step(controller, other.campaignId); await sleep(100); }
   while (store.get('SELECT state FROM base_checks').state === 'running' && Date.now() < deadline);
   // A restart: a new controller over the same store, both campaigns stepping the red base again.
   const restarted = new m.Controller({ store, config: env.config, dataDir: env.dataDir, fault: null, instanceId: controller.instanceId });
-  for (const c of [controller, restarted, restarted]) { step(c, id); step(c, other.campaignId); }
+  for (const c of [controller, restarted, restarted]) { await step(c, id); await step(c, other.campaignId); }
   const [base] = store.all('SELECT * FROM base_checks');
   assert.equal(base.state, 'failed');
   const items = store.all("SELECT * FROM outbox WHERE key LIKE '%:base-red:%'");

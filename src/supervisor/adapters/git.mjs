@@ -19,13 +19,59 @@ const SHA = /^[0-9a-f]{40}$/;
 // environment (proc.mjs workerEnv) is not changed.
 const SUPERVISOR_GIT_ENV = Object.freeze({ GIT_NO_REPLACE_OBJECTS: '1' });
 
+const MAX_BUFFER = 64 * 1024 * 1024;
+
 export function exec(command, args, { cwd, input, timeoutMs = 180_000, env = {} } = {}) {
   const result = spawnSync(command[0], [...command.slice(1), ...args], {
-    cwd, input, encoding: 'utf8', windowsHide: true, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024,
+    cwd, input, encoding: 'utf8', windowsHide: true, timeout: timeoutMs, maxBuffer: MAX_BUFFER,
     env: { ...process.env, ...env, ...DEVELOPMENT_ENV, ...SUPERVISOR_GIT_ENV },
   });
   return { ok: !result.error && result.status === 0, status: result.status, stdout: (result.stdout || '').trim(), stderr: (result.stderr || '').trim(), error: result.error?.code };
 }
+
+/**
+ * exec without blocking the event loop (aiworks#39: a Git call of minutes inside spawnSync stopped the lease timer, and
+ * every campaign lease lapsed). The same result, environment, hidden window, timeout and output limit: past the timeout
+ * the process is ended (SIGTERM) and `error` is ETIMEDOUT, past 64 MiB on either stream it is ended and `error` is
+ * ENOBUFS, and a command that cannot start gives its spawn error code; `status` is then null, as spawnSync reports it.
+ * For the Git effects of the controller tick (worktree creation and removal, the push of a verified commit); the
+ * bounded reads with containment are execBounded and execContained below. Never rejects.
+ */
+export function execAsync(command, args, { cwd, input, timeoutMs = 180_000, env = {} } = {}) {
+  return new Promise((settle) => {
+    const out = [], err = [], size = [0, 0];
+    let failure = null, done = false, timer = null, child;
+    const finish = (status) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      settle({ ok: !failure && status === 0, status: failure ? null : status, stdout: Buffer.concat(out).toString('utf8').trim(),
+        stderr: Buffer.concat(err).toString('utf8').trim(), error: failure?.code });
+    };
+    const stop = (code) => { failure ??= Object.assign(new Error(code), { code }); try { child.kill(); } catch { /* already ended */ } };
+    try {
+      child = spawn(command[0], [...command.slice(1), ...args], { cwd, windowsHide: true, stdio: 'pipe',
+        env: { ...process.env, ...env, ...DEVELOPMENT_ENV, ...SUPERVISOR_GIT_ENV } });
+    } catch (error) { failure = error; finish(null); return; }
+    timer = setTimeout(() => stop('ETIMEDOUT'), timeoutMs);
+    const take = (list, at) => (chunk) => {
+      if (failure) return;
+      size[at] += chunk.length;
+      if (size[at] > MAX_BUFFER) stop('ENOBUFS'); else list.push(chunk);
+    };
+    child.stdout.on('data', take(out, 0));
+    child.stderr.on('data', take(err, 1));
+    child.on('error', (error) => { failure ??= error; if (child.pid === undefined) finish(null); });
+    child.on('close', (status) => finish(status));
+    child.stdin.on('error', () => { /* the command ended without reading its input */ });
+    child.stdin.end(input ?? undefined);
+  });
+}
+
+// A workflow written once as a generator that yields [command, args, options] for each Git call, run with exec (blocking:
+// the CLI and tests) or with execAsync (the controller tick): the same calls in the same order, the same checks and errors.
+const runSync = (steps) => { let step = steps.next(); while (!step.done) step = steps.next(exec(...step.value)); return step.value; };
+const runAsync = async (steps) => { let step = steps.next(); while (!step.done) step = steps.next(await execAsync(...step.value)); return step.value; };
 
 /**
  * A slow Git read that must not stall the controller (aiworks#140): unlike exec it never blocks the event loop, so the
@@ -396,39 +442,45 @@ function verificationCheckoutClean(git, path) {
  * created from that commit without a fetch; `track` then gives a new branch origin/<base> as its upstream, as a branch
  * started from origin/<base> gets (git branch -d judges a merged branch against it).
  */
-export function prepareImplementWorkspace({ git, repoPath, worktreeRoot, campaignId, taskId, baseBranch, baseSha, track = false }) {
+function* implementWorkspace({ git, repoPath, worktreeRoot, campaignId, taskId, baseBranch, baseSha, track = false }) {
   if (baseSha !== undefined && !SHA.test(baseSha)) throw new Error('implementation base must be a full SHA');
   const path = workspacePath(worktreeRoot, campaignId, taskId);
   const branch = branchName(campaignId, taskId);
   assertManagedWorktree(worktreeRoot, path);
   if (existsSync(path)) {
-    const current = must(exec(git, ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: path }), 'inspect worktree branch');
+    const current = must(yield [git, ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: path }], 'inspect worktree branch');
     if (current !== branch) throw new Error(`worktree ${path} is on ${current}, expected ${branch}`);
   } else {
-    if (!baseSha) must(exec(git, ['fetch', 'origin', baseBranch], { cwd: repoPath }), 'fetch base');
-    const hasBranch = exec(git, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: repoPath }).ok;
-    must(exec(git, hasBranch ? ['worktree', 'add', path, branch] : ['worktree', 'add', '-b', branch, path, baseSha ?? `origin/${baseBranch}`], { cwd: repoPath }), 'create worktree');
+    if (!baseSha) must(yield [git, ['fetch', 'origin', baseBranch], { cwd: repoPath }], 'fetch base');
+    const hasBranch = (yield [git, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: repoPath }]).ok;
+    must(yield [git, hasBranch ? ['worktree', 'add', path, branch] : ['worktree', 'add', '-b', branch, path, baseSha ?? `origin/${baseBranch}`], { cwd: repoPath }], 'create worktree');
     // Only a local configuration write: a missing origin/<base> leaves the branch without an upstream, nothing more.
-    if (!hasBranch && baseSha && track) exec(git, ['branch', `--set-upstream-to=origin/${baseBranch}`, branch], { cwd: repoPath });
+    if (!hasBranch && baseSha && track) yield [git, ['branch', `--set-upstream-to=origin/${baseBranch}`, branch], { cwd: repoPath }];
   }
-  const head = must(exec(git, ['rev-parse', 'HEAD'], { cwd: path }), 'read worktree head');
+  const head = must(yield [git, ['rev-parse', 'HEAD'], { cwd: path }], 'read worktree head');
   return { path, branch, head };
 }
+export const prepareImplementWorkspace = (options) => runSync(implementWorkspace(options));
+/** prepareImplementWorkspace without blocking the event loop (aiworks#39): the controller's dispatch. */
+export const prepareImplementWorkspaceAsync = (options) => runAsync(implementWorkspace(options));
 
 /** Fresh detached checkout of the exact target for the independent verifier. */
-export function prepareVerifyWorkspace({ git, repoPath, worktreeRoot, campaignId, taskId, targetSha, attempt }) {
+function* verifyWorkspace({ git, repoPath, worktreeRoot, campaignId, taskId, targetSha, attempt }) {
   if (!SHA.test(targetSha)) throw new Error('verify target must be a full SHA');
   if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error('verify attempt must be a positive integer');
   const path = workspacePath(worktreeRoot, campaignId, taskId, `-verify-${targetSha.slice(0, 12)}-${attempt}`);
   assertManagedWorktree(worktreeRoot, path);
   if (existsSync(path)) {
-    const head = must(exec(git, ['rev-parse', 'HEAD'], { cwd: path }), 'read verify head');
+    const head = must(yield [git, ['rev-parse', 'HEAD'], { cwd: path }], 'read verify head');
     if (head !== targetSha || !verificationCheckoutClean(git, path)) throw new Error(`verify worktree ${path} is not a clean checkout of ${targetSha}`);
   } else {
-    must(exec(git, ['worktree', 'add', '--detach', path, targetSha], { cwd: repoPath }), 'create verify worktree');
+    must(yield [git, ['worktree', 'add', '--detach', path, targetSha], { cwd: repoPath }], 'create verify worktree');
   }
   return { path };
 }
+export const prepareVerifyWorkspace = (options) => runSync(verifyWorkspace(options));
+/** prepareVerifyWorkspace without blocking the event loop (aiworks#39): the controller's dispatch. */
+export const prepareVerifyWorkspaceAsync = (options) => runAsync(verifyWorkspace(options));
 
 /** Deterministic acceptance of an implementer's claim: exact head, clean tree, new descendant commit. */
 export function checkImplementation({ git, path, baseSha, headSha }) {
@@ -534,12 +586,16 @@ export function assertPushDestination({ git, repoPath, remote, expectedRepositor
 }
 
 /** Push exactly the verified SHA (not a moving HEAD) to the campaign branch. `base` is the commit the task started from. */
-export function pushVerified({ git, repository, repoPath, branch, sha, base }) {
+function* pushSteps({ git, repository, repoPath, branch, sha, base }) {
+  // The destination and workflow checks are quick local reads, made before anything goes over the network.
   assertPushDestination({ git, repoPath, remote: 'origin', expectedRepository: repository, base, head: sha });
-  must(exec(git, ['push', 'origin', `${sha}:refs/heads/${branch}`], { cwd: repoPath }), 'push verified commit');
-  const remote = must(exec(git, ['ls-remote', 'origin', `refs/heads/${branch}`], { cwd: repoPath }), 'read remote branch');
+  must(yield [git, ['push', 'origin', `${sha}:refs/heads/${branch}`], { cwd: repoPath }], 'push verified commit');
+  const remote = must(yield [git, ['ls-remote', 'origin', `refs/heads/${branch}`], { cwd: repoPath }], 'read remote branch');
   if (!remote.startsWith(sha)) throw new Error(`remote ${branch} is not at verified ${sha}`);
 }
+export const pushVerified = (options) => runSync(pushSteps(options));
+/** pushVerified without blocking the event loop (aiworks#39): the controller's publication. */
+export const pushVerifiedAsync = (options) => runAsync(pushSteps(options));
 
 /** Whether `ancestor` is reachable from `descendant`. Read-only. */
 export function isAncestor({ git, path, ancestor, descendant }) {
@@ -621,6 +677,10 @@ export function worktreeChanges({ git, path }) {
 /** `git worktree remove` without --force: git itself refuses a checkout with changes, untracked files or a lock. */
 export function removeWorktree({ git, repoPath, path }) {
   return exec(git, ['worktree', 'remove', path], { cwd: repoPath, timeoutMs: 120_000 });
+}
+/** removeWorktree without blocking the event loop (aiworks#39): the cleanup pass. */
+export function removeWorktreeAsync({ git, repoPath, path }) {
+  return execAsync(git, ['worktree', 'remove', path], { cwd: repoPath, timeoutMs: 120_000 });
 }
 
 /** `git branch -d`, never -D: git itself refuses a branch that is checked out or not merged. */
