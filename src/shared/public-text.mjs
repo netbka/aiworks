@@ -56,10 +56,11 @@ export function relativeTo(text, roots = []) {
     const sep = '[\\\\/]+';
     const escaped = parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(sep);
     // A worktree folder may carry `+` (git.mjs workspaceName). A path with any `..` folder after the prefix may leave the
-    // root, so it keeps its prefix, whole, for the privacy check to refuse.
+    // root, so it keeps its prefix, whole, for the privacy check to refuse. The rest is read to the end of the line, not
+    // to the first space or quote: a folder name may hold either, and keeping a prefix only keeps the old refusal.
     const pattern = new RegExp(`(?<![\\w.-])${/^[A-Za-z]:$/.test(parts[0]) ? '' : '[\\\\/]'}${escaped}${`${sep}(?!\\.\\.?[\\\\/])[\\w.$~+-]+`.repeat(depth)}${sep}`, 'gi');
     value = value.replace(pattern, (match, offset, whole) => {
-      const rest = /^[^\s'"`<>()|,;]*/.exec(whole.slice(offset + match.length))[0];
+      const rest = /^[^\r\n]*/.exec(whole.slice(offset + match.length))[0];
       return /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(rest) ? match : '';
     });
   }
