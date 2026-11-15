@@ -207,14 +207,19 @@ const RUNNERS = [
     // `✖ failing tests:` list that repeats each failure without its suites, where a file that crashed reads 'test failed'.
     // In that list each failure follows its `test at <file>:<line>:<column>` line, so its id is `<file> :: <test>` (the
     // file as the run printed it, with forward slashes; no line, so an edit above a test does not rename it). The list
-    // is known only when every entry has its file, no two entries share an id and it names exactly `ℹ fail N` tests: a
-    // failed parent whose subtests failed, an entry without a file or a list cut short is an unknown list.
+    // names a test without its suites, so it is known only when the log holds one run (one `ℹ fail` line, at most one
+    // list), every entry has its file, no entry is a suite or hook failure (a name shown as `▶`) and each listed name
+    // appears exactly once among the run's test lines of any status (`X > works` and `Y > works` in one file would
+    // otherwise read alike, and a newly failing one could stand in for a fixed one), and the entries number exactly
+    // `ℹ fail N`. A failed parent whose subtests failed, an entry without a file or a list cut short is unknown too.
     name: 'node-spec', signs: [/^ℹ tests \d+$/, /^✖ failing tests:$/, /^ *✖ .+ \([\d.]+m?s\)$/],
-    lines: [/^ *[▶✔✖] /, /^ℹ (tests|fail|cancelled) \d+$/, /^ *'test failed'$/, /^test at \S/],
+    lines: [/^ *[▶✔✖﹣⚠] /, /^ℹ (tests|fail|cancelled) \d+$/, /^ *'test failed'$/, /^test at \S/],
     parse(lines) {
       if (!lines.some((line) => /^ℹ fail \d+$/.test(line)) || lines.some((line) => /^ *'test failed'$/.test(line))) return null;
       if (total(lines, /^ℹ cancelled /, /(\d+)/) > 0) return null;
-      const names = [], path = [];
+      if (lines.filter((line) => /^ℹ fail \d+$/.test(line)).length !== 1) return null; // one run only
+      if (lines.filter((line) => line === '✖ failing tests:').length > 1) return null;
+      const names = [], path = [], seen = new Map(), containers = new Set(), listedNames = [];
       let listing = false, summed = false, listed = null, at = null;
       for (const line of lines) {
         if (line.startsWith('ℹ ')) { summed = true; continue; }
@@ -225,16 +230,22 @@ const RUNNERS = [
           at = location[1].replaceAll('\\', '/');
           continue;
         }
-        const match = /^( *)([▶✔✖]) (.+?)(?: \([\d.]+m?s\))?( # (?:TODO|SKIP)\b.*)?$/.exec(line);
-        if (listing && match?.[2] === '✖') {
-          if (match[1].length) continue; // an indented ✖ inside an entry's error text
+        const match = /^( *)([▶✔✖﹣⚠]) (.+?)(?: \([\d.]+m?s\))?( # (?:TODO|SKIP)\b.*)?$/.exec(line);
+        if (listing && (match?.[2] === '✖' || match?.[2] === '⚠')) {
+          if (match[1].length) continue; // an indented mark inside an entry's error text
           if (at === null) return null; // a listed failure without its file
+          if (match[2] === '⚠' || match[4]) { at = null; continue; } // a failing todo test is not a failure
           listed.push(`${at} :: ${match[3]}`);
+          listedNames.push(match[3]);
           at = null;
           continue;
         }
         if (listing && at !== null) return null;
         if (!match) continue;
+        if (!listing) {
+          if (match[2] === '▶') containers.add(match[3]);
+          else seen.set(match[3], (seen.get(match[3]) ?? 0) + 1);
+        }
         // A test reported after a summary with no failure list is a second run; after a list, the next run's first line.
         if (summed && !listing && match[2] === '✖') return null;
         listing = false; summed = false;
@@ -248,6 +259,7 @@ const RUNNERS = [
       if (!names.length && count === 0) return [];
       // Failures: only the list of the one run, naming each of its counted failed tests once, with its file.
       if (!listing || !listed || listed.length !== count || new Set(listed).size !== listed.length) return null;
+      if (listedNames.some((name) => containers.has(name) || seen.get(name) !== 1)) return null;
       return sorted(listed);
     },
   },
