@@ -205,19 +205,36 @@ const RUNNERS = [
   {
     // node --test, spec reporter: `✖ <test> (<ms>)` nested two spaces per level under `▶ <suite>`, `ℹ fail N`, then a
     // `✖ failing tests:` list that repeats each failure without its suites, where a file that crashed reads 'test failed'.
-    // As with TAP its ids carry no file, so any failure is an unknown list; only a finished run without one reads as [].
+    // In that list each failure follows its `test at <file>:<line>:<column>` line, so its id is `<file> :: <test>` (the
+    // file as the run printed it, with forward slashes; no line, so an edit above a test does not rename it). The list
+    // is known only when every entry has its file, no two entries share an id and it names exactly `ℹ fail N` tests: a
+    // failed parent whose subtests failed, an entry without a file or a list cut short is an unknown list.
     name: 'node-spec', signs: [/^ℹ tests \d+$/, /^✖ failing tests:$/, /^ *✖ .+ \([\d.]+m?s\)$/],
-    lines: [/^ *[▶✔✖] /, /^ℹ (tests|fail|cancelled) \d+$/, /^ *'test failed'$/],
+    lines: [/^ *[▶✔✖] /, /^ℹ (tests|fail|cancelled) \d+$/, /^ *'test failed'$/, /^test at \S/],
     parse(lines) {
       if (!lines.some((line) => /^ℹ fail \d+$/.test(line)) || lines.some((line) => /^ *'test failed'$/.test(line))) return null;
       if (total(lines, /^ℹ cancelled /, /(\d+)/) > 0) return null;
       const names = [], path = [];
-      let listing = false, summed = false;
+      let listing = false, summed = false, listed = null, at = null;
       for (const line of lines) {
         if (line.startsWith('ℹ ')) { summed = true; continue; }
-        if (line === '✖ failing tests:') { listing = true; continue; }
+        if (line === '✖ failing tests:') { listing = true; listed = []; at = null; continue; }
+        const location = /^test at (.+):\d+:\d+$/.exec(line);
+        if (location) {
+          if (!listing || at !== null) return null; // a location outside the list, or one with no failure after it
+          at = location[1].replaceAll('\\', '/');
+          continue;
+        }
         const match = /^( *)([▶✔✖]) (.+?)(?: \([\d.]+m?s\))?( # (?:TODO|SKIP)\b.*)?$/.exec(line);
-        if (!match || (listing && match[2] === '✖')) continue;
+        if (listing && match?.[2] === '✖') {
+          if (match[1].length) continue; // an indented ✖ inside an entry's error text
+          if (at === null) return null; // a listed failure without its file
+          listed.push(`${at} :: ${match[3]}`);
+          at = null;
+          continue;
+        }
+        if (listing && at !== null) return null;
+        if (!match) continue;
         // A test reported after a summary with no failure list is a second run; after a list, the next run's first line.
         if (summed && !listing && match[2] === '✖') return null;
         listing = false; summed = false;
@@ -226,7 +243,12 @@ const RUNNERS = [
         if (match[2] === '✖' && !match[4]) names.push([...path.slice(0, depth), match[3]].join(' > '));
       }
       if (!summed && !listing) return null; // tests reported after the last summary: a run cut short
-      return names.length || total(lines, /^ℹ fail /, /(\d+)/) > 0 ? null : [];
+      if (at !== null) return null;
+      const count = total(lines, /^ℹ fail /, /(\d+)/);
+      if (!names.length && count === 0) return [];
+      // Failures: only the list of the one run, naming each of its counted failed tests once, with its file.
+      if (!listing || !listed || listed.length !== count || new Set(listed).size !== listed.length) return null;
+      return sorted(listed);
     },
   },
   {
