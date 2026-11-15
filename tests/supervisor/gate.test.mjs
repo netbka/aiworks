@@ -154,6 +154,10 @@ test('readGateRun: the exit code and the final node:test summary the controller 
   // A plain node --test run has no "# all test files" line: its last run of count lines is the summary, never other output.
   assert.equal(testSummary('# tests 1\n# pass 1\nok\n# tests 2\n# pass 1\n# fail 1\n# duration_ms 5.5\nnpm ERR! after'), '# tests 2\n# pass 1\n# fail 1\n# duration_ms 5.5');
   assert.equal(testSummary('no summary here\n'), null);
+  // 2026-11-15: some project gates print the spec reporter's "ℹ" count lines; they were reported as "no node:test summary".
+  const spec = testSummary('✖ failing tests:\r\nℹ tests 569\r\nℹ suites 0\r\nℹ pass 537\r\nℹ fail 12\r\nℹ duration_ms 45957.6589\r\n<Objs Version="1.1.0.1">');
+  assert.equal(spec, '# tests 569\n# suites 0\n# pass 537\n# fail 12\n# duration_ms 45957.6589');
+  assert.equal(gateFailure({ exit: '0', summary: spec }), 'reports 12 failed tests');
   assert.equal(gateFailure(null), null);
   assert.equal(gateFailure({ exit: '0', summary: '# tests 2\n# pass 2\n# fail 0' }), null);
   assert.equal(gateFailure({ exit: null, summary: null }), null, 'an unfinished gate is shown, not refused');
