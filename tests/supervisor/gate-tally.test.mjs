@@ -81,6 +81,29 @@ test('an acceptance with no gate run, one that never finished or one of another 
   assert.equal(store.tasks(id)[0].state, 'done');
 });
 
+test('base compare with only a per-project command runs that command on the base and keeps an acceptance whose failures the base shares', { skip: skipWithoutSqlite }, async (t) => {
+  const { baseCompareSettings } = await import('../../src/supervisor/base-check.mjs');
+  const A = 'tests/a.test.mjs :: a', B = 'tests/b.test.mjs :: b';
+  const block = (...ids) => `${FAILED.split('\n')[0]}\n${ids.map((id) => `# failed: ${id}`).join('\n')}\n${FAILED.split('\n').slice(1).join('\n')}`;
+  // The base gate's script lives outside the environment, so the head gate can record the same command before it exists.
+  const scriptDir = mkdtempSync(join(tmpdir(), 'aiworks-base-gate-'));
+  t.after(() => rmSync(scriptDir, { recursive: true, force: true }));
+  const script = join(scriptDir, 'base-gate.mjs');
+  writeFileSync(script, `console.log(${JSON.stringify(block(A, B))}); process.exit(1);\n`);
+  const command = [`"${process.execPath}"`, `"${script}"`];
+  const { store, controller, id } = await setup(t, { scenario: { gate: [{ log: `${block(A)}\n`, exit: '1', command }, { log: `${PASSED}\n`, exit: '0' }] } });
+  // config.json as an operator writes it: no top-level command, only the project's own entry.
+  controller.baseCompare = baseCompareSettings({ timeoutMinutes: 1, projects: { 'example-org/sampleapp': { command } } });
+  await runUntil(controller, store, id, (c) => c.control === 'finished', { timeoutMs: 120_000 });
+  const [base] = store.all('SELECT command, state, failed FROM base_checks');
+  assert.equal(base.command, JSON.stringify(command), 'the base ran the project command');
+  assert.equal(base.state, 'failed');
+  assert.deepEqual(JSON.parse(base.failed), [A, B]);
+  const [task] = store.tasks(id);
+  assert.equal(verifications(store, id)[0].outcome.class, 'result', 'the acceptance stands on the shared failure');
+  assert.deepEqual(task.verification.baseFailures.failed, [A]);
+});
+
 test('a report task keeps its verification as before, even when its verifier leaves a failed gate', { skip: skipWithoutSqlite }, async (t) => {
   const decl = declaration({ tasks: [{ id: 'R1', issue: 437, title: 'research', deliverable: 'report', goal: 'Research only.', dependsOn: [], acceptance: ['findings posted'], references: ['AGENTS.md'] }] });
   const { env, store, controller, id } = await setup(t, { decl, scenario: { implement: ['report'], gate: { log: `${FAILED}\n`, exit: '1' } } });
