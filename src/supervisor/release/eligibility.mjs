@@ -120,7 +120,8 @@ const CHECKS = [
     if (reason) return reason;
     if (DEPLOY_KINDS.has(destination.kind)) {
       if (!destination.commands?.rollback || value.rollback !== true) return 'no rollback command';
-      return value.knownGood === true ? null : 'observe does not report a previous known-good version';
+      if (value.knownGood !== true) return 'observe does not report a previous known-good version';
+      return spaceShort(destination, value.freeGB);
     }
     if (value.backupSpace !== true) return 'there is not enough free space for the backup, or it is unknown';
     return value.readable === true ? null : 'a target path is not readable, or it is unknown';
@@ -162,6 +163,20 @@ const CHECKS = [
 ];
 
 export const CHECK_IDS = Object.freeze(CHECKS.map(([id]) => id));
+
+/**
+ * Why a deploy destination lacks the free disk space its grant requires (`minFreeGB`), or null. Without `minFreeGB` there
+ * is no requirement. With it, the space `observe` reported (`free-gb:` line, release/deploy.mjs) must be known and at
+ * least that much: a deploy that stops the running version and fills the disk cannot roll back (work item 110).
+ */
+export function spaceShort(destination, freeGB) {
+  const need = destination?.minFreeGB;
+  if (need === undefined) return null;
+  if (typeof freeGB !== 'number' || !Number.isFinite(freeGB)) {
+    return `the destination requires ${need} GB free, but observe did not report its free disk space (a free-gb: line), so it is unknown`;
+  }
+  return freeGB >= need ? null : `the destination has ${freeGB} GB free, below the ${need} GB its grant requires before a deploy`;
+}
 
 /** E5 for a `deploy` destination: the merge gate's own `merged` journal entry for this task at its verified revision. */
 function mergedReason(c, value) {

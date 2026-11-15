@@ -116,4 +116,6 @@ Telegram alerts take only references into your own secret store for the bot cred
 
 The example sets an explicit worker-run and retry limit. Token usage is recorded independently of the admission limits.
 
+A destination's minimum free disk space is not a `config.json` setting: it is `minFreeGB` on the destination in the project's own release grant, checked against the `free-gb:` line of the project's `observe` before every deploy ([runbook section 12](../SUPERVISOR.md#12-automatic-project-releases)).
+
 No configuration field in this guide grants Auto Release. Keep the project in Review only unless its separately accepted release workflow and destination-specific authorization actually permit otherwise.

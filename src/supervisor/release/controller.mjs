@@ -25,17 +25,21 @@ const maintenance = (c) => existsSync(join(c.dataDir, '..', 'runtime-maintenance
 const runGit = (c, repo, args) => git.exec(c.cmd.git, args, { cwd: repo.path, timeoutMs: 30_000 });
 const ancestor = (c, repo, from, to) => Boolean(from && to && git.isAncestor({ git: c.cmd.git, path: repo.path, ancestor: from, descendant: to }));
 /**
- * Before the live revision is read, a candidate is classified by its own change: from the main parent of the merge commit
- * that took the verified head. After an integration repair, task.base_sha is the previous branch head, and a diff from it
- * would count the other merges that repair brought in. Only a two-parent merge whose second parent is the verified head
- * qualifies; anything else (a reconciled or fast-forward record) keeps task.base_sha. The live revision, once read, is
- * still what the release is classified against.
+ * Before the live revision is read, a candidate is classified by its own change: from the point where the verified head
+ * last took in the base branch, that is the merge base of the verified head and the main parent of the merge commit that
+ * took it. After an integration repair, task.base_sha is the previous branch head, and a diff from it would count the
+ * other merges that repair brought in (work item 109). The main parent alone is not enough: when other merges landed
+ * after the repair, a diff from it would count their changes too, reversed. Only a two-parent merge whose second parent
+ * is the verified head qualifies; anything else (a reconciled or fast-forward record) keeps task.base_sha. The live
+ * revision, once read at preflight, is still what the release is classified against.
  */
 function ownBase(c, repo, merged, sha) {
   if (!merged?.mergeCommit || !sha) return null;
   const parents = runGit(c, repo, ['rev-list', '--parents', '-n', '1', merged.mergeCommit]);
   const [, first, second, ...rest] = parents.ok ? parents.stdout.split(/\s+/) : [];
-  return first && second === sha && !rest.length ? first : null;
+  if (!first || second !== sha || rest.length) return null;
+  const common = runGit(c, repo, ['merge-base', first, sha]);
+  return common.ok && /^[0-9a-f]{40}$/.test(common.stdout) ? common.stdout : null;
 }
 function authorityProblem(c, decl, repo, base, sha) {
   const common = runGit(c, repo, ['merge-base', base, sha]);

@@ -26,8 +26,8 @@ const day = (at) => new Date(at).toISOString().slice(0, 10);
 function grant(project, now) {
   return { schema: 'aiworks-release-authorization/1', project, version: 1, revoked: false,
     approval: 'https://github.com/example-org/approvals/issues/1', grantedAt: day(now - 86400000), expiresAt: day(now + 30 * 86400000),
-    classes: { 'app-code': ['app.txt', 'src/**'], permissions: ['deploy/AGENTS.md'] },
-    destinations: [{ id: 'prod', environment: 'prod', kind: 'deploy', changeClasses: ['app-code'], rollback: 'automatic', checkWindowMinutes: 1,
+    classes: { 'app-code': ['app.txt', 'src/**'], docs: ['docs/**'], permissions: ['deploy/AGENTS.md'] },
+    destinations: [{ id: 'prod', environment: 'prod', kind: 'deploy', changeClasses: ['app-code', 'docs'], rollback: 'automatic', checkWindowMinutes: 1,
       commands: Object.fromEntries(['deploy', 'observe', 'check', 'rollback'].map((name) => [name, `ops/${name}.mjs`])) }] };
 }
 function rig(t) {
@@ -180,4 +180,33 @@ test('a release pointer removed or replaced while the release base is read autho
     assert.match(grant.reason ?? '', /changed while the release base was read/);
     assert.equal(grant.record, undefined, 'no grant record reaches a deployment');
   }
+});
+
+test('after an integration repair a candidate is classified by its own change, while preflight still classifies everything since the live revision', { skip: skipWithoutSqlite }, async (t) => {
+  const r = rig(t), p = r.project('sample-repair'); r.c = r.controller();
+  writeFileSync(join(p.site, 'live.json'), JSON.stringify({ revision: p.merged, digest: 'sha256:old' }));
+  // The task changes one docs file; meanwhile another merge lands an unclassified file on main, and the integration
+  // repair merges main into the task branch. task.base_sha is the branch head before that repair.
+  git(p.repo, 'checkout', '-qb', 'docs-task'); mkdirSync(join(p.repo, 'docs'));
+  writeFileSync(join(p.repo, 'docs/guide.md'), 'docs only'); git(p.repo, 'add', '.'); git(p.repo, 'commit', '-qm', 'docs');
+  const before = git(p.repo, 'rev-parse', 'HEAD');
+  git(p.repo, 'checkout', '-q', 'main'); mkdirSync(join(p.repo, 'web'));
+  writeFileSync(join(p.repo, 'web/page.js'), 'other merge'); git(p.repo, 'add', '.'); git(p.repo, 'commit', '-qm', 'other merge');
+  git(p.repo, 'checkout', '-q', 'docs-task'); git(p.repo, 'merge', '--no-ff', '-qm', 'integration repair', 'main');
+  const verified = git(p.repo, 'rev-parse', 'HEAD');
+  git(p.repo, 'checkout', '-q', 'main'); git(p.repo, 'merge', '--no-ff', '-qm', 'merge', 'docs-task');
+  const merged = git(p.repo, 'rev-parse', 'HEAD'); git(p.repo, 'push', '-q', 'origin', 'main');
+  const task = r.store.task(p.id, 'T1');
+  r.store.run('UPDATE tasks SET base_sha=?, head_sha=?, verified_sha=?, verification=? WHERE campaign_id=?', before, verified, verified,
+    { ...task.verification, targetSha: verified }, p.id);
+  r.store.run("UPDATE operations SET target_sha=? WHERE campaign_id=? AND kind='verify'", verified, p.id);
+  r.store.journal(p.id, 'merged', { task: 'T1', sha: verified, mergeCommit: merged }, r.clock);
+  await releasePass(r.c);
+  const planned = r.store.get('SELECT * FROM releases WHERE campaign_id=?', p.id);
+  assert.ok(planned, JSON.stringify(r.store.all("SELECT detail FROM journal WHERE kind='release-waiting'")));
+  await r.c.drainReleases();
+  const after = r.store.get('SELECT state, reason FROM releases WHERE id=?', planned.id);
+  assert.equal(after.state, 'eligible');
+  assert.match(after.reason ?? '', /unclassified: web\/page\.js/);
+  assert.equal(p.calls().filter((n) => n === 'deploy').length, 0, 'the other merge is not deployed by a docs lane');
 });

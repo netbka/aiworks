@@ -19,13 +19,15 @@
 //   destination. After a restart, `observe` settles a step from what is live. A command that may have run is never run
 //   again: the grant has no way to mark a command idempotent, so a deploy proven not done after it may have started
 //   goes to the owner (AUTO_RELEASE.md section 8).
+// - free space: a destination with `minFreeGB` deploys only when `observe` printed `free-gb: <number>` at or above it,
+//   read at preflight and again just before the deploy intent; missing or malformed counts as too little.
 // Commands print `revision: <sha>` and `digest: <digest>` lines on standard output.
 import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import { writeAtomic } from '../proc.mjs';
 import { assertManagedWorktree } from '../adapters/git.mjs';
-import { mergedEventReader } from './eligibility.mjs';
+import { mergedEventReader, spaceShort } from './eligibility.mjs';
 import { releaseCommandsStopped, runReleaseCommand } from './runner.mjs';
 import { releasePath } from './paths.mjs';
 
@@ -48,12 +50,15 @@ const same = (a, b) => {
   return norm(a) === norm(b);
 };
 
-/** The `revision:` and `digest:` a command printed on standard output; a field printed twice with two values is null. */
+/**
+ * The `revision:`, `digest:`, `rollback-ready:` and `free-gb:` a command printed on standard output; a field printed
+ * twice with two values is null. `freeGB` is a non-negative decimal number, null when malformed, absent when not printed.
+ */
 export function printed(output) {
   const stdout = String(output ?? '').split(STDERR)[0];
-  const found = { revision: undefined, digest: undefined, 'rollback-ready': undefined };
+  const found = { revision: undefined, digest: undefined, 'rollback-ready': undefined, 'free-gb': undefined };
   for (const line of stdout.split(/\r?\n/)) {
-    const match = /^\s*(revision|digest|rollback-ready)\s*:\s*(\S+)\s*$/i.exec(line);
+    const match = /^\s*(revision|digest|rollback-ready|free-gb)\s*:\s*(\S+)\s*$/i.exec(line);
     if (!match) continue;
     const key = match[1].toLowerCase();
     found[key] = found[key] === undefined || found[key] === match[2] ? match[2] : null;
@@ -62,6 +67,7 @@ export function printed(output) {
     revision: SHA.test(found.revision ?? '') ? found.revision : null,
     digest: DIGEST.test(found.digest ?? '') ? found.digest : null,
     ...(found['rollback-ready'] !== undefined ? { rollbackReady: DIGEST.test(found['rollback-ready'] ?? '') ? found['rollback-ready'] : null } : {}),
+    ...(found['free-gb'] !== undefined ? { freeGB: /^\d{1,9}(\.\d{1,6})?$/.test(found['free-gb'] ?? '') ? Number(found['free-gb']) : null } : {}),
   };
 }
 
@@ -218,6 +224,8 @@ export function deployAdapter({ destination, repo, config, dataDir, store, merge
     if (record.deploy !== 'not-started') return { outcome: 'unknown' }; // it may have run: only observe settles it
     const proof = await preflight(r);
     if (!proof.knownGood || !proof.rollback) return { outcome: 'unknown' }; // no deploy intent: reconciliation proves not-done
+    const short = spaceShort(destination, proof.freeGB);
+    if (short) { tell(r, 'release-deploy-waiting', { reason: short }); return { outcome: 'unknown' }; }
     const before = proof.live;
     // Preflight ran the existing version's health check. Recreate the target
     // checkout only after every command's native process tree has stopped.
@@ -342,7 +350,8 @@ export function deployAdapter({ destination, repo, config, dataDir, store, merge
       reason: 'Observe must identify the live revision and its retained rollback artifact' };
     const current = checkout(r, live.revision);
     const health = await command(r, prepared.record, 'check', current);
-    return { knownGood: health?.exitCode === 0, rollback: true, live };
+    // freeGB: the free disk space observe reported, or null; a destination with minFreeGB needs it (E9, and again here before deploy).
+    return { knownGood: health?.exitCode === 0, rollback: true, live, freeGB: live.freeGB ?? null };
   }
   return { run: guarded(steps.run), observe: guarded(steps.observe),
     preflight: async (r) => { try { return await preflight(r); } catch { return { knownGood: false, rollback: false }; } },

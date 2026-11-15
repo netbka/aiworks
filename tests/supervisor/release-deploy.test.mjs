@@ -19,7 +19,8 @@ const ELIGIBLE = () => ({ eligible: true, failed: [], inputs: { grantDigest: GRA
 /** The synthetic project commands. Each logs its call, then acts on the destination folder as `behave.json` says. */
 const SCRIPTS = {
   observe: `const live = json('live.json'); console.log('revision: ' + live.revision); console.log('digest: ' + live.digest);
-if (!behave.noRollback) console.log('rollback-ready: ' + live.digest);`,
+if (!behave.noRollback) console.log('rollback-ready: ' + live.digest);
+if (behave.freeGB !== undefined) console.log('free-gb: ' + behave.freeGB);`,
   deploy: `writeFileSync(at('retained.json'), JSON.stringify(json('live.json')));
 if (behave.deploy !== 'noop') writeFileSync(at('live.json'), JSON.stringify({ revision: process.argv[2], digest: behave.deploy === 'drift' ? 'sha256:other' : 'sha256:new' }));
 console.log('digest: sha256:new');`,
@@ -40,7 +41,7 @@ function git(cwd, ...args) {
  * A disposable project: a repository whose base commit holds the four commands, a verified task commit, and the merge
  * gate's merge commit of it (same tree). The destination runs the base revision with digest sha256:old.
  */
-function rig(t, { behave = {}, rollback = 'automatic' } = {}) {
+function rig(t, { behave = {}, rollback = 'automatic', minFreeGB } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'aiworks-release-deploy-'));
   const repo = join(dir, 'repo'), dest = join(dir, 'destination'), dataDir = join(dir, 'data');
   for (const path of [repo, dest, dataDir]) mkdirSync(path);
@@ -86,7 +87,7 @@ ${body}
   rig.adapter = (mergeCommit = rig.merge) => {
     rig.store.journal('c', 'merged', { task: 'T1', sha: rig.verified, mergeCommit }, rig.now);
     return deployAdapter({
-      destination: { id: 'prod', environment: 'production', kind: 'deploy', changeClasses: ['app-code'], rollback, checkWindowMinutes: 1,
+      destination: { id: 'prod', environment: 'production', kind: 'deploy', changeClasses: ['app-code'], rollback, checkWindowMinutes: 1, ...(minFreeGB ? { minFreeGB } : {}),
         commands: { deploy: 'ops/deploy.mjs', observe: 'ops/observe.mjs', check: 'ops/check.mjs', rollback: 'ops/rollback.mjs' } },
       repo, config: rig.config, dataDir, store: rig.store, timeoutMs: 60_000, checkIntervalMs: 15_000,
       clock: () => rig.time, sleep: async (ms) => { rig.time += ms; },
@@ -110,6 +111,20 @@ test('a deploy release whose merge commit holds another tree than the verified o
   assert.deepEqual(r.calls(), [], 'no project command ran');
   assert.deepEqual(r.live(), { revision: r.base, digest: 'sha256:old' });
   assert.equal(r.journaled('release-deploy-refused'), 1, 'the owner is told why');
+});
+
+test('a destination that requires free disk space is not deployed while observe reports too little or none', async (t) => {
+  for (const freeGB of [undefined, 'unknown', 3]) {
+    const r = rig(t, { minFreeGB: 10, behave: freeGB === undefined ? {} : { freeGB } });
+    const adapter = r.adapter(), id = r.locked();
+    await runStep(r.store, adapter, id, r.at());
+    assert.equal(r.calls('deploy').length, 0, String(freeGB));
+    assert.deepEqual(r.live(), { revision: r.base, digest: 'sha256:old' });
+    const told = r.store.get("SELECT detail FROM journal WHERE kind = 'release-deploy-waiting'")?.detail;
+    assert.match(told?.reason ?? '', freeGB === 3 ? /3 GB free, below the 10 GB/ : /did not report its free disk space/);
+  }
+  const r = rig(t, { minFreeGB: 10, behave: { freeGB: 12.5 } });
+  assert.equal((await runStep(r.store, r.adapter(), r.locked(), r.at())).state, 'deployed', 'enough reported space deploys');
 });
 
 test('a redirected release checkout cannot clean or overwrite another working tree', async (t) => {

@@ -97,6 +97,8 @@ export function validateAuthorization(record, { project, now, mergeGate } = {}) 
     const commands = destination.commands ?? {};
     if (DEPLOYS.has(destination.kind) && !commands.deploy) reasons.push(`${name} deploys but names no deploy command`);
     if (DEPLOYS.has(destination.kind) && !commands.observe) reasons.push(`${name} deploys but names no read-only observe command, so a restart could not see what is live`);
+    // The free space is what the destination's observe reports before a deploy; no other kind runs observe.
+    if (destination.minFreeGB !== undefined && !DEPLOYS.has(destination.kind)) reasons.push(`${name} names minFreeGB, which only a deploy destination takes`);
     // A merge is rolled back by a revert (AUTO_RELEASE.md 7.3); every other kind needs the project's own rollback.
     if (destination.rollback === 'automatic' && destination.kind !== 'merge' && !commands.rollback) {
       reasons.push(`${name} asks for automatic rollback but names no rollback command`);
