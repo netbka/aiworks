@@ -16,6 +16,7 @@ import { resolveCheckout } from './project-connect.mjs';
 import { backupStatus } from './github-backup.mjs';
 import { effectiveLimits, projectBudget, projectOf, protectedWriteConflicts } from './project-settings.mjs';
 import { operationGateWait } from './gate-slot.mjs';
+import { checkServiceView } from './check-service-caller.mjs';
 
 export class CampaignError extends Error {
   constructor(code, message) { super(message); this.name = 'CampaignError'; this.code = code; }
@@ -222,6 +223,7 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
   const waits = { store, campaign: c, tasks, open: operations, held: heldTasks(store, id), now, config };
   const routed = routingView(store, id);
   const reading = readingView(store, id);
+  const checks = checkServiceView(store, id);
   return {
     campaignId: c.id,
     store: store.identity,
@@ -277,6 +279,8 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
       routing: routed.tasks.get(t.task_id)?.routing ?? { implement: null, verify: null, escalation: null, sameProvider: null },
       costByUnit: routed.tasks.get(t.task_id)?.cost ?? emptyCost(),
       reading: reading.get(t.task_id) ?? null,
+      // Additional check-service results of its verified commits (information only); shown once one exists.
+      ...(checks.has(t.task_id) ? { checkServices: checks.get(t.task_id) } : {}),
       // A project without GitHub shows its verified local candidate (WORK_ENVELOPE slice E10), never a PR; only once one exists.
       ...withCandidate(store, c.id, t.task_id),
     })),

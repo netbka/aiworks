@@ -2,9 +2,9 @@
 
 A check service can run an additional check of an exact published commit on another computer. Its result is information; it does not replace the required local gate. The managed gate helper always runs its local command inside the exclusive host slot and proves that command's complete process tree has stopped before publishing its exit.
 
-Code: src/supervisor/check-services.mjs retains the settings, client and exact-revision result validation. The gate helper no longer offers jobs automatically, accepts a remote result as its local exit, or cancels service jobs. Existing configuration and historical receipts remain intact. Separate authorized callers can use the client for additional checks, with its bounded queue/run waits and exact-source validation.
+Code: src/supervisor/check-services.mjs holds the settings, client and exact-revision result validation; src/supervisor/check-service-caller.mjs is the authorized caller that offers verified commits (see [Offering verified commits](#offering-verified-commits)). The gate helper does not offer jobs, accept a remote result as its local exit, or cancel service jobs. Existing configuration and historical receipts remain intact.
 
-Callers must submit only an exact published commit that the configured origin makes available. The client checks service health, polls its own job and bounds its waits; it accepts no uploaded source. A missing, busy, unreachable or unsuitable service is no barrier to the local checks, publication or merge. Do not duplicate an already submitted service job merely because a local gate starts.
+The caller offers only the exact commit a verifier accepted, once that commit is on origin (or, for a service with `"sources": true`, as a bundle). The client checks service health, polls its own job and bounds its waits. A missing, busy, unreachable or unsuitable service is no barrier to the local checks, publication or merge. An offered job is never duplicated merely because a local gate starts or the supervisor restarts.
 
 ## Which answers count
 
@@ -20,8 +20,8 @@ Then:
 | --- | --- |
 | `passed` with `exitCode` 0, `commitSha` the exact commit, a step whose `phase` ends in `-check`, whose `argv` ends in `run check` and whose `exitCode` is 0, and a non-empty `stdout.log` (for a project tested by `scripts/run-tests.mjs`, one with its `# all test files` summary) | service check passed (exit 0), with the local gate still required |
 | `test_failure` | service check failed (exit 1) |
-| `environment_failure`, `cancelled`, `interrupted` | no accepted additional result; the separate client may try its next configured service |
-| a pass missing any of the conditions above | no accepted additional result; the separate client may try its next configured service |
+| `environment_failure`, `cancelled`, `interrupted` | no accepted additional result; recorded as `environment_failure` |
+| a pass missing any of the conditions above | no accepted additional result; recorded as `not_counted` |
 
 A service result never makes a failing local gate pass. The local contained gate remains mandatory even when the additional result passed.
 
@@ -41,7 +41,7 @@ A service of kind `remote-gate-http` must provide the following.
 | Route | Answer |
 | --- | --- |
 | `GET /health` | `{"status":"ok"}` when it accepts jobs |
-| `POST /v1/jobs` with `{ idempotencyKey, projectId, commitSha, profile, timeoutSeconds, aiworksTaskId }` | `{ jobId, state, spec }`, where `jobId` is a UUID and `spec` repeats `commitSha`, `projectId` and `profile`. The same `idempotencyKey` with the same body returns the same job. AIWorks sends `aiworksTaskId` as `gate-<worktree folder>`: letters, digits, dot, dash and underscore only. |
+| `POST /v1/jobs` with `{ idempotencyKey, projectId, commitSha, profile, timeoutSeconds, aiworksTaskId }` | `{ jobId, state, spec }`, where `jobId` is a UUID and `spec` repeats `commitSha`, `projectId` and `profile`. The same `idempotencyKey` with the same body returns the same job. AIWorks sends `aiworksTaskId` as `<campaign>-<task>`: letters, digits, dot, dash and underscore only. |
 | `GET /v1/jobs/<jobId>` | `{ jobId, state, waiting? }` |
 | `GET /v1/jobs/<jobId>/result` | the result described below, once the state is terminal |
 | `GET /v1/jobs/<jobId>/artifacts/stdout.log` | the gate's output as text |
@@ -65,7 +65,7 @@ A scheme not in this table (for example Basic or a signed request) is not suppor
 
 The value is never in `config.json`, `AIWORKS_CHECK_SERVICES`, a file AIWorks reads or a worker's environment. `auth.tokenRef` names it in the operator's secret store and must start with `aiworks-check-service:`, so it can never name another operator secret. The store is `token-store.mjs`: the Windows Credential Manager by default, or a credential helper command in `auth.credentialStore`.
 
-The authentication contract never leaves the controller. `serve` exports no `auth` in `AIWORKS_CHECK_SERVICES`, and `readCheckServices` drops any `auth` it finds there: every worker inherits that variable and can rewrite it, so a service read from it can never obtain credential headers. The authorized caller builds both the services and the broker only from the controller's own `config.json`: the services from `checkServiceSettings(config)`, the broker from the same entry's `auth.credentialStore` (`tokenStoreFrom(entry.auth.credentialStore ?? { kind: "windows" })`), and passes it to `runOnService` as `broker`. The client has no default broker and never opens a store itself. That caller is not built yet. The value is resolved fresh for each offer, goes only into the request headers to the configured `https` origin (no redirect is followed, and the service certificate is verified against `caFile` as always), and never reaches `gate.log`, an error message or the returned result. An error answer is reduced to its HTTP status; its body is not read.
+The authentication contract never leaves the controller. `serve` exports no `auth` in `AIWORKS_CHECK_SERVICES`, and `readCheckServices` drops any `auth` it finds there: every worker inherits that variable and can rewrite it, so a service read from it can never obtain credential headers. The authorized caller (`check-service-caller.mjs`, started by `serve`) builds both the services and the broker only from the controller's own `config.json`: the services from `checkServiceSettings(config)`, the broker from the same entry's `auth.credentialStore` (`tokenStoreFrom(entry.auth.credentialStore ?? { kind: "windows" })`), and passes it to `offerOnService` as `broker`. The client has no default broker and never opens a store itself. The value is resolved fresh for each offer, goes only into the request headers to the configured `https` origin (no redirect is followed, and the service certificate is verified against `caFile` as always), and never reaches `gate.log`, an error message or the returned result. An error answer is reduced to its HTTP status; its body is not read.
 
 The service fails closed at every step:
 
@@ -73,8 +73,8 @@ The service fails closed at every step:
 | --- | --- |
 | `auth` absent in part, an unknown scheme, a reserved header or an invalid reference | the service is left out at start (`check service left out: ...`) |
 | no broker passed, the reference does not resolve, the store cannot tell, or the value is not one printable header line | `unavailable: ...`; no request is sent |
-| `401` or `403` from any route | `unavailable (HTTP 401: ...)`; the job, if any, is cancelled |
-| queued past `queueSeconds`, no answer within `timeoutMinutes`, a state outside the contract | the job is cancelled; no result |
+| `401` or `403` from any route | `unavailable (HTTP 401: ...)` |
+| no terminal answer within `queueSeconds` plus `timeoutMinutes`, or a state outside the contract | `timeout` or `unavailable`; the job is left to finish on the service |
 
 None of these is a pass, a failure of the code or an approval gate. The required local checks, publication and merge go on regardless.
 
@@ -112,7 +112,12 @@ Add `checkServices` to the supervisor's `config.json` in its data folder (instal
       "projects": {
         "example-org/sampleapp": { "projectId": "sampleapp", "profile": "windows-full" }
       },
-      "auth": { "scheme": "bearer", "tokenRef": "aiworks-check-service:lab-desktop" }
+      "offer": "verified",
+      "auth": {
+        "scheme": "bearer",
+        "tokenRef": "aiworks-check-service:lab-desktop",
+        "credentialStore": { "kind": "command", "command": ["node", "C:/aiworks-data/credential-helper.mjs"] }
+      }
     }
   ]
 }
@@ -125,14 +130,36 @@ Add `checkServices` to the supervisor's `config.json` in its data folder (instal
 | `baseUrl` | The service's `https://` origin only: no path, query or credentials. |
 | `caFile` | The CA certificate that signed the service certificate. A relative path is read from the supervisor data folder. |
 | `projects` | Which repositories may go to this service: `"<owner>/<repository>"` as in the checkout's `origin`, mapped to the service's own `projectId` and `profile`. Other repositories never go to it. |
-| `queueSeconds` | How long a job may stay queued before AIWorks cancels it and runs the gate itself. 10 to 3600, default 120. |
-| `timeoutMinutes` | The longest run AIWorks waits for. 5 to 75, default 60. The service is told to stop a minute earlier (`timeoutSeconds`). A run that ends without an answer that counts is then run here too, inside the verifier bound (`executor.verifierTimeoutMinutes`, default 120). |
+| `queueSeconds` | Added to `timeoutMinutes`, the longest AIWorks waits for an offered job to answer. 10 to 3600, default 120. |
+| `timeoutMinutes` | The longest run AIWorks waits for. 5 to 75, default 60. The service is told to stop a minute earlier (`timeoutSeconds`, at least 300). |
+| `offer` | `"verified"` lets the caller offer this service each commit a verifier accepted here (see [Offering verified commits](#offering-verified-commits)). Absent: the service is never offered anything. No other value is accepted. |
 | `auth` | Only for a service whose contract requires a credential: `{ "scheme": "bearer" \| "header", "header"?: "<name>", "tokenRef": "aiworks-check-service:<name>", "credentialStore"?: { "kind": "windows" } \| { "kind": "command", "command": [...] } }`. `header` is required with scheme `header` and not allowed with `bearer`. Without `credentialStore` the Windows Credential Manager is used. Holds a reference, never the value. See [Authentication](#authentication). |
 | `enabled` | `false` leaves the service out without deleting it. |
 
-Several services may be listed. They are tried in order, and for each repository only the services that list it are tried.
+Several services may be listed. Each repository goes only to the services that list it.
 
-When `serve` starts it checks the entries and puts the accepted ones in its own environment as `AIWORKS_CHECK_SERVICES`. Every worker and supervisor gate it starts inherits that variable, and the gate helper reads only it. An entry with a problem is left out and named in the supervisor log (`check service left out: ...`). Without accepted entries no gate is offered. Restart `serve` after changing the settings.
+When `serve` starts it checks the entries and puts the accepted ones, without `auth`, in its own environment as `AIWORKS_CHECK_SERVICES`, which every worker and supervisor gate it starts inherits. An entry with a problem is left out and named in the supervisor log (`check service left out: ...`). The caller reads the entries with `"offer": "verified"` from `config.json` itself, never from that variable, and `serve` logs `verified commits are offered to check service(s) ...`. Restart `serve` after changing the settings.
+
+## Offering verified commits
+
+`serve` runs the caller on its own 30-second timer, outside the controller tick. It never changes a task, an operation, a budget, publication, merge, release or the required local gate: every outcome is information only.
+
+1. A verify operation of a commit task finishes with an accepted verdict of the exact head commit (an acceptance the supervisor refused, for example over the verifier's gate run, does not count).
+2. The task's repository is its checkout's `origin` (`<owner>/<repository>`, compared case-insensitively), or the declaration's `target.repository` when the checkout has none. Each service with `"offer": "verified"` that lists that repository is offered the commit once.
+3. The commit must be on an origin branch. Until it is (a head verified before its publication), the caller looks again every five minutes. A service with `"sources": true` instead gets the commit as a bundle from the verifier's checkout while that still holds it. A commit that reaches no origin within the offer window is recorded as `unavailable`.
+4. The job is submitted under one idempotency key per service, project and commit (`aiworks-verified-<service>-<projectId>-<sha>`), with `aiworksTaskId` `<campaign>-<task>`. At most one offer per service is in flight; the others wait their turn.
+5. The caller polls until the job ends, at most `queueSeconds` plus `timeoutMinutes` from the submission. It never cancels a job: a wait that ends, a stop or a restart leaves it running on the service.
+
+Each step is recorded in the journal of the task's campaign:
+
+| Journal kind | Detail |
+| --- | --- |
+| `check-service-offered` | `task`, `service`, `sha`, `project`, `jobId`: the service accepted the job |
+| `check-service-result` | `task`, `service`, `sha`, `project`, `jobId`, `state`, `exitCode`, `summary` |
+
+`state` is `passed` or `test_failure` (an answer that counts under [Which answers count](#which-answers-count)), `environment_failure` (also for `cancelled` and `interrupted`), `not_counted` (a terminal answer that fails those rules), `unavailable` (unreachable, unhealthy, a credential problem, `401`/`403`, a mismatched receipt, a state outside the contract) or `timeout`. `summary` is one plain line in which the credential, if any, is replaced by `[credential]`. `status` shows the latest record per service on each task as `checkServices`.
+
+A restart reads the journal: a commit with a result is never offered to that service again; one with a recorded job and no result re-attaches to that job (its wait still ends at the original bound) and submits nothing; one whose job was accepted but not yet recorded is submitted again under the same key, which the service answers with the same job. Only verifications from the last 24 hours are offered, so turning `offer` on does not send older history.
 
 ## Setting one up
 
@@ -141,27 +168,26 @@ When `serve` starts it checks the entries and puts the accepted ones in its own 
 3. From the AIWorks computer, check reachability: `curl --cacert <caFile> https://<address>:<port>/health` must print `{"status":"ok"}`. If it answers `401`, obtain the service's written authentication contract (scheme and header) before going on.
 4. For a service that requires a credential, store its value under a reference in the operator's secret store yourself (for the Windows Credential Manager, a generic credential named by the reference, for example `aiworks-check-service:<name>`; or through the configured credential helper's `set <ref>`, which reads the value from stdin). Never put the value in `config.json`, a command line or a file in the repository. Add `auth` with the documented scheme and that reference.
 5. Add the `checkServices` entry and restart `serve`. The supervisor log names the service.
-6. Not built yet: the authorized caller that reads the services and broker from `config.json` and offers commits. Once it exists, offer a commit that is already verified here and on origin through it, and read its lines: `# check service <name> accepted job ...`, then the job's states and its terminal result. Record the exact commit, job id, state, time and artifacts as operator evidence outside the repository.
+6. To have verified commits offered, add `"offer": "verified"` to the entry and restart `serve`; the supervisor log then names the service (`verified commits are offered to check service(s) ...`). After the next accepted verification of a commit task in a listed repository, the log shows `check service <name> accepted job <jobId> for <campaign>/<task> at <sha>` and later `check service <name> <state> ...`; `status` shows the same per task as `checkServices`, and the journal holds `check-service-offered` and `check-service-result` (see [Offering verified commits](#offering-verified-commits)). Record the exact commit, job id, state and time as operator evidence outside the repository.
 
 ## Security notes
 
-- Only the commit identifier, the project and profile names and a short gate reference (`gate-<worktree folder name>`) are sent, plus, for a service with `auth`, its own credential to its own origin. No source and no other secret leaves the computer.
+- Only the commit identifier, the project and profile names and a short reference (`<campaign>-<task>`) are sent, plus, for a service with `auth`, its own credential to its own origin, and, only for a service with `"sources": true`, the bundle below. No other secret leaves the computer.
 - The credential is resolved by the controller's broker, not by a worker. The services environment every worker inherits carries no `auth` at all (no scheme, reference or store), and any `auth` written into it is ignored. A worker that rewrites it can point a service at another address, but that service never receives a credential.
 - The services come only from the environment `serve` gives each run, never from a shared file. Every contained worker can write to the gate slot folder. Had the list been a file there, one run could have chosen who answers the gates of other runs and of the supervisor. A worker can change only its own gate's environment, just as it could write its own `gate-exit.log`. The exact-head check (`gateHeadProblem`) and the verifier's independence cover that case.
 - Keep `caFile` in a folder workers cannot write, such as the supervisor data folder.
-- The service's own words (states, commit ids, errors) are reduced to plain single-line text before they reach `gate.log`. They cannot add lines the log readers take for a test summary.
-- A gate helper ended by its containment (a verifier past its time bound) cannot cancel its job, so the job finishes on the service. Each new gate submits a new job.
-- The service's output is copied into `gate.log` and may reach a pull request body only through the final test summary, as with a gate run here.
+- The service's own words (states, commit ids, errors) are reduced to one plain line before they reach the journal or the supervisor log. Its output is read only for its test counts and is never copied into `gate.log`, a pull request or the journal.
+- The caller never cancels a job: a timed-out wait, a stop or a restart leaves it to finish on the service, and a restart re-attaches to it rather than submitting another.
 
 ## Still open
 
-- A commit that is not yet on origin can be offered only to a service configured with `"sources": true`, as a bundle (below).
-- Nothing in AIWorks calls `runOnService` automatically. An authorized caller that reads services and broker from the controller's `config.json`, offers commits and records receipts is a separate change.
+- A commit that is not yet on origin can be offered before its publication only to a service configured with `"sources": true`, as a bundle (below); other services get it once origin has it.
+- `runOnService`, the client that stood in for a gate, is kept but called by nothing.
 - Authentication schemes other than `bearer` and a named `header` are not supported.
 
 ## Unpublished commits as a bundle
 
-A service checks a commit that is not on origin yet (a verifier gate before publication, or a merge-refresh result) without write access to anything and without AIWorks's working tree. It is off unless the operator sets `"sources": true` on that service in `config.json`; the operator decides that the service may see the project's unpublished commits. A service without it is never sent a bundle: the gate runs on this computer.
+A service checks a commit that is not on origin yet (a verifier gate before publication, or a merge-refresh result) without write access to anything and without AIWorks's working tree. It is off unless the operator sets `"sources": true` on that service in `config.json`; the operator decides that the service may see the project's unpublished commits. A service without it is never sent a bundle: it is offered the commit only once origin has it.
 
 1. AIWorks (`bundleOf` in `src/supervisor/check-services.mjs`) bundles only a checkout whose `HEAD` is the exact commit, never a working tree: `git bundle create <file> HEAD --not --remotes=origin`. The bundle holds that one head and only the commits no origin branch has, at most 64 MiB.
 2. `POST /v1/sources` sends it as `application/x-git-bundle` with headers `X-Project-Id` and `X-Commit-Sha` and the same authentication as every other route.
