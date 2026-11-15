@@ -385,7 +385,8 @@ export function quotaRetryAt(text, now) {
   const after = /retry[- ]after\s*[:=]?\s*(\d+)\s*(?:seconds|s)?\b/i.exec(text);
   if (after && Number(after[1]) > 0 && Number(after[1]) <= 604800) return now + Number(after[1]) * 1000 + 60_000;
   const epoch = /limit reached\|(\d{10})/i.exec(text);
-  if (epoch) return Number(epoch[1]) * 1000 + 60_000;
+  // The same eight-day window as an ISO reset: a malformed or far-future epoch never parks work indefinitely.
+  if (epoch && Number(epoch[1]) * 1000 > now && Number(epoch[1]) * 1000 < now + 8 * 86400_000) return Number(epoch[1]) * 1000 + 60_000;
   const reset = RESET_AT.exec(text);
   if (reset) {
     let hour = Number(reset[1]);

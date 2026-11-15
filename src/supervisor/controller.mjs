@@ -42,6 +42,7 @@ import { mergePass, mergeSettings } from './merge.mjs';
 import { mainLedger, selfHostingSettings, trustedTip, trustsLocalMain } from './self-hosting.mjs';
 import { programPass } from './program.mjs';
 import { cleanupPass } from './cleanup.mjs';
+import { loginCheckPass } from './login-check.mjs';
 import { closeFinishedPass } from './close-finished.mjs';
 import { BROWSER_RUN, browserLockPath, GATE_FILES, gateFailureList, gateFailure, gateHeadProblem, readGateRun, slotSettings } from './gate.mjs';
 import { baseCheckStep, baseCompareSettings, baseRecord, claimBaseRed, projectBaseCompare, settleBaseRed, sharedBaseFailures } from './base-check.mjs';
@@ -103,7 +104,12 @@ const RECHECK_PROCEDURE = {
   'runtime-not-merged': 'Compare the supervisor code revision with origin/main in its checkout; resume once it is an ancestor.',
   'owner-decision': 'Record the decision on the task issue, then run: supervisor recheck <campaign> --task <task>.',
   'plan-integrity': 'Dispatch the held task again: the plan chain and its admission checks are recomputed from the rows first, and nothing runs while they fail.',
+  'provider-stall': 'Nothing to do unless you choose to: the work starts by itself once an AI worker is free, and this closes then.',
 };
+// AW-022: a full stall on AI worker availability alerts once it lasts, or will last, an hour.
+const STALL_DEPENDENCY = 'provider-stall';
+const STALL_IDENTITY = 'all-authorized-workers-waiting';
+const STALL_ALERT_MS = 60 * 60_000;
 // With selfHosting trusting local main (LOCAL_OPERATION.md section 4.3), the AW-005 texts name its trusted tip instead.
 const LOCAL_MAIN_RECHECK = 'Compare the supervisor code revision with the trusted tip of local main (cli.mjs trusted-main); resume once it is an ancestor.';
 const RECOVERY_TRIED = {
@@ -111,6 +117,7 @@ const RECOVERY_TRIED = {
   executors: 'every authorized executor in the declared order was tried or is waiting',
   'process-ownership': 'containment stop of the recorded run',
   'owner-decision': 'none: the worker reported an owner-reserved decision',
+  'provider-stall': 'every authorized AI worker was tried or is waiting for its reset or a recheck',
 };
 const MAX_NOTIFY_ATTEMPTS = 5;
 // Why a pending owner notification was retired unsent (notificationObsolete), as its outbox entry records it.
@@ -686,6 +693,10 @@ export class Controller {
     // a finished campaign declared `closeWhenDone`, and AIWorks's own pull requests that will never merge.
     try { await closeFinishedPass(this); }
     catch (error) { this.log(`close-finished pass failed: ${error.stack || error}`); }
+    // AW-022: a token-free sign-in check of each configured CLI, at most every 30 minutes. It runs beside the tick, never
+    // holding it: a slow status command must not delay lease renewal.
+    this.loginCheckRunning ??= loginCheckPass(this).catch((error) => this.log(`login check failed: ${error.stack || error}`))
+      .finally(() => { this.loginCheckRunning = null; });
     // Admission: at most one launch per tick across every campaign this instance holds (ADAPTIVE_SCHEDULER 4.1).
     if (this.sched) {
       try { await this.admit(); }
@@ -870,6 +881,7 @@ export class Controller {
     // AW-016: a reversible decision with a suggestion is answered by AIWorks with that suggestion, as the owner allows.
     this.answerSuggested(ctx);
     if (this.oi) this.ownerInterventionTick(ctx);
+    if (this.oi) this.providerStallTick(ctx);
     for (const op of this.store.openOperations(id)) await this.reconcile(ctx, op);
     const campaign = this.store.campaign(id);
     if (campaign.control === 'cancel-requested') {
@@ -4835,6 +4847,60 @@ export class Controller {
         const reminder = reminderDue(record, now);
         if (reminder) this.recordNotification(ctx, c.declaration, record, `reminder-${reminder}`, now);
       }
+    });
+  }
+
+  /**
+   * AW-022 (owner, 2026-11-15): one alert when every AI worker a campaign may use waits (a usage limit, a failed login
+   * or a host failure) and its waiting work cannot start for an hour or more in all. A shorter wait stays silent, as the
+   * provider-limit exception says. The record holds no task: the work still starts by itself once a worker is free, and
+   * the record closes then without a tracking-issue note, so a later full stall is a new episode with its own alert.
+   * The stall's start is journaled, so a restart neither forgets nor restarts the hour.
+   */
+  providerStallTick(ctx) {
+    this.fenced(ctx, () => {
+      const now = this.now();
+      const c = this.store.campaign(ctx.id);
+      const decl = c.declaration;
+      // A task whose last word is a worker wait, whether or not its retry time has come: an elapsed re-wait (15 minutes for
+      // an untimed account wait) must not end the stall, or it would end and reopen with a new alert every re-wait.
+      // Only positive evidence ends it: a worker the choice would take, or no step left waiting for one.
+      const waiting = c.control === 'registered' && !c.blocker ? this.store.all(`SELECT * FROM tasks WHERE campaign_id = ?
+        AND state IN ('pending', 'implemented') AND (last_error LIKE 'waiting for executor availability%' OR last_error LIKE 'quota:%')
+        ORDER BY ord LIMIT 1`, ctx.id) : [];
+      const choice = waiting.length ? this.executorChoice(decl, waiting[0], now) : null;
+      const untimed = choice && !choice.executor && !choice.retryAt ? this.untimedAccountWait(decl) : null;
+      const stalled = Boolean(choice && !choice.executor && (choice.retryAt || untimed));
+      const last = this.store.get(`SELECT kind, at FROM journal WHERE campaign_id = ? AND kind IN ('provider-stall-started', 'provider-stall-ended')
+        ORDER BY seq DESC LIMIT 1`, ctx.id);
+      const open = last?.kind === 'provider-stall-started';
+      // One record per campaign: another campaign's stall ending on the same project never closes this one.
+      const identity = `${STALL_IDENTITY}:${ctx.id}`;
+      const fingerprint = blockerFingerprint({ project: decl.target.projectId, environment: decl.target.environment,
+        dependency: STALL_DEPENDENCY, blockerClass: 'B4', identity });
+      const record = this.store.blocker(fingerprint);
+      if (!stalled) {
+        if (!open) return;
+        this.store.journal(ctx.id, 'provider-stall-ended', { minutes: Math.round((now - last.at) / 60_000) }, now);
+        if (record && record.status !== 'resolved') {
+          const evidence = { probe: 'deterministic', pass: true, detail: 'an AI worker is available again, or no work waits for one', at: now };
+          this.store.run(`UPDATE blockers SET status = 'resolved', resolution = ?, last_evidence = ?, resolved_at = ?, probe = NULL,
+            next_recheck_at = NULL, updated_at = ? WHERE fingerprint = ?`, evidence, evidence, now, now, fingerprint);
+          this.store.journal(ctx.id, 'blocker-resolved', { fingerprint, class: 'B4', dependency: STALL_DEPENDENCY, evidence }, now);
+        }
+        return;
+      }
+      const since = open ? last.at : now;
+      if (!open) this.store.journal(ctx.id, 'provider-stall-started', { retryAt: choice.retryAt ?? null }, now);
+      const until = choice.retryAt ?? Infinity;
+      if (until - since < STALL_ALERT_MS || (record && record.status !== 'resolved')) return;
+      const reasons = [...new Set(executorOrder(decl.executor).map(({ kind }) => accountWait(this.store, this.config, kind)?.reason)
+        .filter(Boolean).map((reason) => String(reason).slice(0, 120)))].slice(0, 3);
+      const when = choice.retryAt ? `at ${new Date(choice.retryAt).toISOString().slice(0, 16).replace('T', ' ')} UTC at the earliest`
+        : 'once its account can be used again (a sign-in, or a recheck)';
+      this.openBlocker(ctx, decl, { dependency: STALL_DEPENDENCY, cls: 'B4', identity, parents: [],
+        summary: `Every AI worker this work may use is waiting${reasons.length ? ` (${reasons.join('; ')})` : ''}; it starts by itself ${when}.`,
+        requestedAction: null }, now);
     });
   }
 
