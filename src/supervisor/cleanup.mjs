@@ -27,6 +27,20 @@ export const cleanupEnabled = (config) => config?.cleanup?.enabled === true && (
 const allowed = (ctl, repository) => ctl.config.cleanup.repositories === undefined ||
   ctl.config.cleanup.repositories.some((repo) => repo.toLowerCase() === repository?.toLowerCase());
 
+/**
+ * Ignored paths a finished worktree of this repository may lose with it, besides installed dependencies and Python
+ * bytecode caches: config.json `cleanup.disposable` maps a repository name to relative paths of ignored build output or
+ * test state, each ending in `/` (a folder) or naming one file, as `git status --ignored` prints them. Anything else
+ * ignored still keeps the worktree. A malformed entry adds nothing.
+ */
+export function disposablePaths(config, repository) {
+  const map = config?.cleanup?.disposable;
+  if (!map || typeof map !== 'object' || Array.isArray(map) || !repository) return [];
+  const found = Object.entries(map).find(([name]) => name.toLowerCase() === repository.toLowerCase())?.[1];
+  return Array.isArray(found) ? found.filter((path) => typeof path === 'string' && path && !isAbsolute(path) && !path.startsWith('/')
+    && !/[\\:]/.test(path) && !path.split('/').includes('..')) : [];
+}
+
 // Per controller: when the last pass ran, whether interrupted removals were settled, and what was already reported kept.
 const memory = new WeakMap();
 
@@ -142,7 +156,7 @@ async function cleanRepository(ctl, repo, report, keep) {
     // removals before it awaited, so its owner is checked again: no other instance holds it and no run of its task opened.
     if (foreignLease(ctl, owner.campaignId) || ctl.store.get(`SELECT 1 AS v FROM operations WHERE campaign_id = ? AND task_id = ? AND state IN (${OPEN.map(() => '?').join(', ')})`,
       owner.campaignId, owner.task, ...OPEN)) continue;
-    const removal = startRemoval(ctl, repo.path, wt, owner, keep);
+    const removal = startRemoval(ctl, repo.path, wt, owner, keep, disposablePaths(ctl.config, repo.repository));
     if (removal) finishRemoval(ctl, removal, await gitA.removeWorktreeAsync({ git, repoPath: repo.path, path: wt.path }), report, keep);
   }
   if (!SHA.test(main ?? '')) return;
@@ -163,19 +177,20 @@ async function cleanRepository(ctl, repo, report, keep) {
 
 /**
  * Remove one finished, owned, registered worktree inside its folder. git deletes ignored files with it, so any ignored
- * entry keeps the worktree unless it is an installed node_modules directory or a gate file. The verifier's gate files at
+ * entry keeps the worktree unless it is an installed node_modules directory, a __pycache__ directory, a path the
+ * repository's `cleanup.disposable` lists, or a gate file. The verifier's gate files at
  * its root are copied into the owning run directory first: git would delete them when ignored, and refuse the removal
  * when untracked. The removal itself is git's: startRemoval journals it and returns what finishRemoval records once git
  * ended, or null when the worktree is kept. Between the two, nothing but the `git worktree remove` runs.
  */
-function startRemoval(ctl, repoPath, wt, owner, keep) {
+function startRemoval(ctl, repoPath, wt, owner, keep, extra = []) {
   const git = ctl.cmd.git, item = { path: wt.path, task: owner.task, run: owner.run };
   if (wt.locked) { keep(owner.campaignId, { ...item, reason: 'locked' }); return; }
   const present = existsSync(wt.path);
   const changes = present ? gitA.worktreeChanges({ git, path: wt.path }) : [];
   if (changes === null) { keep(owner.campaignId, { ...item, reason: 'status-unreadable' }); return; }
   const gateArtifact = (entry) => /^(\?\?|!!) /.test(entry) && GATE_NAMES.has(entry.slice(3));
-  const disposable = (entry) => entry.startsWith('!! ') && /(^|\/)node_modules\/$/.test(entry.slice(3));
+  const disposable = (entry) => entry.startsWith('!! ') && (/(^|\/)(node_modules|__pycache__)\/$/.test(entry.slice(3)) || extra.includes(entry.slice(3)));
   const ignored = changes.filter((entry) => entry.startsWith('!! ') && !gateArtifact(entry) && !disposable(entry));
   if (ignored.length) { keep(owner.campaignId, { ...item, reason: 'ignored-files', entries: ignored.slice(0, 5) }); return; }
   if (changes.some((entry) => !gateArtifact(entry) && !disposable(entry))) { keep(owner.campaignId, { ...item, reason: 'changes', entries: changes.slice(0, 5) }); return; }
