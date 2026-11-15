@@ -347,7 +347,7 @@ The reading list for contributors and AI agents.
 5. [Decisions](docs/DECISIONS.md): accepted product boundaries
 6. [Worker Context Lifecycle](docs/WORKER_CONTEXT_LIFECYCLE.md): task packets, leases and fresh sessions
 7. [Development status](docs/STATUS.md), the [Project Workspace Plan](docs/PROJECT_WORKSPACE_PLAN.md) and the [designs](docs/design/): what the code does and where it is going
-8. [Publication preparation](docs/PUBLICATION.md): what stays private and how public commits are checked
+8. [Publication preparation](docs/PUBLICATION.md): what stays private and how public commits are checked; [Publication guards](docs/PUBLIC_GUARD.md): setting up and checking the Git and Claude Code hooks on a computer
 9. [Glossary](docs/GLOSSARY.md): terms and IDs
 
 ### Contributing and license
