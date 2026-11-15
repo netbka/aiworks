@@ -113,9 +113,11 @@ export function addOperation(summary, op) {
     if (usage?.total == null || partial.has('total')) complete = false;
     if (usage?.total != null) sum = (sum ?? 0) + usage.total;
   }
-  // A provider-wide total covers its model rows. Never add the aggregate and the rows to each other.
-  const total = aggregate?.total ?? sum;
-  const completeTotal = aggregate?.total ?? (complete ? total : null);
+  // Never add the aggregate and the rows to each other. A complete per-model breakdown takes precedence (AW-021): a
+  // provider's top-level usage can omit side models the breakdown reports. Otherwise the provider-wide total is used.
+  const fromModels = Boolean(split?.length) && complete;
+  const total = fromModels ? sum : aggregate?.total ?? sum;
+  const completeTotal = fromModels ? sum : aggregate?.total ?? (complete ? total : null);
   record(summary, Boolean(aggregate) || reported, completeTotal);
   if (completeTotal !== null) summary.completeTotal = (summary.completeTotal ?? 0) + completeTotal;
   if (total !== null) summary.total = (summary.total ?? 0) + total;
