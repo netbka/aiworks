@@ -143,8 +143,12 @@ export function createCheckServiceCaller({ store, config, log = () => {}, checko
     const campaigns = new Map();
     const checkouts = new Map();
     const items = [];
+    // A commit verified more than once is offered, or closed, by its newest verification only: an older one whose window
+    // ended must never close a commit verified again since.
+    const newest = new Map();
+    for (const op of ops) newest.set(op.target_sha, op);
     for (const op of ops) {
-      if (!/^[0-9a-f]{40}$/.test(op.target_sha ?? '')) continue;
+      if (!/^[0-9a-f]{40}$/.test(op.target_sha ?? '') || newest.get(op.target_sha) !== op) continue;
       if (!campaigns.has(op.campaign_id)) campaigns.set(op.campaign_id, store.campaign(op.campaign_id));
       const campaign = campaigns.get(op.campaign_id);
       if (!campaign || specOf(store, campaign.id, op.task_id, campaign.declaration)?.deliverable !== 'commit') continue;

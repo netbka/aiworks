@@ -227,10 +227,14 @@ export async function onOrigin(sha, cwd = process.cwd()) {
   const address = await git(['remote', 'get-url', 'origin'], { cwd, timeout: 10_000, env });
   const url = remoteAddress(address.status === 0 ? address.stdout.trim() : '', cwd);
   if (!url) return false;
-  const outside = tmpdir();
-  const listed = await git(['-c', 'core.sshCommand=ssh -o BatchMode=yes', '-c', 'protocol.ext.allow=never', '-c', 'core.askPass=',
-    'ls-remote', '--heads', '--', url], { cwd: outside, timeout: 30_000, env: { ...env, GIT_CEILING_DIRECTORIES: dirname(outside) } });
-  return listed.status === 0 && listed.stdout.split('\n').some((line) => line.split('\t')[0] === sha);
+  // A new empty folder, with repository discovery stopped at its parent: no repository (not even one planted in the
+  // temporary folder itself) is found, so no repository configuration applies.
+  const outside = mkdtempSync(join(tmpdir(), 'aiworks-ls-remote-'));
+  try {
+    const listed = await git(['-c', 'core.sshCommand=ssh -o BatchMode=yes', '-c', 'protocol.ext.allow=never', '-c', 'core.askPass=',
+      'ls-remote', '--heads', '--', url], { cwd: outside, timeout: 30_000, env: { ...env, GIT_CEILING_DIRECTORIES: dirname(outside) } });
+    return listed.status === 0 && listed.stdout.split('\n').some((line) => line.split('\t')[0] === sha);
+  } finally { rmSync(outside, { recursive: true, force: true }); }
 }
 
 // origin's address as ls-remote outside the checkout can use it: a URL or scp-style address as written, a path made
