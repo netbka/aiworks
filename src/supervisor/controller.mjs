@@ -4862,16 +4862,22 @@ export class Controller {
       const now = this.now();
       const c = this.store.campaign(ctx.id);
       const decl = c.declaration;
-      const waiting = c.control === 'registered' && !c.blocker ? this.store.all(`SELECT * FROM tasks WHERE campaign_id = ? AND retry_at > ?
-        AND (last_error LIKE 'waiting for executor availability%' OR last_error LIKE 'quota:%') ORDER BY ord LIMIT 1`, ctx.id, now) : [];
+      // A task whose last word is a worker wait, whether or not its retry time has come: an elapsed re-wait (15 minutes for
+      // an untimed account wait) must not end the stall, or it would end and reopen with a new alert every re-wait.
+      // Only positive evidence ends it: a worker the choice would take, or no step left waiting for one.
+      const waiting = c.control === 'registered' && !c.blocker ? this.store.all(`SELECT * FROM tasks WHERE campaign_id = ?
+        AND state IN ('pending', 'implemented') AND (last_error LIKE 'waiting for executor availability%' OR last_error LIKE 'quota:%')
+        ORDER BY ord LIMIT 1`, ctx.id) : [];
       const choice = waiting.length ? this.executorChoice(decl, waiting[0], now) : null;
       const untimed = choice && !choice.executor && !choice.retryAt ? this.untimedAccountWait(decl) : null;
       const stalled = Boolean(choice && !choice.executor && (choice.retryAt || untimed));
       const last = this.store.get(`SELECT kind, at FROM journal WHERE campaign_id = ? AND kind IN ('provider-stall-started', 'provider-stall-ended')
         ORDER BY seq DESC LIMIT 1`, ctx.id);
       const open = last?.kind === 'provider-stall-started';
+      // One record per campaign: another campaign's stall ending on the same project never closes this one.
+      const identity = `${STALL_IDENTITY}:${ctx.id}`;
       const fingerprint = blockerFingerprint({ project: decl.target.projectId, environment: decl.target.environment,
-        dependency: STALL_DEPENDENCY, blockerClass: 'B4', identity: STALL_IDENTITY });
+        dependency: STALL_DEPENDENCY, blockerClass: 'B4', identity });
       const record = this.store.blocker(fingerprint);
       if (!stalled) {
         if (!open) return;
@@ -4892,7 +4898,7 @@ export class Controller {
         .filter(Boolean).map((reason) => String(reason).slice(0, 120)))].slice(0, 3);
       const when = choice.retryAt ? `at ${new Date(choice.retryAt).toISOString().slice(0, 16).replace('T', ' ')} UTC at the earliest`
         : 'once its account can be used again (a sign-in, or a recheck)';
-      this.openBlocker(ctx, decl, { dependency: STALL_DEPENDENCY, cls: 'B4', identity: STALL_IDENTITY, parents: [],
+      this.openBlocker(ctx, decl, { dependency: STALL_DEPENDENCY, cls: 'B4', identity, parents: [],
         summary: `Every AI worker this work may use is waiting${reasons.length ? ` (${reasons.join('; ')})` : ''}; it starts by itself ${when}.`,
         requestedAction: null }, now);
     });

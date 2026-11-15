@@ -40,7 +40,10 @@ export function preferredDraftExecutor(config, configured = () => true) {
   for (const raw of entries) {
     const entry = typeof raw === 'string' ? { model: raw } : raw;
     if (!plainObject(entry) || !text(entry.model, 80)) continue;
-    const kind = entry.kind ?? 'claude-cli';
+    // An entry without a worker kind names Claude only when its model is plainly a Claude model; "codex-cli" or another
+    // provider's model saved without a kind is skipped, never turned into a Claude model that does not exist.
+    const kind = entry.kind ?? (/^(?:claude|opus|sonnet|haiku)\b/i.test(entry.model.trim()) ? 'claude-cli' : null);
+    if (!kind) continue;
     if (!['claude-cli', 'codex-cli', 'cursor-cli'].includes(kind) || providers.some((item) => item.kind === kind) || !configured(kind)) continue;
     providers.push({ kind, model: entry.model.trim(), ...(kind === 'claude-cli' ? { permissionMode: DRAFT_EXECUTOR.permissionMode } : {}) });
   }

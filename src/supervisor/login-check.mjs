@@ -20,20 +20,24 @@ export const LOGIN_CHECKS = Object.freeze({
       return reply?.loggedIn === true ? 'in' : reply?.loggedIn === false ? 'out' : null;
     } catch { return null; }
   } },
-  'codex-cli': { command: 'codex', args: ['login', 'status'], read: (code, out) =>
-    /not logged in/i.test(out) ? (code !== 0 ? 'out' : null) : code === 0 && /logged in/i.test(out) ? 'in' : null },
+  // Codex writes its status line to stderr; both streams are read.
+  'codex-cli': { command: 'codex', args: ['login', 'status'], read: (code, stdout, stderr) => {
+    const out = `${stdout}\n${stderr}`;
+    return /not logged in/i.test(out) ? (code !== 0 ? 'out' : null) : code === 0 && /logged in/i.test(out) ? 'in' : null;
+  } },
 });
 
-/** Run one status command with a time limit; resolves `{ code, out }`, `code` null when it did not finish. */
+/** Run one status command with a time limit; resolves `{ code, out, err }`, `code` null when it did not finish. */
 export function runStatus(argv, { timeoutMs = TIMEOUT_MS } = {}) {
   return new Promise((resolveRun) => {
-    let out = '', done = false;
-    const finish = (code) => { if (!done) { done = true; resolveRun({ code, out }); } };
+    let out = '', err = '', done = false;
+    const finish = (code) => { if (!done) { done = true; resolveRun({ code, out, err }); } };
     let child;
-    try { child = spawn(argv[0], argv.slice(1), { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }); }
+    try { child = spawn(argv[0], argv.slice(1), { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }); }
     catch { finish(null); return; }
     const timer = setTimeout(() => { try { child.kill(); } catch { /* already gone */ } finish(null); }, timeoutMs);
     child.stdout.on('data', (chunk) => { if (out.length < MAX_OUTPUT) out += chunk; });
+    child.stderr.on('data', (chunk) => { if (err.length < MAX_OUTPUT) err += chunk; });
     child.on('error', () => { clearTimeout(timer); finish(null); });
     child.on('close', (code) => { clearTimeout(timer); finish(code); });
   });
@@ -45,6 +49,8 @@ export function runStatus(argv, { timeoutMs = TIMEOUT_MS } = {}) {
  */
 export async function loginCheckPass(ctl, { run = runStatus } = {}) {
   if (ctl.config?.loginCheck !== true) return {};
+  // With CAAM profiles each login lives in its own profile home, which a status command run here does not see.
+  if (ctl.config?.caam?.enabled === true) return {};
   const checked = (ctl.loginChecked ??= new Map());
   const acted = {};
   for (const [kind, check] of Object.entries(LOGIN_CHECKS)) {
@@ -53,10 +59,12 @@ export async function loginCheckPass(ctl, { run = runStatus } = {}) {
     if (!Array.isArray(base) || !base.length) continue;
     if (now(ctl) - (checked.get(kind) ?? -Infinity) < LOGIN_CHECK_MS) continue;
     checked.set(kind, now(ctl));
-    const { code, out } = await run([...base, ...check.args]);
-    const answer = code === null ? null : check.read(code, out);
+    const { code, out = '', err = '' } = await run([...base, ...check.args]);
+    const answer = code === null ? null : check.read(code, out, err);
     const wait = accountWait(ctl.store, ctl.config, kind);
-    if (answer === 'out' && !(wait && wait.retry_at === null)) {
+    // A wait still in force (a usage limit with its reset, or a failed login a run found) keeps its own rules and time.
+    const active = wait && (wait.retry_at === null || wait.retry_at > now(ctl));
+    if (answer === 'out' && !active) {
       setAccountWait(ctl.store, ctl.config, { kind, retryAt: null, reason: LOGIN_REASON, campaignId: 'login-check', now: now(ctl) });
       ctl.store.journal(null, 'login-check-signed-out', { executor: kind }, now(ctl));
       ctl.log?.(`login check: ${kind} reports it is not signed in; its account waits until it is`);
