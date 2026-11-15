@@ -154,6 +154,10 @@ test('readGateRun: the exit code and the final node:test summary the controller 
   // A plain node --test run has no "# all test files" line: its last run of count lines is the summary, never other output.
   assert.equal(testSummary('# tests 1\n# pass 1\nok\n# tests 2\n# pass 1\n# fail 1\n# duration_ms 5.5\nnpm ERR! after'), '# tests 2\n# pass 1\n# fail 1\n# duration_ms 5.5');
   assert.equal(testSummary('no summary here\n'), null);
+  // 2026-11-15: some project gates print the spec reporter's "ℹ" count lines; they were reported as "no node:test summary".
+  const spec = testSummary('✖ failing tests:\r\nℹ tests 569\r\nℹ suites 0\r\nℹ pass 537\r\nℹ fail 12\r\nℹ duration_ms 45957.6589\r\n<Objs Version="1.1.0.1">');
+  assert.equal(spec, '# tests 569\n# suites 0\n# pass 537\n# fail 12\n# duration_ms 45957.6589');
+  assert.equal(gateFailure({ exit: '0', summary: spec }), 'reports 12 failed tests');
   assert.equal(gateFailure(null), null);
   assert.equal(gateFailure({ exit: '0', summary: '# tests 2\n# pass 2\n# fail 0' }), null);
   assert.equal(gateFailure({ exit: null, summary: null }), null, 'an unfinished gate is shown, not refused');
@@ -224,4 +228,27 @@ test('a failed file retried alone passes the gate only when its retry passes; to
   // A file stopped before its own summary counts no failed test, yet the total must not read `# fail 0` beside it.
   assert.equal(settle(runs, []).total.fail, 2);
   assert.equal(settle(runs, [{ file: 'tests/b.test.mjs', code: 0, counts: counts(2, 0) }, { file: 'tests/c.test.mjs', code: 1, counts: counts(0, 0) }]).total.fail, 1);
+});
+
+// Base compare keeps an acceptance whose failed tests the base names too, and the merge gate then merges it. A node:test
+// spec log must name each failed test with its file, and a list that cannot be read in full must stay unknown, or a head
+// that adds a failure could pass as the base's (2026-11-15: verifier-accepted docs changes refused for a red base).
+test('a node:test spec failure list names each failed test with its file, else is unknown', async () => {
+  const { failureList } = await import('../../src/supervisor/gate.mjs');
+  const BS = String.fromCharCode(92); // a Windows path separator, as node prints it
+  const tree = ['▶ suite', '  ✔ a (1ms)', '✔ suite (2ms)', '✖ reads (3ms)', '✖ writes (1ms)'];
+  const run = (entries, fail, lines = tree) => [...lines, `ℹ tests ${fail + 1}`, `ℹ fail ${fail}`, 'ℹ cancelled 0', '',
+    '✖ failing tests:', '', ...entries].join('\r\n');
+  const entry = (file, name) => [`test at ${file}:4:1`, `✖ ${name} (3ms)`, '  AssertionError: x', '    ✖ nested detail'];
+  const two = [...entry(`test${BS}a.test.mjs`, 'reads'), ...entry(`test${BS}b.test.mjs`, 'writes')];
+  assert.deepEqual(failureList(run(two, 2)), { runner: 'node-spec', ids: ['test/a.test.mjs :: reads', 'test/b.test.mjs :: writes'] });
+  assert.equal(failureList(run(entry(`test${BS}a.test.mjs`, 'reads'), 2)), null, 'fewer entries than failed tests');
+  assert.equal(failureList(run(['✖ reads (3ms)', ...entry(`test${BS}b.test.mjs`, 'writes')], 2)), null, 'an entry without its file');
+  // `X > works` fixed and `Y > works` newly failing in one file would read alike: a name shown twice is unknown.
+  const swap = ['▶ X', '  ✖ works (1ms)', '✖ X (2ms)', '▶ Y', '  ✔ works (1ms)', '✔ Y (2ms)'];
+  assert.equal(failureList(run(entry('a.mjs', 'works'), 1, swap)), null, 'a listed name shown twice among the tests');
+  // A suite whose hook failed is listed but not counted; with two runs in one log it could pair with another run's count.
+  assert.equal(failureList(run(entry('s.mjs', 'suite'), 1, ['▶ suite', '  ✔ a (1ms)', '✖ suite (2ms)'])), null, 'a suite entry');
+  assert.equal(failureList(run(entry('a.mjs', 'reads'), 1, ['✖ added (1ms)', '✖ reads (3ms)'])), null, 'a failed test missing from the list');
+  assert.equal(failureList(`${run(entry('a.mjs', 'reads'), 1)}\r\n${run(entry('b.mjs', 'writes'), 1)}`), null, 'two runs in one log');
 });

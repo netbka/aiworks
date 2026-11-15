@@ -42,8 +42,11 @@ const summary = (text) => {
 // The final node:test summary only: the block after "# all test files", else the last run of node:test count lines.
 // Unlike `summary`, never the log's last lines, so nothing but the tally reaches a published PR body.
 const COUNT_LINE = /^# (tests|suites|pass|fail|cancelled|skipped|todo|duration_ms) \d+(\.\d+)?$/;
+// node --test's spec reporter (what a plain `node --test` gate may print) writes the same counts as "ℹ tests 569";
+// they are read as "# tests 569" so every reader of the summary sees one form.
+const SPEC_COUNT = /^ℹ (?=(tests|suites|pass|fail|cancelled|skipped|todo|duration_ms) \d)/;
 export function testSummary(text) {
-  const lines = (text ?? '').replaceAll('\r\n', '\n').trimEnd().split('\n');
+  const lines = (text ?? '').replaceAll('\r\n', '\n').trimEnd().split('\n').map((line) => line.replace(SPEC_COUNT, '# '));
   const all = lines.findLastIndex((line) => line.startsWith('# all test files'));
   if (all >= 0) return lines.slice(all).join('\n');
   const first = lines.findLastIndex((line) => /^# tests \d+$/.test(line));
@@ -202,19 +205,48 @@ const RUNNERS = [
   {
     // node --test, spec reporter: `✖ <test> (<ms>)` nested two spaces per level under `▶ <suite>`, `ℹ fail N`, then a
     // `✖ failing tests:` list that repeats each failure without its suites, where a file that crashed reads 'test failed'.
-    // As with TAP its ids carry no file, so any failure is an unknown list; only a finished run without one reads as [].
+    // In that list each failure follows its `test at <file>:<line>:<column>` line, so its id is `<file> :: <test>` (the
+    // file as the run printed it, with forward slashes; no line, so an edit above a test does not rename it). The list
+    // names a test without its suites, so it is known only when the log holds one run (one `ℹ fail` line, at most one
+    // list), every entry has its file, no entry is a suite or hook failure (a name shown as `▶`) and each listed name
+    // appears exactly once among the run's test lines of any status (`X > works` and `Y > works` in one file would
+    // otherwise read alike, and a newly failing one could stand in for a fixed one), and the entries number exactly
+    // `ℹ fail N`. A failed parent whose subtests failed, an entry without a file or a list cut short is unknown too.
     name: 'node-spec', signs: [/^ℹ tests \d+$/, /^✖ failing tests:$/, /^ *✖ .+ \([\d.]+m?s\)$/],
-    lines: [/^ *[▶✔✖] /, /^ℹ (tests|fail|cancelled) \d+$/, /^ *'test failed'$/],
+    lines: [/^ *[▶✔✖﹣⚠] /, /^ℹ (tests|fail|cancelled) \d+$/, /^ *'test failed'$/, /^test at \S/],
     parse(lines) {
       if (!lines.some((line) => /^ℹ fail \d+$/.test(line)) || lines.some((line) => /^ *'test failed'$/.test(line))) return null;
       if (total(lines, /^ℹ cancelled /, /(\d+)/) > 0) return null;
-      const names = [], path = [];
-      let listing = false, summed = false;
+      if (lines.filter((line) => /^ℹ fail \d+$/.test(line)).length !== 1) return null; // one run only
+      if (lines.filter((line) => line === '✖ failing tests:').length > 1) return null;
+      const names = [], path = [], seen = new Map(), containers = new Set(), listedNames = [], treeFailed = [];
+      let listing = false, summed = false, listed = null, at = null;
       for (const line of lines) {
         if (line.startsWith('ℹ ')) { summed = true; continue; }
-        if (line === '✖ failing tests:') { listing = true; continue; }
-        const match = /^( *)([▶✔✖]) (.+?)(?: \([\d.]+m?s\))?( # (?:TODO|SKIP)\b.*)?$/.exec(line);
-        if (!match || (listing && match[2] === '✖')) continue;
+        if (line === '✖ failing tests:') { listing = true; listed = []; at = null; continue; }
+        const location = /^test at (.+):\d+:\d+$/.exec(line);
+        if (location) {
+          if (!listing || at !== null) return null; // a location outside the list, or one with no failure after it
+          at = location[1].replaceAll('\\', '/');
+          continue;
+        }
+        const match = /^( *)([▶✔✖﹣⚠]) (.+?)(?: \([\d.]+m?s\))?( # (?:TODO|SKIP)\b.*)?$/.exec(line);
+        if (listing && (match?.[2] === '✖' || match?.[2] === '⚠')) {
+          if (match[1].length) continue; // an indented mark inside an entry's error text
+          if (at === null) return null; // a listed failure without its file
+          if (match[2] === '⚠' || match[4]) { at = null; continue; } // a failing todo test is not a failure
+          listed.push(`${at} :: ${match[3]}`);
+          listedNames.push(match[3]);
+          at = null;
+          continue;
+        }
+        if (listing && at !== null) return null;
+        if (!match) continue;
+        if (!listing) {
+          if (match[2] === '▶') containers.add(match[3]);
+          else seen.set(match[3], (seen.get(match[3]) ?? 0) + 1);
+          if (match[2] === '✖' && !match[4]) treeFailed.push(match[3]);
+        }
         // A test reported after a summary with no failure list is a second run; after a list, the next run's first line.
         if (summed && !listing && match[2] === '✖') return null;
         listing = false; summed = false;
@@ -223,7 +255,16 @@ const RUNNERS = [
         if (match[2] === '✖' && !match[4]) names.push([...path.slice(0, depth), match[3]].join(' > '));
       }
       if (!summed && !listing) return null; // tests reported after the last summary: a run cut short
-      return names.length || total(lines, /^ℹ fail /, /(\d+)/) > 0 ? null : [];
+      if (at !== null) return null;
+      const count = total(lines, /^ℹ fail /, /(\d+)/);
+      if (!names.length && count === 0) return [];
+      // Failures: only the list of the one run, naming each of its counted failed tests once, with its file.
+      if (!listing || !listed || listed.length !== count || new Set(listed).size !== listed.length) return null;
+      if (listedNames.some((name) => containers.has(name) || seen.get(name) !== 1)) return null;
+      // A failed test shown before the list but not in it (an earlier step's output, a run cut short) is not accounted for.
+      const accounted = new Set(listedNames);
+      if (treeFailed.some((name) => !accounted.has(name) && !containers.has(name))) return null;
+      return sorted(listed);
     },
   },
   {
