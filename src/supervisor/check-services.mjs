@@ -110,6 +110,25 @@ export function serviceCredentialHeaders(service, broker) {
   let value;
   try { value = readToken(broker, auth.tokenRef); } catch { return { problem: `the credential store cannot tell whether ${auth.tokenRef} resolves` }; }
   if (!value) return { problem: `credential reference ${auth.tokenRef} does not resolve` };
+  return headersFor(auth, value);
+}
+
+/**
+ * serviceCredentialHeaders for a broker whose `get` returns a promise (token-store.mjs asyncTokenReader), so resolving
+ * the value never blocks the event loop. The same contract and the same fail-closed answers.
+ */
+export async function serviceCredentialHeadersAsync(service, broker) {
+  const auth = service?.auth;
+  if (auth === undefined) return { headers: {} };
+  if (authProblem(auth)) return { problem: 'its declared authentication contract is invalid' };
+  if (!broker || typeof broker.get !== 'function') return { problem: `it requires credential reference ${auth.tokenRef}, and no credential broker was provided` };
+  let value;
+  try { value = await broker.get(auth.tokenRef); } catch { return { problem: `the credential store cannot tell whether ${auth.tokenRef} resolves` }; }
+  if (typeof value !== 'string' || !value.length) return { problem: `credential reference ${auth.tokenRef} does not resolve` };
+  return headersFor(auth, value);
+}
+
+function headersFor(auth, value) {
   if (!CREDENTIAL_VALUE.test(value)) return { problem: `the value of ${auth.tokenRef} is not fit for one header line` };
   return { headers: auth.scheme === 'bearer' ? { Authorization: `Bearer ${value}` } : { [auth.header]: value } };
 }
@@ -188,14 +207,18 @@ export async function onOrigin(sha, cwd = process.cwd()) {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' };
   const tracked = await git(['branch', '-r', '--contains', sha], { cwd, timeout: 30_000, env });
   if (tracked.status === 0 && tracked.stdout.split('\n').some((line) => line.trim().startsWith('origin/'))) return true;
-  const listed = await git(['ls-remote', '--heads', 'origin'], { cwd, timeout: 30_000, env });
+  // The one network call: ssh never asks for anything, whatever command the checkout's own configuration names.
+  const listed = await git(['-c', 'core.sshCommand=ssh -o BatchMode=yes', 'ls-remote', '--heads', 'origin'], { cwd, timeout: 30_000, env });
   return listed.status === 0 && listed.stdout.split('\n').some((line) => line.split('\t')[0] === sha);
 }
+
+// Reads that take no optional lock and start no fsmonitor, gc or maintenance, as the other supervisor git readers do.
+const GIT_PREFIX = Object.freeze(['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false']);
 
 // One git command that does not block the event loop (the caller runs beside the controller tick): { status, stdout }.
 function git(args, { cwd, timeout, env = process.env }) {
   return new Promise((done) => {
-    execFile('git', args, { cwd, encoding: 'utf8', windowsHide: true, timeout, env, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) =>
+    execFile('git', [...GIT_PREFIX, ...args], { cwd, encoding: 'utf8', windowsHide: true, timeout, env, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) =>
       done({ status: error ? (Number.isInteger(error.code) ? error.code : -1) : 0, stdout: stdout ?? '' }));
   });
 }
@@ -212,7 +235,7 @@ class ServiceHttpError extends Error {
  * Node's https client follows no redirect. An error answer is reduced to its status: its body, which might echo a
  * request header, is never read into a message.
  */
-function httpsTransport(service, credentialHeaders = {}) {
+function httpsTransport(service, credentialHeaders = {}, signal = undefined) {
   let ca = null;
   return (method, path, payload, limitMs = 30_000, bundle = null) => new Promise((resolve, reject) => {
     if (path !== '/health' && !(path === '/v1/sources' && bundle) && !/^\/v1\/jobs(?:\/[0-9a-f-]{36}(?:\/(?:result|cancel|artifacts\/stdout\.log))?)?$/.test(path)) {
@@ -221,7 +244,7 @@ function httpsTransport(service, credentialHeaders = {}) {
     try { ca ??= readFileSync(service.caFile); } catch (error) { reject(new Error(`certificate ${service.caFile} unreadable (${error.code ?? error.message})`)); return; }
     const body = bundle ? bundle.bytes : payload === undefined ? null : Buffer.from(JSON.stringify(payload));
     const type = bundle ? { 'Content-Type': 'application/x-git-bundle', 'X-Project-Id': bundle.projectId, 'X-Commit-Sha': bundle.sha } : { 'Content-Type': 'application/json' };
-    const request = https.request(new URL(path, service.baseUrl), { method, ca, rejectUnauthorized: true,
+    const request = https.request(new URL(path, service.baseUrl), { method, ca, rejectUnauthorized: true, ...(signal ? { signal } : {}),
       headers: { ...credentialHeaders, ...(body ? { ...type, 'Content-Length': body.length } : {}) } }, (response) => {
       if (response.statusCode >= 300) { clearTimeout(timer); response.resume(); reject(new ServiceHttpError(response.statusCode)); return; }
       const chunks = [];
@@ -243,9 +266,9 @@ function httpsTransport(service, credentialHeaders = {}) {
 
 /**
  * The service-contract client of kind remote-gate-http. `headers` are the credential headers serviceCredentialHeaders
- * resolved for it; `transport` is injectable for tests.
+ * resolved for it; `signal` (an AbortSignal) ends any request in flight; `transport` is injectable for tests.
  */
-export function remoteGateHttp(service, { headers = {}, transport = httpsTransport(service, headers) } = {}) {
+export function remoteGateHttp(service, { headers = {}, signal = undefined, transport = httpsTransport(service, headers, signal) } = {}) {
   return {
     health: () => transport('GET', '/health'),
     submit: (spec) => transport('POST', '/v1/jobs', spec),
@@ -414,37 +437,44 @@ export const offerKey = (service, project, sha) => `aiworks-verified-${service.n
  * submitted under offerKey, so an offer that lost its receipt asks for the same job again; given the recorded `jobId` it
  * submits nothing and re-attaches. It waits at most the service's queueSeconds plus timeoutMinutes from `startedAt`; a
  * wait that ends leaves the job running. `source` (a bundleOf result) goes only to a service with `sources: true`.
- * `onSubmitted(jobId)` runs once the service accepted the job, before any wait.
- * Returns { state, jobId, exitCode, summary }, state one of passed, test_failure, environment_failure, not_counted,
- * unavailable or timeout, with the service's words reduced to one plain line without the credential; or null when
- * `stopping()` ended the wait first (nothing to record: the next start re-attaches).
+ * `broker.get` may return a promise (token-store.mjs asyncTokenReader), so no credential lookup blocks the event loop.
+ * `signal` ends a request in flight when the caller stops. `onSubmitted(jobId)` runs once the service accepted the job,
+ * before any wait.
+ * Returns { state, jobId, exitCode, summary, transient, refused }, state one of passed, test_failure,
+ * environment_failure, not_counted, unavailable or timeout, with the service's words reduced to one plain line without
+ * the credential. `transient` marks an `unavailable` that may pass (no answer, a server error, an unhealthy service, an
+ * answer cut short): the caller asks again later rather than record it. `refused` marks an HTTP 401 or 403. Returns null
+ * when `stopping()` ended the offer first (nothing to record: the next start re-attaches).
  */
 export async function offerOnService({ service, repository, sha, jobId = null, startedAt = Date.now(), reference = 'verified', source = null,
-  broker = null, client = remoteGateHttp, onSubmitted = async () => {}, stopping = () => false, sleep = sleepFor, now = Date.now, pollMs = 30_000 }) {
+  broker = null, client = remoteGateHttp, signal = undefined, onSubmitted = async () => {}, stopping = () => false, sleep = sleepFor,
+  now = Date.now, pollMs = 30_000 }) {
   let secrets = [];
-  const outcome = (state, summary, exitCode = null) => ({ state, jobId, exitCode,
+  const outcome = (state, summary, { exitCode = null, transient = false, refused = false } = {}) => ({ state, jobId, exitCode, transient, refused,
     summary: plain(secrets.reduce((cut, secret) => cut.split(secret).join('[credential]'), String(summary))) });
   const project = service?.projects?.[String(repository ?? '').toLowerCase()];
   if (!SHA.test(sha ?? '') || !project) return outcome('unavailable', 'the service is not configured for this repository');
-  const credential = serviceCredentialHeaders(service, broker);
+  const credential = await serviceCredentialHeadersAsync(service, broker);
   if (credential.problem) return outcome('unavailable', credential.problem);
   secrets = Object.values(credential.headers).flatMap((header) => [header, header.replace(/^Bearer /, '')]);
-  const api = client(service, { headers: credential.headers });
+  const api = client(service, { headers: credential.headers, signal });
   const deadline = startedAt + service.queueSeconds * 1000 + service.timeoutMinutes * 60_000;
   try {
     let state;
     if (jobId) state = (await api.status(jobId))?.state;
     else {
       const health = await api.health();
-      if (health?.status !== 'ok') return outcome('unavailable', `health is ${JSON.stringify(health?.status ?? null)}`);
+      if (health?.status !== 'ok') return outcome('unavailable', `health is ${JSON.stringify(health?.status ?? null)}`, { transient: true });
       let sourceId = null;
       if (source) {
         if (service.sources !== true) return outcome('unavailable', 'the commit is on no origin branch, and the service does not accept sources');
+        if (stopping()) return null;
         const receipt = await api.source({ bytes: source.bytes, projectId: project.projectId, sha });
         const problem = sourceProblem(receipt, { sha, projectId: project.projectId, bundle: source });
         if (problem) return outcome('unavailable', problem);
         sourceId = receipt.sourceId;
       }
+      if (stopping()) return null;
       const submitted = await api.submit({ idempotencyKey: offerKey(service, project, sha), projectId: project.projectId, commitSha: sha,
         profile: project.profile, timeoutSeconds: Math.max(300, service.timeoutMinutes * 60 - 60),
         aiworksTaskId: String(reference).replace(/[^\w.-]+/g, '-').slice(0, 120), ...(sourceId ? { sourceId } : {}) });
@@ -470,21 +500,29 @@ export async function offerOnService({ service, repository, sha, jobId = null, s
     const verdict = acceptRemoteResult(result, { jobId, sha, projectId: project.projectId, profile: project.profile });
     if (verdict.counted) {
       // The output's node:test counts, when it has them, make the summary; a pass without any output does not count.
-      let text = '';
-      try { const log = await api.log(jobId); text = typeof log === 'string' ? log : JSON.stringify(log ?? ''); } catch { /* no output */ }
+      // Output that could not be read is asked for again later, never taken for missing output.
+      const log = await api.log(jobId);
+      const text = typeof log === 'string' ? log : JSON.stringify(log ?? '');
       const counts = [...text.matchAll(/^# (tests|pass|fail) (\d+)\s*$/gm)].slice(-3).map((match) => `${match[1]} ${match[2]}`).join(', ');
-      if (verdict.passed && !text.trim()) return outcome('not_counted', 'a pass without its output', exitCode);
-      if (verdict.passed) return outcome('passed', `the full gate passed on the exact commit${counts ? ` (${counts})` : ''}`, exitCode);
+      if (verdict.passed && !text.trim()) return outcome('not_counted', 'a pass without its output', { exitCode });
+      if (verdict.passed) return outcome('passed', `the full gate passed on the exact commit${counts ? ` (${counts})` : ''}`, { exitCode });
       const failed = Array.isArray(result.commands) ? result.commands.find((command) => command?.exitCode !== 0) : null;
-      return outcome('test_failure', `the gate failed${failed?.phase ? ` in ${failed.phase}` : ''} (exit ${exitCode}${counts ? `; ${counts}` : ''})`, exitCode);
+      return outcome('test_failure', `the gate failed${failed?.phase ? ` in ${failed.phase}` : ''} (exit ${exitCode}${counts ? `; ${counts}` : ''})`, { exitCode });
     }
     if (result?.jobId === jobId && result.requestedSha === sha && ['environment_failure', 'cancelled', 'interrupted'].includes(result.state)) {
-      return outcome('environment_failure', `the service ended with ${result.state}, which says nothing about the code`, exitCode);
+      return outcome('environment_failure', `the service ended with ${result.state}, which says nothing about the code`, { exitCode });
     }
-    return outcome('not_counted', verdict.reason, exitCode);
+    return outcome('not_counted', verdict.reason, { exitCode });
   } catch (error) {
-    const refused = error?.status === 401 || error?.status === 403;
-    return outcome('unavailable', !refused ? error?.message ?? 'no answer' : service.auth ? `HTTP ${error.status}: the service refused the configured credential`
-      : `HTTP ${error.status}: the service requires authentication, and no authentication contract is configured for it`);
+    if (stopping()) return null;
+    const status = error?.status;
+    if (status === 401 || status === 403) {
+      return outcome('unavailable', service.auth ? `HTTP ${status}: the service refused the configured credential`
+        : `HTTP ${status}: the service requires authentication, and no authentication contract is configured for it`, { refused: true });
+    }
+    if (status === 404 && jobId) return outcome('unavailable', `HTTP 404: the service does not know job ${jobId}`);
+    // No answer, an answer cut short, a server error or a rate limit may pass; another client error will not.
+    const transient = status === undefined || status === 429 || status >= 500;
+    return outcome('unavailable', error?.message ?? 'no answer', { transient });
   }
 }

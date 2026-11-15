@@ -8,7 +8,7 @@
 // only as `get`'s return value: never logged, journalled or written to disk by it.
 // Stores: the Windows Credential Manager (the default), or a credential helper command the operator configures.
 // Tests use a synthetic helper with a synthetic value; no test reads the real store.
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { POWERSHELL } from './proc.mjs';
 
 /** A reference: segments of letters, digits, dot, dash and underscore joined by `/` or `:`
@@ -152,4 +152,38 @@ export function tokenStoreFrom(spec = { kind: 'windows' }) {
 export function readToken(store, ref) {
   const value = store.get(checkedRef(ref));
   return typeof value === 'string' && value.length ? value : null;
+}
+
+/**
+ * The read-only store `spec` names, resolved without blocking the event loop: { get(ref) -> Promise<string | null> },
+ * the same `get` contract as windowsTokenStore and commandTokenStore (exit 3 or 1 absent, any other exit "cannot tell",
+ * which rejects). For a caller that runs beside the controller tick (check-service-caller.mjs). `run` is injectable.
+ */
+export function asyncTokenReader(spec = { kind: 'windows' }, { run = execFile } = {}) {
+  const call = (file, args, absentExit) => new Promise((done, fail) => {
+    run(file, args, { encoding: 'utf8', windowsHide: true, timeout: 30_000 }, (error, stdout) => {
+      const status = error ? (Number.isInteger(error.code) ? error.code : -1) : 0;
+      if (status === absentExit) done(null);
+      else if (status !== 0) fail(new Error(`the credential store could not answer get (exit ${status})`));
+      else done(String(stdout ?? ''));
+    });
+  });
+  if (spec?.kind === 'windows') {
+    return { get: (ref) => {
+      checkedRef(ref);
+      if (!POWERSHELL) return Promise.reject(new Error('the Windows Credential Manager exists only on Windows'));
+      return call(POWERSHELL, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script('get', ref), 'utf16le').toString('base64')], 3);
+    } };
+  }
+  if (spec?.kind === 'command') {
+    const command = spec.command;
+    if (!Array.isArray(command) || !command.length || command.some((part) => typeof part !== 'string' || !part)) {
+      throw new TypeError('a credential helper is a non-empty command array');
+    }
+    return { get: async (ref) => {
+      const value = await call(command[0], [...command.slice(1), 'get', checkedRef(ref)], 1);
+      return value === null ? null : value.replace(/\r?\n$/, '');
+    } };
+  }
+  throw new TypeError(`unknown token store ${JSON.stringify(spec?.kind ?? null)}`);
 }

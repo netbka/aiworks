@@ -6,21 +6,26 @@
 //   check-service-result   { task, service, sha, project, jobId, state, exitCode, summary }
 // Each commit a verifier accepted (a finished verify operation of a commit task whose verdict is `accepted`) goes once
 // to each service that lists the task's repository and opted in with `"offer": "verified"`. The services and each
-// service's credential broker come only from the controller's own config.json (checkServiceSettings, tokenStoreFrom),
+// service's credential broker come only from the controller's own config.json (checkServiceSettings, asyncTokenReader),
 // never from the worker-inherited AIWORKS_CHECK_SERVICES. At most one offer per service is in flight. A restart finds
 // the recorded job and re-attaches to it; an offer whose job was accepted but not yet recorded is submitted again under
 // the same idempotency key, which the service answers with the same job. No record ever holds credential material.
+// A failure that may pass (no answer, a server error, an unhealthy service) is not recorded: the service is asked again
+// after RETRY_MS, a recorded job is re-attached to, and only the end of the offer window records it as unavailable.
 import { setTimeout as sleepFor } from 'node:timers/promises';
 import { bundleOf, checkServiceSettings, offerOnService, OFFER_VERIFIED, onOrigin, originRepository } from './check-services.mjs';
 import { specOf } from './plan.mjs';
-import { tokenStoreFrom } from './token-store.mjs';
+import { asyncTokenReader } from './token-store.mjs';
 
 export const OFFERED = 'check-service-offered';
 export const RESULT = 'check-service-result';
 /** How far back a verification is still offered: a restart catches up within it, older ones are never offered. */
 export const OFFER_WINDOW_MS = 24 * 3600_000;
-// How often a commit that is on no origin branch yet (a verified head before its publication) is looked for again.
-const ORIGIN_RECHECK_MS = 5 * 60_000;
+// How often a commit on no origin branch yet (a head verified before its publication) is looked for again, and how long
+// a service that failed in a way that may pass is left alone.
+const RETRY_MS = 5 * 60_000;
+// How long a resolved credential is reused, in memory only, before the store is asked again.
+const CREDENTIAL_TTL_MS = 10 * 60_000;
 
 /** The services of the controller's own config.json that opted in to offers of verified commits. */
 export function offeringServices(config) {
@@ -73,23 +78,41 @@ export function checkServiceView(store, campaignId) {
  * `checkoutOf(declaration)` is the campaign's checkout folder or null. Everything else is injectable for tests.
  */
 export function createCheckServiceCaller({ store, config, log = () => {}, checkoutOf = () => null, client, now = Date.now, pollMs = 30_000,
-  windowMs = OFFER_WINDOW_MS, brokerFor = (service) => (service.auth ? tokenStoreFrom(service.auth.credentialStore ?? { kind: 'windows' }) : null),
+  windowMs = OFFER_WINDOW_MS, readerFor = (service) => asyncTokenReader(service.auth.credentialStore ?? { kind: 'windows' }),
   repositoryOf = null, available = (sha, cwd) => (cwd ? onOrigin(sha, cwd) : false), bundle = (sha, cwd) => (cwd ? bundleOf(sha, cwd) : null), sleep = null }) {
   const services = offeringServices(config);
   const inFlight = new Map();
   const notBefore = new Map();
+  const serviceWait = new Map();
   const origins = new Map();
+  const credentials = new Map();
   const abort = new AbortController();
   let stopped = false;
   const wait = sleep ?? ((ms) => sleepFor(ms, undefined, { signal: abort.signal, ref: false }).catch(() => {}));
   const checkout = (campaign) => { try { return checkoutOf(campaign.declaration) ?? null; } catch { return null; } };
+  // The declaration's repository; the checkout's origin only for a target that names none (a project without GitHub).
   const repository = repositoryOf ?? ((campaign) => {
     if (!origins.has(campaign.id)) {
-      const path = checkout(campaign);
-      origins.set(campaign.id, (path ? originRepository(path) : null) ?? campaign.declaration?.target?.repository?.toLowerCase() ?? null);
+      const named = campaign.declaration?.target?.repository;
+      const path = named ? null : checkout(campaign);
+      origins.set(campaign.id, named ? String(named).toLowerCase() : path ? originRepository(path) : null);
     }
     return origins.get(campaign.id);
   });
+  // A service's broker: its store asked without blocking, and a resolved value reused for CREDENTIAL_TTL_MS, in memory
+  // only (never logged or recorded); a refusal drops it.
+  const brokerFor = (service) => {
+    if (!service.auth) return null;
+    const reader = readerFor(service);
+    return { get: async (ref) => {
+      const hit = credentials.get(service.name);
+      if (hit && hit.ref === ref && hit.until > now()) return hit.value;
+      const value = await reader.get(ref);
+      if (typeof value === 'string' && value.length) credentials.set(service.name, { ref, value, until: now() + CREDENTIAL_TTL_MS });
+      else credentials.delete(service.name);
+      return value;
+    } };
+  };
   const record = (campaignId, kind, detail) => {
     try { store.journal(campaignId, kind, detail, now()); return true; } catch (error) { log(`check service ${detail.service}: could not record ${kind} (${error.message})`); return false; }
   };
@@ -129,30 +152,41 @@ export function createCheckServiceCaller({ store, config, log = () => {}, checko
   async function offer(item) {
     const { service, campaignId, taskId, sha } = item;
     const project = service.projects[item.repository].projectId;
+    const closing = now() - item.verifiedAt >= windowMs - 2 * RETRY_MS;
+    const finish = (state, summary, { jobId = item.jobId, exitCode = null } = {}) => {
+      record(campaignId, RESULT, { task: taskId, service: service.name, sha, project, jobId, state, exitCode, summary });
+      log(`check service ${service.name} ${state} for ${campaignId}/${taskId} at ${sha}${jobId ? ` (job ${jobId})` : ''}: ${summary}`);
+    };
     let source = null;
     if (!item.jobId && !(await available(sha, item.checkout ?? item.workspace))) {
       // A head verified before its publication: a service that accepts sources gets it as a bundle of the verifier's
       // checkout, if that still holds the exact commit; any other service waits until origin has it.
       const made = service.sources === true ? await bundle(sha, item.workspace) : null;
       if (made?.bytes) source = made;
-      else if (now() - item.verifiedAt >= windowMs - 2 * ORIGIN_RECHECK_MS) {
-        record(campaignId, RESULT, { task: taskId, service: service.name, sha, project, jobId: null, state: 'unavailable', exitCode: null,
-          summary: 'the commit reached no origin branch within the offer window, and the service took no source of it' });
+      else {
+        if (closing) finish('unavailable', 'the commit reached no origin branch within the offer window, and the service took no source of it');
+        else notBefore.set(item.key, now() + RETRY_MS);
         return false;
-      } else { notBefore.set(item.key, now() + ORIGIN_RECHECK_MS); return false; }
+      }
     }
     if (stopped) return true;
     const outcome = await offerOnService({ service, repository: item.repository, sha, jobId: item.jobId, startedAt: item.startedAt ?? now(),
-      reference: `${campaignId}-${taskId}`, source, broker: brokerFor(service), ...(client ? { client } : {}), stopping: () => stopped,
-      sleep: wait, now, pollMs,
+      reference: `${campaignId}-${taskId}`, source, broker: brokerFor(service), ...(client ? { client } : {}), signal: abort.signal,
+      stopping: () => stopped, sleep: wait, now, pollMs,
       onSubmitted: async (jobId) => {
         record(campaignId, OFFERED, { task: taskId, service: service.name, sha, project, jobId });
         log(`check service ${service.name} accepted job ${jobId} for ${campaignId}/${taskId} at ${sha}`);
       } });
     if (!outcome) return true;
-    record(campaignId, RESULT, { task: taskId, service: service.name, sha, project, jobId: outcome.jobId, state: outcome.state,
-      exitCode: outcome.exitCode, summary: outcome.summary });
-    log(`check service ${service.name} ${outcome.state} for ${campaignId}/${taskId} at ${sha}${outcome.jobId ? ` (job ${outcome.jobId})` : ''}: ${outcome.summary}`);
+    if (outcome.refused) credentials.delete(service.name);
+    if (outcome.transient && !closing) {
+      // Asked again later: the service is left alone for RETRY_MS, and a recorded job is re-attached to then.
+      serviceWait.set(service.name, now() + RETRY_MS);
+      log(`check service ${service.name} unavailable for ${campaignId}/${taskId} at ${sha}, asked again in ${RETRY_MS / 60_000} min: ${outcome.summary}`);
+      return true;
+    }
+    finish(outcome.state, outcome.transient ? `${outcome.summary}; still so at the end of the offer window` : outcome.summary,
+      { jobId: outcome.jobId, exitCode: outcome.exitCode });
     return true;
   }
 
@@ -164,7 +198,7 @@ export function createCheckServiceCaller({ store, config, log = () => {}, checko
       if (notBefore.get(item.key) > now()) continue;
       try { if (await offer(item)) return; } catch (error) {
         // An unexpected failure is retried later, never in a loop and never as a result.
-        notBefore.set(item.key, now() + ORIGIN_RECHECK_MS);
+        notBefore.set(item.key, now() + RETRY_MS);
         log(`check service ${item.service.name}: offer of ${item.sha} failed (${error?.message ?? error})`);
         return;
       }
@@ -176,9 +210,9 @@ export function createCheckServiceCaller({ store, config, log = () => {}, checko
     /** Starts the next due offer of each idle service; returns at once. */
     tick() {
       if (stopped || !services.length) return;
-      const idle = services.filter((service) => !inFlight.has(service.name));
-      if (!idle.length) return;
       const at = now();
+      const idle = services.filter((service) => !inFlight.has(service.name) && !(serviceWait.get(service.name) > at));
+      if (!idle.length) return;
       const items = due();
       for (const service of idle) {
         const mine = items.filter((item) => item.service === service && !(notBefore.get(item.key) > at));
