@@ -12,6 +12,8 @@
 // the same idempotency key, which the service answers with the same job. No record ever holds credential material.
 // A failure that may pass (no answer, a server error, an unhealthy service) is not recorded: the service is asked again
 // after RETRY_MS, a recorded job is re-attached to, and only the end of the offer window records it as unavailable.
+// Every offer ends with one result record: a commit whose window ended while its service was busy, or whose recorded
+// job outlived its wait, is recorded unavailable the next time the due offers are listed.
 import { setTimeout as sleepFor } from 'node:timers/promises';
 import { bundleOf, checkServiceSettings, offerOnService, OFFER_VERIFIED, onOrigin, originRepository } from './check-services.mjs';
 import { specOf } from './plan.mjs';
@@ -21,6 +23,8 @@ export const OFFERED = 'check-service-offered';
 export const RESULT = 'check-service-result';
 /** How far back a verification is still offered: a restart catches up within it, older ones are never offered. */
 export const OFFER_WINDOW_MS = 24 * 3600_000;
+// How many windows back a verification whose window ended is still looked at, to record its final result once.
+const CLOSE_LOOKBACK = 2;
 // How often a commit on no origin branch yet (a head verified before its publication) is looked for again, and how long
 // a service that failed in a way that may pass is left alone.
 const RETRY_MS = 5 * 60_000;
@@ -82,6 +86,10 @@ export function createCheckServiceCaller({ store, config, log = () => {}, checko
   repositoryOf = null, available = (sha, cwd) => (cwd ? onOrigin(sha, cwd) : false), bundle = (sha, cwd) => (cwd ? bundleOf(sha, cwd) : null), sleep = null }) {
   const services = offeringServices(config);
   const inFlight = new Map();
+  // The (service, commit) keys an offer is working on now: never closed by due() while their own offer may still record.
+  const active = new Set();
+  // The keys due() recorded a final result for: a service's list made before that never offers them.
+  const closed = new Set();
   const notBefore = new Map();
   const serviceWait = new Map();
   const origins = new Map();
@@ -117,12 +125,17 @@ export function createCheckServiceCaller({ store, config, log = () => {}, checko
     try { store.journal(campaignId, kind, detail, now()); return true; } catch (error) { log(`check service ${detail.service}: could not record ${kind} (${error.message})`); return false; }
   };
 
-  /** Every (service, verified commit) not yet answered, oldest verification first. */
+  /**
+   * Every (service, verified commit) not yet answered, oldest verification first. A commit whose offer window ended
+   * without a result (never asked about in time, or its job never answered) gets its final `unavailable` result here,
+   * once: the record itself keeps it from being recorded again after a restart. A recorded job keeps its own wait
+   * (queueSeconds plus timeoutMinutes from its offer) even past the window, and an offer in flight is never closed here.
+   */
   function due() {
     const at = now();
     const ops = store.all(`SELECT campaign_id, task_id, target_sha, workspace, updated_at FROM operations WHERE kind = 'verify' AND state = 'finished'
       AND updated_at >= ? AND json_extract(outcome, '$.class') = 'result' AND json_extract(outcome, '$.value.verdict') = 'accepted'
-      ORDER BY updated_at, seq`, at - windowMs);
+      ORDER BY updated_at, seq`, at - CLOSE_LOOKBACK * windowMs);
     if (!ops.length) return [];
     const records = offerRecords(store, [...new Set(ops.map((op) => op.campaign_id))]);
     const campaigns = new Map();
@@ -138,7 +151,22 @@ export function createCheckServiceCaller({ store, config, log = () => {}, checko
       for (const service of services) {
         const key = keyOf(service.name, op.target_sha);
         const known = records.get(key);
-        if (!service.projects[repo] || known?.result || items.some((item) => item.key === key)) continue;
+        if (!service.projects[repo] || known?.result || closed.has(key) || items.some((item) => item.key === key)) continue;
+        const offered = known?.offered ?? null;
+        const open = at - op.updated_at < windowMs || (offered && at < offered.at + service.queueSeconds * 1000 + service.timeoutMinutes * 60_000);
+        if (!open) {
+          if (active.has(key)) continue;
+          closed.add(key);
+          // A recorded job keeps the campaign and task it was offered for, so its result is recorded beside it.
+          const [campaignId, task] = [offered?.campaignId ?? campaign.id, offered?.task ?? op.task_id];
+          const summary = offered ? `job ${offered.jobId} gave no answer AIWorks recorded within the offer window`
+            : `the service gave no usable answer about the commit within the ${windowMs / 3600_000}-hour offer window`;
+          if (record(campaignId, RESULT, { task, service: service.name, sha: op.target_sha, project: service.projects[repo].projectId,
+            jobId: offered?.jobId ?? null, state: 'unavailable', exitCode: null, summary })) {
+            log(`check service ${service.name} unavailable for ${campaignId}/${task} at ${op.target_sha}: ${summary}`);
+          } else closed.delete(key);
+          continue;
+        }
         if (!checkouts.has(campaign.id)) checkouts.set(campaign.id, checkout(campaign));
         // A recorded job keeps the campaign and task it was offered for, so its result is recorded beside it.
         items.push({ key, service, repository: repo, campaignId: known?.offered?.campaignId ?? campaign.id, taskId: known?.offered?.task ?? op.task_id,
@@ -195,13 +223,14 @@ export function createCheckServiceCaller({ store, config, log = () => {}, checko
   async function serve(items) {
     for (const item of items) {
       if (stopped) return;
-      if (notBefore.get(item.key) > now()) continue;
+      if (closed.has(item.key) || notBefore.get(item.key) > now()) continue;
+      active.add(item.key);
       try { if (await offer(item)) return; } catch (error) {
         // An unexpected failure is retried later, never in a loop and never as a result.
         notBefore.set(item.key, now() + RETRY_MS);
         log(`check service ${item.service.name}: offer of ${item.sha} failed (${error?.message ?? error})`);
         return;
-      }
+      } finally { active.delete(item.key); }
     }
   }
 

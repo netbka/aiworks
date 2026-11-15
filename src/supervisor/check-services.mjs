@@ -14,7 +14,7 @@ import { execFile, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { setTimeout as sleepFor } from 'node:timers/promises';
 import { readToken, validTokenRef } from './token-store.mjs';
 
@@ -207,9 +207,26 @@ export async function onOrigin(sha, cwd = process.cwd()) {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' };
   const tracked = await git(['branch', '-r', '--contains', sha], { cwd, timeout: 30_000, env });
   if (tracked.status === 0 && tracked.stdout.split('\n').some((line) => line.trim().startsWith('origin/'))) return true;
-  // The one network call: ssh never asks for anything, whatever command the checkout's own configuration names.
-  const listed = await git(['-c', 'core.sshCommand=ssh -o BatchMode=yes', 'ls-remote', '--heads', 'origin'], { cwd, timeout: 30_000, env });
+  // The one network call. A worker can write the shared checkout's configuration (remote.origin.uploadpack,
+  // credential.helper, core.askPass, core.gitProxy, protocol.ext.allow, include.path, ...), and several of those values
+  // name a command git would run here. So origin's address is only read from that configuration, and ls-remote runs
+  // outside every repository on that address, where no checkout value applies; ssh never asks for anything and no
+  // transport that runs a command (ext::) is allowed.
+  const address = await git(['remote', 'get-url', 'origin'], { cwd, timeout: 10_000, env });
+  const url = remoteAddress(address.status === 0 ? address.stdout.trim() : '', cwd);
+  if (!url) return false;
+  const outside = tmpdir();
+  const listed = await git(['-c', 'core.sshCommand=ssh -o BatchMode=yes', '-c', 'protocol.ext.allow=never', '-c', 'core.askPass=',
+    'ls-remote', '--heads', '--', url], { cwd: outside, timeout: 30_000, env: { ...env, GIT_CEILING_DIRECTORIES: dirname(outside) } });
   return listed.status === 0 && listed.stdout.split('\n').some((line) => line.split('\t')[0] === sha);
+}
+
+// origin's address as ls-remote outside the checkout can use it: a URL or scp-style address as written, a path made
+// absolute against the checkout, and never one that git would read as an option.
+function remoteAddress(url, cwd) {
+  if (!url || url.startsWith('-') || /[\0\r\n]/.test(url)) return null;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url) || isAbsolute(url) || /^[^/\\]{2,}:/.test(url)) return url;
+  return resolve(cwd, url);
 }
 
 // Reads that take no optional lock and start no fsmonitor, gc or maintenance, as the other supervisor git readers do.
@@ -500,8 +517,13 @@ export async function offerOnService({ service, repository, sha, jobId = null, s
     const verdict = acceptRemoteResult(result, { jobId, sha, projectId: project.projectId, profile: project.profile });
     if (verdict.counted) {
       // The output's node:test counts, when it has them, make the summary; a pass without any output does not count.
-      // Output that could not be read is asked for again later, never taken for missing output.
-      const log = await api.log(jobId);
+      // Output that could not be read is asked for again later, never taken for missing output. A job the service
+      // finished without an output file (HTTP 404 on the log alone) has empty output: its own state stays the verdict.
+      let log;
+      try { log = await api.log(jobId); } catch (error) {
+        if (error?.status !== 404) throw error;
+        log = '';
+      }
       const text = typeof log === 'string' ? log : JSON.stringify(log ?? '');
       const counts = [...text.matchAll(/^# (tests|pass|fail) (\d+)\s*$/gm)].slice(-3).map((match) => `${match[1]} ${match[2]}`).join(', ');
       if (verdict.passed && !text.trim()) return outcome('not_counted', 'a pass without its output', { exitCode });
