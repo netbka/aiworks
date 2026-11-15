@@ -219,7 +219,7 @@ const RUNNERS = [
       if (total(lines, /^ℹ cancelled /, /(\d+)/) > 0) return null;
       if (lines.filter((line) => /^ℹ fail \d+$/.test(line)).length !== 1) return null; // one run only
       if (lines.filter((line) => line === '✖ failing tests:').length > 1) return null;
-      const names = [], path = [], seen = new Map(), containers = new Set(), listedNames = [];
+      const names = [], path = [], seen = new Map(), containers = new Set(), listedNames = [], treeFailed = [];
       let listing = false, summed = false, listed = null, at = null;
       for (const line of lines) {
         if (line.startsWith('ℹ ')) { summed = true; continue; }
@@ -245,6 +245,7 @@ const RUNNERS = [
         if (!listing) {
           if (match[2] === '▶') containers.add(match[3]);
           else seen.set(match[3], (seen.get(match[3]) ?? 0) + 1);
+          if (match[2] === '✖' && !match[4]) treeFailed.push(match[3]);
         }
         // A test reported after a summary with no failure list is a second run; after a list, the next run's first line.
         if (summed && !listing && match[2] === '✖') return null;
@@ -260,6 +261,9 @@ const RUNNERS = [
       // Failures: only the list of the one run, naming each of its counted failed tests once, with its file.
       if (!listing || !listed || listed.length !== count || new Set(listed).size !== listed.length) return null;
       if (listedNames.some((name) => containers.has(name) || seen.get(name) !== 1)) return null;
+      // A failed test shown before the list but not in it (an earlier step's output, a run cut short) is not accounted for.
+      const accounted = new Set(listedNames);
+      if (treeFailed.some((name) => !accounted.has(name) && !containers.has(name))) return null;
       return sorted(listed);
     },
   },

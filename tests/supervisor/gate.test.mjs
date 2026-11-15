@@ -249,5 +249,6 @@ test('a node:test spec failure list names each failed test with its file, else i
   assert.equal(failureList(run(entry('a.mjs', 'works'), 1, swap)), null, 'a listed name shown twice among the tests');
   // A suite whose hook failed is listed but not counted; with two runs in one log it could pair with another run's count.
   assert.equal(failureList(run(entry('s.mjs', 'suite'), 1, ['▶ suite', '  ✔ a (1ms)', '✖ suite (2ms)'])), null, 'a suite entry');
+  assert.equal(failureList(run(entry('a.mjs', 'reads'), 1, ['✖ added (1ms)', '✖ reads (3ms)'])), null, 'a failed test missing from the list');
   assert.equal(failureList(`${run(entry('a.mjs', 'reads'), 1)}\r\n${run(entry('b.mjs', 'writes'), 1)}`), null, 'two runs in one log');
 });
