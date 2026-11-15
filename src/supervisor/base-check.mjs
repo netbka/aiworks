@@ -206,9 +206,10 @@ const readText = (file) => { try { return readFileSync(file, 'utf8'); } catch { 
 const readJson = (file) => { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return null; } };
 // Test runners recognised in a package script. Those in LIST_RUNNERS print output failedTests (gate.mjs) reads with their
 // default console reporter; another reporter, or a runner not listed, gives no list and its failed gates are refused.
-// Plain node:test names no file with a failed test, so it gives no list (scripts/run-tests.mjs does).
+// node:test gives a list with its spec reporter, whose failure list names each failed test's file (the TAP reporter does
+// not, so a TAP log stays unknown).
 const SCRIPT_RUNNERS = [['vitest', /\bvitest\b/], ['jest', /\bjest\b/], ['mocha', /\bmocha\b/], ['playwright', /\bplaywright\b/], ['node:test', /\bnode\b[^&|;]*--test\b/]];
-const LIST_RUNNERS = new Set(['scripts/run-tests.mjs', 'vitest', 'jest', 'cargo test', 'go test', 'pytest']);
+const LIST_RUNNERS = new Set(['scripts/run-tests.mjs', 'node:test', 'vitest', 'jest', 'cargo test', 'go test', 'pytest']);
 
 /**
  * What one project checkout's full check is, from its files only (nothing runs): { command, runner, failedTestList }.
