@@ -379,7 +379,7 @@ export function releaseLadder(task, d, recorded = null, { github = true } = {}) 
   const sha = String(recorded?.verifiedSha ?? task.verifiedSha ?? '').toLowerCase().slice(0, 7) || null;
   const note = !recorded ? 'Review only: AIWorks does not deploy this result. Whether it is live is not recorded here.'
     : recorded.state === 'rolled-back' ? 'Rolled back: the checks after release failed.'
-      : recorded.state === 'rollback-failed' ? 'The rollback failed. See Settings, AIWorks itself.'
+      : recorded.state === 'rollback-failed' ? (recorded.holdsLock === false ? 'The rollback failed; the owner has since resolved the incident.' : 'The rollback failed. See Settings, AIWorks itself.')
         : recorded.state === 'unknown' ? 'Outcome unknown: AIWorks is checking the destination and will not release there again until it knows.' : null;
   return { sha, steps, note, destination: recorded?.destination ?? null };
 }
@@ -837,8 +837,9 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
     }
   }
   // Releases whose outcome is unknown, or whose rollback failed (AUTO_RELEASE.md sections 8 and 9, slice UI15). Every
-  // unknown one is listed, not only those past their check window: the dashboard reads no grant to know the window.
-  for (const r of (supervisor.releases ?? []).filter((item) => ['unknown', 'rollback-failed'].includes(item.state))) {
+  // unknown one is listed, not only those past their check window: the dashboard reads no grant to know the window. A
+  // failed rollback the owner has resolved (release-resolve freed its lock) is no longer an action.
+  for (const r of (supervisor.releases ?? []).filter((item) => item.state === 'unknown' || (item.state === 'rollback-failed' && item.holdsLock !== false))) {
     const c = supervisor.campaigns.find((item) => item.id === r.campaignId);
     const where = `${r.verifiedSha ? 'the checked version' : 'an unknown version'} to ${[r.project, r.destination].filter(Boolean).join(' ') || 'an unknown destination'}`;
     items.push(r.state === 'unknown'

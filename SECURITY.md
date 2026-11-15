@@ -28,4 +28,3 @@ AIWorks is maintained by one person in his spare time. Reports are read and answ
 
 Known limitations and the current state of each capability are tracked in [Development status](docs/STATUS.md) and the [runbook](docs/SUPERVISOR.md). Nothing here is a security certification or a guarantee.
 
-

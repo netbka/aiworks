@@ -800,6 +800,8 @@ function recordedReleases(store, { config = null, stop = null, now = Date.now() 
       .map((entry) => ({ step: entry.step, outcome: entry.outcome === null || entry.outcome === undefined ? null : RELEASE_OUTCOMES.has(entry.outcome) ? entry.outcome : 'unknown',
         endedAt: Number.isSafeInteger(entry.endedAt) ? entry.endedAt : null })),
     stepStartedAt: Number.isSafeInteger(r.step_started_at) ? r.step_started_at : null, updatedAt: r.updated_at,
+    // Whether it still holds its destination's lock: a failed rollback the owner resolved (release-resolve) no longer does.
+    holdsLock: Boolean(store.get('SELECT 1 AS held FROM release_locks WHERE release_id = ?', r.id)),
     // Releases (OWNER_UI_V2 WP9): what the release row itself recorded, checked field by field. A row recorded before
     // eligibility kept the destination has destinationDetails null, and the owner view says the restore scope is unknown.
     grantVersion: Number.isSafeInteger(r.grant_version) ? r.grant_version : null,
