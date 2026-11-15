@@ -15,7 +15,8 @@
 // Every offer ends with one result record: a commit whose window ended while its service was busy, or whose recorded
 // job outlived its wait, is recorded unavailable the next time the due offers are listed.
 import { setTimeout as sleepFor } from 'node:timers/promises';
-import { bundleOf, checkServiceSettings, offerOnService, OFFER_VERIFIED, onOrigin, originRepository } from './check-services.mjs';
+import { acceptsSources, bundleOf, checkServiceSettings, fullBundleOf, offerOnService, OFFER_VERIFIED, onOrigin, originRepository,
+  SOURCES_FULL } from './check-services.mjs';
 import { specOf } from './plan.mjs';
 import { asyncTokenReader } from './token-store.mjs';
 
@@ -83,7 +84,8 @@ export function checkServiceView(store, campaignId) {
  */
 export function createCheckServiceCaller({ store, config, log = () => {}, checkoutOf = () => null, client, now = Date.now, pollMs = 30_000,
   windowMs = OFFER_WINDOW_MS, readerFor = (service) => asyncTokenReader(service.auth.credentialStore ?? { kind: 'windows' }),
-  repositoryOf = null, available = (sha, cwd) => (cwd ? onOrigin(sha, cwd) : false), bundle = (sha, cwd) => (cwd ? bundleOf(sha, cwd) : null), sleep = null }) {
+  repositoryOf = null, available = (sha, cwd) => (cwd ? onOrigin(sha, cwd) : false), bundle = (sha, cwd) => (cwd ? bundleOf(sha, cwd) : null),
+  fullBundle = (sha, cwd) => (cwd ? fullBundleOf(sha, cwd) : null), sleep = null }) {
   const services = offeringServices(config);
   const inFlight = new Map();
   // The (service, commit) keys an offer is working on now: never closed by due() while their own offer may still record.
@@ -186,10 +188,24 @@ export function createCheckServiceCaller({ store, config, log = () => {}, checko
       log(`check service ${service.name} ${state} for ${campaignId}/${taskId} at ${sha}${jobId ? ` (job ${jobId})` : ''}: ${summary}`);
     };
     let source = null;
-    if (!item.jobId && !(await available(sha, item.checkout ?? item.workspace))) {
+    if (!item.jobId && service.sources === SOURCES_FULL) {
+      // A service that cannot fetch origin always gets a self-contained bundle, from the verifier's checkout or, once
+      // that is gone, the campaign's checkout. One over the size limit is final; a commit neither holds yet is looked
+      // for again until the window closes.
+      let made = await fullBundle(sha, item.workspace);
+      if (!made?.bytes && !made?.tooLarge && item.checkout) made = await fullBundle(sha, item.checkout);
+      if (made?.bytes) source = made;
+      else if (made?.tooLarge || closing) {
+        finish('unavailable', `no self-contained bundle of the commit: ${made?.problem ?? 'no checkout holds it'}`);
+        return false;
+      } else {
+        notBefore.set(item.key, now() + RETRY_MS);
+        return false;
+      }
+    } else if (!item.jobId && !(await available(sha, item.checkout ?? item.workspace))) {
       // A head verified before its publication: a service that accepts sources gets it as a bundle of the verifier's
       // checkout, if that still holds the exact commit; any other service waits until origin has it.
-      const made = service.sources === true ? await bundle(sha, item.workspace) : null;
+      const made = acceptsSources(service) ? await bundle(sha, item.workspace) : null;
       if (made?.bytes) source = made;
       else {
         if (closing) finish('unavailable', 'the commit reached no origin branch within the offer window, and the service took no source of it');

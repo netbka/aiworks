@@ -61,6 +61,23 @@ test('only a full gate of the exact commit that exited 0, with its output, count
   assert.equal((await offer(fake(['passed'])))?.exit, 0);
 });
 
+test('a project that names its own gate counts a pass only when exactly that step exited 0', () => {
+  const mapped = { projectId: 'otherapp', profile: 'full', gate: ['npm', 'run', 'unit:test'] };
+  const { services } = checkServiceSettings({ checkServices: [{ ...service, projects: { 'example-org/otherapp': mapped } }] });
+  const gate = services[0].projects['example-org/otherapp'].gate;
+  const asked = { jobId: JOB, sha: SHA, projectId: 'otherapp', profile: 'full', gate };
+  const own = { phase: 'step-1-test', argv: ['npm', 'run', 'unit:test'], exitCode: 0 };
+  const result = (commands) => ({ ...passed, projectId: 'otherapp', commands });
+  assert.equal(acceptRemoteResult(result([own]), asked).passed, true);
+  for (const [why, commands] of Object.entries({
+    'only the default gate ran': [fullGate],
+    'another script ran': [{ ...own, argv: ['npm', 'run', 'unit:test:quick'] }],
+    'the gate step failed': [{ ...own, exitCode: 1 }],
+    'no step at all': [],
+  })) assert.notEqual(acceptRemoteResult(result(commands), asked).passed, true, why);
+  assert.ok(checkServiceSettings({ checkServices: [{ ...service, projects: { 'example-org/otherapp': { ...mapped, gate: ['npm', ''] } } }] }).problems.length);
+});
+
 test('a busy, broken or unreachable service hands the gate back to this computer and cancels only its own job', async () => {
   // Queued past queueSeconds (60 s, polled every 10 s): its own job is cancelled then, not at the 30-minute limit.
   const busy = fake(['pending']);

@@ -18,7 +18,7 @@ Then:
 
 | Service state | Additional result |
 | --- | --- |
-| `passed` with `exitCode` 0, `commitSha` the exact commit, a step whose `phase` ends in `-check`, whose `argv` ends in `run check` and whose `exitCode` is 0, and a non-empty `stdout.log` (for a project tested by `scripts/run-tests.mjs`, one with its `# all test files` summary) | service check passed (exit 0), with the local gate still required |
+| `passed` with `exitCode` 0, `commitSha` the exact commit, a step whose `phase` ends in `-check`, whose `argv` ends in `run check` and whose `exitCode` is 0 (for a project mapping with `gate`, instead a step whose `argv` ends in exactly those words and whose `exitCode` is 0), and a non-empty `stdout.log` (for a project tested by `scripts/run-tests.mjs`, one with its `# all test files` summary) | service check passed (exit 0), with the local gate still required |
 | `test_failure` | service check failed (exit 1) |
 | `environment_failure`, `cancelled`, `interrupted` | no accepted additional result; recorded as `environment_failure` |
 | a pass missing any of the conditions above | no accepted additional result; recorded as `not_counted` |
@@ -50,7 +50,7 @@ A service of kind `remote-gate-http` must provide the following.
 
 States: `pending` (queued; `waiting.reason` may say why, such as too little free memory), `running`, then one terminal state: `passed`, `test_failure`, `environment_failure`, `cancelled` or `interrupted`.
 
-The result holds at least `jobId`, `projectId`, `profile`, `requestedSha`, `commitSha`, `state`, `exitCode` and `commands`, a list of `{ phase, argv, exitCode }` for every step the service ran. The full gate step must be listed with its real `argv` (ending in `run check`) and exit code.
+The result holds at least `jobId`, `projectId`, `profile`, `requestedSha`, `commitSha`, `state`, `exitCode` and `commands`, a list of `{ phase, argv, exitCode }` for every step the service ran. The full gate step must be listed with its real `argv` (ending in `run check`, or in the project mapping's `gate`) and exit code.
 
 ### Authentication
 
@@ -129,7 +129,9 @@ Add `checkServices` to the supervisor's `config.json` in its data folder (instal
 | `kind` | The plug-in. Known: `remote-gate-http`. |
 | `baseUrl` | The service's `https://` origin only: no path, query or credentials. |
 | `caFile` | The CA certificate that signed the service certificate. A relative path is read from the supervisor data folder. |
-| `projects` | Which repositories may go to this service: `"<owner>/<repository>"` as in the checkout's `origin`, mapped to the service's own `projectId` and `profile`. Other repositories never go to it. |
+| `projects` | Which repositories may go to this service: `"<owner>/<repository>"` as in the checkout's `origin`, mapped to the service's own `projectId` and `profile`, and optionally `gate`. Other repositories never go to it. |
+| `projects.*.gate` | Optional. For a project whose full gate is not `npm run check`: the last words of that step's `argv`, for example `["npm", "test"]` or `["npm", "run", "unit:test"]` (1 to 16 non-empty words). A pass then counts only when a step whose `argv` ends in exactly those words exited 0. Absent: the step must end in `run check` and its `phase` in `-check`. |
+| `sources` | Optional. `true`: a commit origin does not have yet is sent as a bundle of only the commits origin lacks. `"full"`: every offered commit, also one already on origin, is sent as a self-contained bundle, for a service whose copy of the repository cannot fetch origin (a frozen seed without credentials). Absent or `false`: no bundle is ever sent. See [Unpublished commits as a bundle](#unpublished-commits-as-a-bundle). |
 | `queueSeconds` | Added to `timeoutMinutes`, the longest AIWorks waits for an offered job to answer. 10 to 3600, default 120. |
 | `timeoutMinutes` | The longest run AIWorks waits for. 5 to 75, default 60. The service is told to stop a minute earlier (`timeoutSeconds`, at least 300). |
 | `offer` | `"verified"` lets the caller offer this service each commit a verifier accepted here (see [Offering verified commits](#offering-verified-commits)). Absent: the service is never offered anything. No other value is accepted. |
@@ -201,4 +203,8 @@ A service checks a commit that is not on origin yet (a verifier gate before publ
 6. The service drops a source and its quarantine ref after seven days.
 
 A merge-refresh result is a local merge commit: its bundle carries every commit origin lacks, so both parents arrive with it.
+
+### Self-contained bundles
+
+A service whose copy of a repository is only a seed and cannot fetch origin answers a commit it does not hold with `rejected:sha_unknown`, and a `"sources": true` bundle of it with HTTP `422` (its prerequisites are missing). With `"sources": "full"` the caller sends such a service every offered commit, also one already on origin, as a self-contained bundle (`fullBundleOf`): every object the commit reaches, no prerequisite, one head `refs/heads/aiworks-source` at the commit. It is made from the verifier's checkout or, once that is gone, the campaign's checkout, in a new repository of its own that only borrows that checkout's objects, so the checkout is not changed and none of its configuration applies. The 64 MiB limit still holds: a commit whose bundle is larger is recorded `unavailable` with its size and the limit, and a commit no checkout holds yet is looked for again until the offer window ends. Steps 2 to 6 above are unchanged.
 
