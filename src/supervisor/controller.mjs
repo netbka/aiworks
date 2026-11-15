@@ -1434,7 +1434,11 @@ export class Controller {
     let repo;
     try { repo = this.repo(decl); } catch { return; }
     try {
-      const record = await baseCheckStep(this, ctx, { repository: this.baseRepository(decl, repo), repoPath: repo.path, worktreeRoot: repo.worktreeRoot, baseSha: task.base_sha }, this.baseCompare);
+      // The project's own settings (its baseCompare.projects entry, else the top-level command), never the raw settings
+      // object, whose top-level command is null when only per-project entries are configured.
+      const settings = this.baseCompareFor(decl);
+      if (!settings) return;
+      const record = await baseCheckStep(this, ctx, { repository: this.baseRepository(decl, repo), repoPath: repo.path, worktreeRoot: repo.worktreeRoot, baseSha: task.base_sha }, settings);
       if (record?.red) this.recordBaseRed(ctx, decl, task, record);
     } catch (error) {
       if (error instanceof FencedError) throw error;
