@@ -24,6 +24,19 @@ const leaseOf = (c, ctx) => ({ instanceId: c.instanceId, generation: ctx.generat
 const maintenance = (c) => existsSync(join(c.dataDir, '..', 'runtime-maintenance.lock')) || existsSync(join(c.dataDir, 'STOP'));
 const runGit = (c, repo, args) => git.exec(c.cmd.git, args, { cwd: repo.path, timeoutMs: 30_000 });
 const ancestor = (c, repo, from, to) => Boolean(from && to && git.isAncestor({ git: c.cmd.git, path: repo.path, ancestor: from, descendant: to }));
+/**
+ * Before the live revision is read, a candidate is classified by its own change: from the main parent of the merge commit
+ * that took the verified head. After an integration repair, task.base_sha is the previous branch head, and a diff from it
+ * would count the other merges that repair brought in. Only a two-parent merge whose second parent is the verified head
+ * qualifies; anything else (a reconciled or fast-forward record) keeps task.base_sha. The live revision, once read, is
+ * still what the release is classified against.
+ */
+function ownBase(c, repo, merged, sha) {
+  if (!merged?.mergeCommit || !sha) return null;
+  const parents = runGit(c, repo, ['rev-list', '--parents', '-n', '1', merged.mergeCommit]);
+  const [, first, second, ...rest] = parents.ok ? parents.stdout.split(/\s+/) : [];
+  return first && second === sha && !rest.length ? first : null;
+}
 function authorityProblem(c, decl, repo, base, sha) {
   const common = runGit(c, repo, ['merge-base', base, sha]);
   if (!common.ok) throw new Error('The release authority boundary could not be checked');
@@ -130,7 +143,7 @@ function evaluate(c, ctx, row, grant, repo, wayBack) {
   const verification = taskEvidence(c, campaign, task, spec);
   const protectedChange = authorityProblem(c, decl, repo, grant.base, row.verified_sha);
   const current = ancestor(c, repo, merged?.mergeCommit, grant.base) && task.verified_sha === row.verified_sha;
-  const from = wayBack?.live?.revision ?? task.base_sha;
+  const from = wayBack?.live?.revision ?? ownBase(c, repo, merged, row.verified_sha) ?? task.base_sha;
   const diff = runGit(c, repo, ['diff', '--name-status', '-z', '--no-renames', from, row.verified_sha]);
   let paths = null;
   if (diff.ok) {
