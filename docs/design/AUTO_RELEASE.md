@@ -128,6 +128,7 @@ All fields are required unless marked optional. An unknown field, a missing fiel
 | `destinations[].credential` | **Removed 2026-10-17** (plan (i)): a release uses the logins already on this computer (section 6). The REL1 schema still requires it; REL5a drops it | none |
 | `destinations[].rollback` | `automatic` or `report-only`; `automatic` needs a `rollback` command and a retained previous artifact | `"automatic"` |
 | `destinations[].checkWindowMinutes` | How long post-release checks may take before the result counts as failed | `10` |
+| `destinations[].minFreeGB` | Optional, deploy kinds only (added 2026-11-15). The free disk space the destination must report before a deploy: `observe` prints `free-gb: <number>`, and a release waits while that line is missing, malformed or below this value | `20` |
 | `classes` | The path rules that put a changed file in a class (4.3) | |
 | `ownerConfirm[]` | Optional. Classes that may be prepared but always wait for the owner, even if listed above | `["dependency-update"]` |
 

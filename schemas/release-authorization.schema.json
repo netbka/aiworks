@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aiworks.local/schemas/release-authorization.schema.json",
   "title": "Standing release authorization record (aiworks-release-authorization/1)",
-  "description": "A project's standing grant for AIWorks Auto Release, read from the project's base branch (docs/design/AUTO_RELEASE.md section 4). This schema checks the shape only. src/supervisor/release/authorization.mjs adds the rules a schema cannot state plainly: project match, real dates, expiry at most 90 days after the grant, expired or revoked grants, forbidden change classes, unique destination ids, an observe command for deploys, a rollback command for automatic rollback, and no merge or merge-then-deploy destination in a repository the merge gate covers. The record holds no secrets. Since 2026-10-17 a destination names no credential: a release uses the logins already on this computer (docs/design/AUTO_RELEASE.md section 6); credential stays optional, by reference only, for an older record. Kind deploy deploys the merge commit the merge gate recorded and never merges. Nothing acts on a valid record while release.enabled is false.",
+  "description": "A project's standing grant for AIWorks Auto Release, read from the project's base branch (docs/design/AUTO_RELEASE.md section 4). This schema checks the shape only. src/supervisor/release/authorization.mjs adds the rules a schema cannot state plainly: project match, real dates, expiry at most 90 days after the grant, expired or revoked grants, forbidden change classes, unique destination ids, an observe command for deploys, a rollback command for automatic rollback, minFreeGB only on a deploy or merge-then-deploy destination, and no merge or merge-then-deploy destination in a repository the merge gate covers. The record holds no secrets. Since 2026-10-17 a destination names no credential: a release uses the logins already on this computer (docs/design/AUTO_RELEASE.md section 6); credential stays optional, by reference only, for an older record. Kind deploy deploys the merge commit the merge gate recorded and never merges. Nothing acts on a valid record while release.enabled is false.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "project", "version", "approval", "grantedAt", "expiresAt", "revoked", "destinations", "classes"],
@@ -72,7 +72,8 @@
           }
         },
         "rollback": { "enum": ["automatic", "report-only"] },
-        "checkWindowMinutes": { "type": "integer", "minimum": 1, "maximum": 1440 }
+        "checkWindowMinutes": { "type": "integer", "minimum": 1, "maximum": 1440 },
+        "minFreeGB": { "type": "number", "exclusiveMinimum": 0, "maximum": 1000000 }
       },
       "allOf": [
         {
