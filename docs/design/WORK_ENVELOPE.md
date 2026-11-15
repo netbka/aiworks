@@ -1,5 +1,7 @@
 # Design: approve an outcome once and let AIWorks grow its task graph inside it
 
+[AW-021](../DECISIONS.md#aw-021---measure-model-usage-in-tokens) supersedes the historical monetary accounting in this design. Current usage is measured in tokens by model, tier, effort and role.
+
 **Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](../DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
 
 **Status:** built in source since this design, switched off by default (`coordinator.intake` and `projectConnection.enabled`; [OPERATIONS_DASHBOARD.md](../OPERATIONS_DASHBOARD.md#a-project-without-github-plan-approve-review-and-apply-built-off-by-default)), including local admission from the owner's dashboard approval ([AW-012](../DECISIONS.md#aw-012---local-projects-start-from-an-owner-approval-in-the-dashboard)) and the owner's Apply and Undo apply; not deployed by this repository. The rest of this document is the design as written: its "today", "observed" and "planned" statements describe the code at its basis revision, and [STATUS.md](../STATUS.md) holds what the source does now. It implements sections 3.2, 3.3 and 5.1 of [PROJECT_WORKSPACE_PLAN.md](../PROJECT_WORKSPACE_PLAN.md) under the owner's decision D3 (section 8 there). It builds on the merged [PROJECT_CONNECTION.md](PROJECT_CONNECTION.md) (#7) and [ADAPTIVE_SCHEDULER.md](ADAPTIVE_SCHEDULER.md) (#9). Section 8 designs decision D4 as the owner decided it on 2026-10-16 (#32): it is planned, not built.
@@ -87,7 +89,7 @@ The envelope is a **version 2 campaign declaration**. Version 1 declarations sta
     "reference": "https://github.com/example-org/example-repository "text": "Approved in the AIWorks dashboard: ..." },
   "target": { "tenantId": "example-org", "projectId": "sampleapp", "environment": "development",
     "repository": "example-org/sampleapp", "baseBranch": "main", "trackingIssue": 512, "closeWhenDone": true },
-  "limits": { "maxCostUsd": 40, "unknownRunCostUsd": 2 },
+  "limits": { "maxWorkerRuns": 12 },
   "executor": { "kind": "cli-chain", "providers": [ { "kind": "claude-cli", "model": "opus", "permissionMode": "auto" } ],
     "implementerTimeoutMinutes": 240, "verifierTimeoutMinutes": 120 },
   "constraints": [ "..." ],
@@ -276,7 +278,7 @@ Each row is a test in `tests/supervisor/plan-admission.test.mjs` (pure, no proce
 | Permissions and providers | `permissionMode: "bypassPermissions"`; `executor: {...}`; `model: "x"`; `access: "write"` on a report | `WIDEN_PERMISSION` |
 | Destination | `repository: "example-org/other"`; `baseBranch: "release"`; `issue: 999` not in `envelope.issues` | `WIDEN_DESTINATION` |
 | Release mode | `release: { mode: "auto-release" }`; `deploy: true` | `WIDEN_RELEASE` |
-| Limits | `limits: { maxCostUsd: 1000 }`; a 129th task | `WIDEN_LIMITS`; `SCOPE_GROWTH` |
+| Limits | `limits: { maxWorkerRuns: 100 }`; a 129th task | `WIDEN_LIMITS`; `SCOPE_GROWTH` |
 | Acceptance | `revise` of `ACCEPT`; `cancel` of declared `T1`; `revise` of a child already implementing | `WIDEN_ACCEPTANCE`; `INVALID_TASK` for the started child |
 | Duplicate work | Same `workKey` as an active task of another campaign | `DUPLICATE_WORK`, no worker run spent |
 | Chain tampering (controller test) | An edited `task_specs.spec` row; a deleted amendment row | B2 `plan-integrity`, nothing dispatched |

@@ -1,5 +1,7 @@
 # Scoped reading: section-marked references, verifier citations and repair rounds that carry the rule
 
+[AW-021](../DECISIONS.md#aw-021---measure-model-usage-in-tokens) supersedes the historical monetary accounting in this design. Current usage is measured in tokens by model, tier, effort and role.
+
 Design for the AIWorks delivery supervisor. It answers one question raised in planning on 2026-10-14: can the plan mark which parts of a document a worker must read, so that a worker does not read every referenced document in full, without losing the rules that live in the parts it skipped?
 
 The answer is yes, under three conditions that this document turns into mechanism: the narrowing is a *reading guide*, never a change to what binds the worker; the independent verifier reads the whole text and names the section a rejected change violates; and every rejection feeds the exact section back into the repair round, so the same rule is not missed twice. Everything that can go wrong (a heading that moved, a planner that invented an anchor, a verifier that cites a file that does not exist) degrades to *wider* reading with a journal entry, never to silence.

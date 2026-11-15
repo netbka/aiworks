@@ -1,3 +1,4 @@
+import { emptyUsage, mergeUsage } from '../supervisor/token-usage.mjs';
 // Owner UI v2 view layer (docs/design/OWNER_UI_V2.md section 8, work package WP1): Home, a project's Overview, Settings ->
 // Connections and the typed event feed, built server-side from the readers /api/state already uses. Each view returns
 // allowlisted fields only: codes, counts, times, identifiers and sentences the supervisor or the dashboard wrote. No worker
@@ -184,7 +185,7 @@ const projectRow = (row) => ({ id: row.id, name: row.name, kind: row.kind, repos
  * owner never marked as seen does not stay "new" forever.
  */
 export function homeView({ supervisor, owner, projects, events, lastSeen, newest, window = null, now = Date.now() }) {
-  if (!supervisor?.available) return { available: false, lastSeen, needsYou: null, needs: null, goals: [], landed: null, quiet: [], spentToday: null, projects: [], since: null, pause: null };
+  if (!supervisor?.available) return { available: false, lastSeen, needsYou: null, needs: null, goals: [], landed: null, quiet: [], tokensToday: null, projects: [], since: null, pause: null };
   const counts = {};
   for (const event of events.events) counts[event.type] = (counts[event.type] ?? 0) + 1;
   return { available: true, lastSeen, newest,
@@ -250,7 +251,7 @@ function homeV2({ supervisor, owner, projects, now }) {
     const project = c.projectName !== undefined ? c.projectName ?? null : nameOf(goal.project);
     // Where the goal's link leads: this goal in its own project, by the ids the page's addresses use (never shown as words).
     const route = c.projectName !== undefined ? c.project ?? null : c.repository ?? goal.project ?? null;
-    return { index, cost: c.costToday ?? null, item: { project, title: goalTitle(c), link: route ? { project: route, goal: goal.id } : null,
+    return { index, usage: c.usageToday, item: { project, title: goalTitle(c), link: route ? { project: route, goal: goal.id } : null,
       now: state === 'Asks you' ? 'Waiting for your answer' : current ? `${stopped ? 'Next' : 'Now'}: ${stepTitle(current)}` : next ? `Next: ${stepTitle(next)}` : null,
       done: done.size, total: tasks.length, dropped: segments.filter((segment) => segment === 'dropped').length, segments, state } };
   }).sort((a, b) => GOAL_ORDER[a.item.state] - GOAL_ORDER[b.item.state] || a.index - b.index);
@@ -267,9 +268,8 @@ function homeV2({ supervisor, owner, projects, now }) {
       .sort((a, b) => (b.registeredAt ?? 0) - (a.registeredAt ?? 0))[0];
     return latest ? [{ name: row.name, state: latest.control === 'cancelled' ? 'Stopped' : 'Done' }] : [];
   });
-  // Spent today: what the runs of the running goals that finished today reported; unknown stays null, never $0.
-  const costs = goals.map((goal) => goal.cost).filter(Boolean);
-  const usd = costs.reduce((sum, cost) => sum + (cost.reportedUsd ?? 0), 0);
+  // Token usage of running goals whose operations finished today.
+  const tokensToday = goals.reduce((sum, goal) => mergeUsage(sum, goal.usage), emptyUsage());
   return {
     // The one owner-action set: the same number for the nav badge and the hero. A result AIWorks merged is landed, never counted.
     needs: { count: owner?.attention?.count ?? actions.length },
@@ -277,7 +277,7 @@ function homeV2({ supervisor, owner, projects, now }) {
     goals: goals.map((goal) => goal.item),
     landed: { total: landed.length, entries: landed.slice(0, 20) },
     quiet,
-    spentToday: { usd: usd > 0 ? Math.round(usd * 100) / 100 : null, unreportedRuns: costs.reduce((sum, cost) => sum + (cost.unreportedRuns ?? 0), 0) } };
+    tokensToday };
 }
 
 /** Built, Checked and Available to users of one goal's steps: three separate counts, the third unknown unless a release says so. */
@@ -307,7 +307,7 @@ export function overviewView(project, { supervisor, projects }) {
       return { id: goal.id, purpose: c?.purpose ?? null, control: goal.control, pause: pauseState(goal),
         binding: { campaignId: goal.id, version: goal.version, authorizationVersion: goal.authorizationVersion, scopeDigest: goal.scopeDigest },
         strip: c ? goalStrip(c, supervisor.releases ?? []) : null,
-        budget: c ? { runsUsed: c.runsUsed ?? null, maxWorkerRuns: c.maxWorkerRuns ?? null, reportedUsd: c.cost?.reportedUsd ?? null, unreportedRuns: c.cost?.unreportedRuns ?? null } : null,
+        budget: c ? { runsUsed: c.runsUsed ?? null, maxWorkerRuns: c.maxWorkerRuns ?? null, usage: c.usage } : null,
         next: c?.nextAction ?? null };
     }),
     pause: pauseSummary(goals, { kind: 'project', project: row?.id ?? project }) };

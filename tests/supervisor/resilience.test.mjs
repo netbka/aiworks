@@ -117,22 +117,11 @@ test('an unavailable executor is refunded, waits out a bounded cooldown and hand
   assert.ok(store.all('SELECT kind, detail FROM journal WHERE campaign_id = ?', id).some((row) => row.kind === 'run-refunded' && /unavailable/.test(row.detail.reason)));
 });
 
-test('the cost ceiling binds with unreported costs priced conservatively and must be declared explicitly', () => {
-  const d = declaration();
-  assert.throws(() => validateDeclaration({ ...d, limits: { ...d.limits, maxCostUsd: 100 } }), /unknownRunCostUsd/);
-  assert.throws(() => validateDeclaration({ ...d, limits: { ...d.limits, unknownRunCostUsd: 2 } }), /requires maxCostUsd/);
-  assert.throws(() => validateDeclaration({ ...d, limits: { ...d.limits, maxCostUsd: 100, unknownRunCostUsd: 0 } }), /never treated as zero/);
-  const ok = validateDeclaration({ ...d, limits: { ...d.limits, maxCostUsd: 10, unknownRunCostUsd: 3 } });
-  const fakeStore = (ops) => ({ all: () => ops });
-  const campaign = { id: 'c', cost_usd: 4, runs_used: 3, declaration: ok };
-  const measured = { class: 'result', receipt: { costUsd: 4 } };
-  const unknown = { class: 'result', receipt: { costUsd: null } };
-  assert.equal(campaignBudget(fakeStore([{ outcome: measured }, { outcome: unknown }]), campaign).exhausted, null, '4 + 3 < 10');
-  assert.match(campaignBudget(fakeStore([{ outcome: measured }, { outcome: unknown }, { outcome: unknown }]), campaign).exhausted, /cost ceiling/);
-  assert.equal(campaignBudget(fakeStore([{ outcome: unknown }, { outcome: { class: 'unavailable' } }, { outcome: { class: 'admission-blocked' } }]), campaign).unknownCostRuns, 1, 'refunded runs are not priced');
-  assert.match(campaignBudget(fakeStore([]), { ...campaign, runs_used: 12 }).exhausted, /worker-run cap/);
-  const uncapped = { ...campaign, runs_used: 100, declaration: { ...ok, limits: { ...ok.limits, maxWorkerRuns: null } } };
-  assert.equal(campaignBudget(fakeStore([]), uncapped).exhausted, null, 'uncapped Wiki execution survives the new budget check');
+test('legacy declaration limits keep the original run cap across upgrades', () => {
+  const decl = validateDeclaration({ ...declaration(), limits: { maxWorkerRuns: 12, maxCostUsd: 10, unknownRunCostUsd: 3 } });
+  const campaign = { id: 'c', cost_usd: 15, runs_used: 3, declaration: decl };
+  assert.equal(campaignBudget(null, campaign).exhausted, null);
+  assert.match(campaignBudget(null, { ...campaign, runs_used: 12 }).exhausted, /worker-run cap/);
   const live = JSON.parse(readFileSync(new URL('../../tests/fixtures/campaigns/sample-chain.json', import.meta.url)));
   validateDeclaration(live);
   assert.deepEqual(live.executor.providers.map((p) => p.kind), ['claude-cli', 'codex-cli', 'cursor-cli']);

@@ -1,3 +1,4 @@
+import { addOperation, emptyUsage, hasReportedUsage, runIdentity } from './token-usage.mjs';
 // AIWorks campaign interface: start, status, pause, cancel, recheck. These are owner
 // actions: they change durable state with compare-and-swap and never dispatch work
 // themselves. Readiness is derived from a live controller lease, never from registration.
@@ -5,7 +6,7 @@ import { runNotCounted } from './adapters/executors.mjs';
 import { authorityDigest, campaignLimits, canonicalJson, executorOrder, scopeDigest, validateDeclaration } from './campaign.mjs';
 import { findWorkConflict } from './work-ownership.mjs';
 import { specOf, specsOf } from './plan.mjs';
-import { accountFull, laterWait } from './accounts.mjs';
+import { accountFull, laterWait, taskSignature } from './accounts.mjs';
 import { admissionCheck, hostCeiling, schedulerEnabled } from './scheduler.mjs';
 import { releaseStatus } from './release/eligibility.mjs';
 import { releaseNarrowings } from './release/state.mjs';
@@ -14,7 +15,7 @@ import { reviewRecords } from './result-review.mjs';
 import { selfHostingSettings, trustedTip, trustsLocalMain } from './self-hosting.mjs';
 import { resolveCheckout } from './project-connect.mjs';
 import { backupStatus } from './github-backup.mjs';
-import { effectiveLimits, projectBudget, projectOf, protectedWriteConflicts } from './project-settings.mjs';
+import { effectiveLimits, projectOf, protectedWriteConflicts } from './project-settings.mjs';
 import { operationGateWait } from './gate-slot.mjs';
 
 export class CampaignError extends Error {
@@ -122,42 +123,14 @@ export function campaignStart(store, declaration, now = Date.now()) {
   return campaignStatus(store, decl.campaignId, now);
 }
 
-/**
- * The owner's budget, evaluated from durable state. `maxWorkerRuns` binds unless the owner declared it null
- * (no run cap). When the declaration also sets `maxCostUsd`, measured cost plus a declared conservative price
- * for every counted run whose provider reported no dollar cost (`unknownRunCostUsd`, never zero) must stay
- * below that ceiling. With neither, only provider subscription/usage limits stop work.
- */
-export function campaignBudget(store, c) {
-  // Run and cost limits have no project setting or default (AW-002): the declaration's are the effective ones.
-  const limits = campaignLimits(c.declaration);
-  const measured = Math.round(c.cost_usd * 10000) / 10000;
-  const rows = store.all("SELECT state, outcome FROM operations WHERE campaign_id = ? AND state IN ('finished', 'recorded', 'dispatched')", c.id);
-  const open = (op) => op.state === 'recorded' || op.state === 'dispatched';
-  const unknownRuns = rows.filter((op) => !open(op) && !runNotCounted(op.outcome) && !(op.outcome?.receipt?.costUsd > 0)).length;
-  const maxCostUsd = limits.maxCostUsd ?? null;
-  const unknownRunCostUsd = limits.unknownRunCostUsd ?? null;
-  // Under a declared ceiling every open run is reserved at the declared unknown-run price until it finishes, so runs
-  // that overlap cannot together overshoot it (ADAPTIVE_SCHEDULER row 13). Without a ceiling nothing is reserved.
-  const reservedRuns = maxCostUsd !== null ? rows.filter(open).length : 0;
-  const charged = maxCostUsd !== null ? Math.round((measured + (unknownRuns + reservedRuns) * (unknownRunCostUsd ?? 0)) * 10000) / 10000 : null;
-  const exhausted = limits.maxWorkerRuns !== null && c.runs_used >= limits.maxWorkerRuns ? `worker-run cap reached (${c.runs_used}/${limits.maxWorkerRuns})`
-    : maxCostUsd !== null && charged >= maxCostUsd ? `cost ceiling reached ($${charged.toFixed(2)} charged of $${maxCostUsd.toFixed(2)}; ${unknownRuns} run(s) with unreported cost and ${reservedRuns} open run(s) priced at $${(unknownRunCostUsd ?? 0).toFixed(2)})`
-      : null;
-  return { runsUsed: c.runs_used, maxWorkerRuns: limits.maxWorkerRuns, measuredCostUsd: measured, unknownCostRuns: unknownRuns,
-    reservedRuns, unknownRunCostUsd, chargedCostUsd: charged, maxCostUsd, exhausted };
+export function campaignBudget(_store, campaign) {
+  const { maxWorkerRuns } = campaignLimits(campaign.declaration);
+  const runsUsed = campaign.runs_used;
+  const exhausted = maxWorkerRuns !== null && runsUsed >= maxWorkerRuns ? `worker-run cap reached (${runsUsed}/${maxWorkerRuns})` : null;
+  return { runsUsed, maxWorkerRuns, exhausted };
 }
 
-/**
- * What admission checks before a paid worker run starts (WP5): the campaign's own budget, then its project's standing
- * budget (project-settings.mjs projectBudget). `exhausted` is the first reason either gives, or null; `project` is the
- * project's spend with what remains and what is unknown.
- */
-export function admissionBudget(store, c, now = Date.now()) {
-  const own = campaignBudget(store, c);
-  const project = projectBudget(store, projectOf(c.declaration), now);
-  return { ...own, project, exhausted: own.exhausted ?? project.exhausted };
-}
+export const admissionBudget = campaignBudget;
 
 const hasTable = (store, name) => Boolean(store.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", name));
 
@@ -194,6 +167,14 @@ function releaseView(store, project, tasks, releaseStop, campaignId, config) {
 export function campaignStatus(store, id, now = Date.now(), { releaseStop = false, config = null, selfHostingConfig = config } = {}) {
   const c = store.campaign(id);
   if (!c) throw new CampaignError('CAMPAIGN_NOT_FOUND', `campaign ${id} is not registered in the selected store; check the installed task --data argument`);
+  const budget = campaignBudget(store, c);
+  // An older store can retain a monetary hold until its controller next ticks. Only a current run cap can hold work.
+  if (c.blocker?.kind === 'budget') {
+    c.blocker = budget.exhausted ? { ...c.blocker, reason: `${budget.exhausted} under authorization v${c.authorization_version}`,
+      requestedAction: 'Increase limits.maxWorkerRuns in a new authorization version to allow more worker runs.' } : null;
+    c.next_action = c.blocker?.requestedAction ?? null;
+    if (!c.blocker && c.control === 'registered') c.status = 'active';
+  }
   const lease = store.lease(id);
   const live = Boolean(lease && lease.expires_at > now);
   let readiness = c.control === 'finished' ? 'COMPLETE' : c.control === 'cancelled' ? 'CANCELLED'
@@ -257,12 +238,10 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
     livenessDefect: Boolean(c.liveness_defect),
     runsUsed: c.runs_used,
     maxWorkerRuns: effectiveLimits(store, c.declaration).maxWorkerRuns,
-    maxCostUsd: effectiveLimits(store, c.declaration).maxCostUsd,
-    budget: campaignBudget(store, c),
+    budget,
     executorOrder: executorOrder(c.declaration.executor).map((executor) => executor.kind),
     executorWaits: executorWaitsView(store, c),
-    costUsd: Math.round(c.cost_usd * 10000) / 10000,
-    costByUnit: routed.cost,
+    usage: routed.usage,
     ci: ci.summary,
     // Auto Release is built switched off (AUTO_RELEASE.md slice R2): report only, per done task. It never acts. The
     // owner's stops (slice R4) show only once used: RELEASE-STOP when the caller saw the file, and narrowed destinations.
@@ -271,11 +250,11 @@ export function campaignStatus(store, id, now = Date.now(), { releaseStop = fals
       id: t.task_id, state: t.state, attempts: t.attempts, repairRounds: t.repair_rounds,
       headSha: t.head_sha, verifiedSha: t.verified_sha, prUrl: t.pr_url,
       retryAt: t.retry_at ? new Date(t.retry_at).toISOString() : null, blocked: t.blocked, lastError: t.last_error,
-      signature: t.signature ?? null,
+      signature: taskSignature(store, t, routed.tasks.get(t.task_id)?.steps),
       ci: ci.tasks.get(t.task_id) ?? null,
       wait: waitReason(t, waits),
       routing: routed.tasks.get(t.task_id)?.routing ?? { implement: null, verify: null, escalation: null, sameProvider: null },
-      costByUnit: routed.tasks.get(t.task_id)?.cost ?? emptyCost(),
+      usage: routed.tasks.get(t.task_id)?.usage ?? emptyUsage(),
       reading: reading.get(t.task_id) ?? null,
       // A project without GitHub shows its verified local candidate (WORK_ENVELOPE slice E10), never a PR; only once one exists.
       ...withCandidate(store, c.id, t.task_id),
@@ -333,7 +312,7 @@ const OWNER_NEXT = 'None; listed in Settings, AIWorks itself';
 // A sign-in or payment stop is the owner's own and is listed on Home (dashboard owner.mjs OWNER_STOPS).
 const OWNER_HOME = 'None; listed on Home';
 const BLOCKER_TEXT = {
-  budget: 'Needs your decision: this work program used its budget',
+  budget: 'Needs your decision: this work program reached its worker-run limit',
   auth: 'Needs you: an AI provider login failed',
   executors: 'Needs you: no allowed AI provider can run this work',
   'process-ownership': 'Needs you: a worker process could not be confirmed stopped',
@@ -494,11 +473,7 @@ function parseHolders(text) {
   try { const list = JSON.parse(text); return Array.isArray(list) ? list.filter((h) => h && typeof h.campaignId === 'string' && typeof h.taskId === 'string') : null; } catch { return null; }
 }
 
-// ---- Model, tier, cost by unit and the reason a step moved up (MODEL_ROUTING section 9 "What the owner sees", slice R6
-// supervisor half: MOD6). Built from operation rows and their routing receipts only. Costs stay in the unit each provider
-// reports: reported dollars, tokens per provider, and a count of runs whose dollars are unknown. Units are never added
-// together, and unknown is never shown as zero. ----
-
+// Run identities and reported token usage.
 export const TIER_NAMES = { 1: 'economy', 2: 'standard', 3: 'strongest' };
 const STAGES = ['implement', 'verify'];
 const WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
@@ -509,31 +484,10 @@ const POOR = {
   verify: { 'invalid-result': 'unusable', 'exit-without-result': 'unusable', timeout: 'timed-out' },
 };
 
-function emptyCost() {
-  return { usd: { reported: null, reportedRuns: 0 }, tokens: {}, unknownCostRuns: 0 };
-}
-
-/** One counted run into a cost record. Dollars count as reported only when above zero, the rule campaignBudget uses. */
-function addCost(cost, op) {
-  const receipt = op.outcome?.receipt;
-  if (receipt?.costUsd > 0) {
-    cost.usd.reported = Math.round(((cost.usd.reported ?? 0) + receipt.costUsd) * 10000) / 10000;
-    cost.usd.reportedRuns += 1;
-  } else cost.unknownCostRuns += 1;
-  const usage = receipt?.usage;
-  if (!usage) return;
-  const tokens = cost.tokens[op.executor_kind ?? 'claude-cli'] ??= { runs: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0, inputIncludesCacheReadRuns: 0 };
-  tokens.runs += 1;
-  for (const key of ['input', 'output', 'cacheRead', 'cacheCreation']) if (Number.isFinite(usage[key])) tokens[key] += usage[key];
-  if (usage.inputIncludesCacheRead) tokens.inputIncludesCacheReadRuns += 1;
-}
-
 /** The model of one run, from its own receipt. A run recorded before receipts, or a provider with no declared model, is null: unknown. */
 function modelView(op) {
-  const chosen = op.routing?.decision?.chosen ?? null;
-  const tier = Number.isInteger(chosen?.tier) ? chosen.tier : null;
-  return { operationId: op.id, executor: op.executor_kind ?? 'claude-cli', model: chosen?.model ?? null, tier, tierName: TIER_NAMES[tier] ?? null,
-    routed: op.routing?.mode === 'auto' };
+  const identity = runIdentity(op);
+  return { operationId: op.id, ...identity, tierName: TIER_NAMES[identity.tier] ?? null, routed: op.routing?.mode === 'auto' };
 }
 
 /**
@@ -588,30 +542,30 @@ function sameProviderView(ops) {
     reason: `${name(decision.chosen.kind)} again: the last ${op.kind === 'verify' ? 'review' : 'attempt'} ${failed}, and ${others.length ? others.join(', ') : 'no other provider is declared'}` };
 }
 
-/**
- * Per task: the model and tier of its newest implement and verify run, the newest move up and its cost by unit; and the
- * campaign's cost by unit. Counted runs only (runNotCounted, as campaignBudget): open runs have no cost yet.
- */
+/** Per-step routing and token usage of settled operations. */
 function routingView(store, campaignId) {
   const ops = store.all("SELECT * FROM operations WHERE campaign_id = ? ORDER BY created_at, seq", campaignId);
-  const cost = emptyCost();
+  const usage = emptyUsage();
   const tasks = new Map();
   for (const op of ops) {
-    const item = tasks.get(op.task_id) ?? { routing: { implement: null, verify: null, escalation: null, sameProvider: null }, cost: emptyCost(), steps: [] };
+    const item = tasks.get(op.task_id) ?? { routing: { implement: null, verify: null, escalation: null, sameProvider: null }, usage: emptyUsage(), steps: [] };
     tasks.set(op.task_id, item);
     const finished = op.state === 'finished';
-    if (finished && runNotCounted(op.outcome)) continue;
+    if (finished && (hasReportedUsage(op) || !(op.outcome?.refunded || runNotCounted(op.outcome)))) {
+      addOperation(usage, op);
+      addOperation(item.usage, op);
+    }
+    if (finished && (op.outcome?.refunded || runNotCounted(op.outcome))) continue;
     if (STAGES.includes(op.kind)) {
       item.routing[op.kind] = modelView(op);
       item.steps.push(op);
     }
-    if (finished) { addCost(cost, op); addCost(item.cost, op); }
   }
   for (const item of tasks.values()) {
     item.routing.escalation = escalationView(item.steps);
     item.routing.sameProvider = sameProviderView(item.steps);
   }
-  return { cost, tasks };
+  return { usage, tasks };
 }
 
 const READING_EVENTS = ['reference-section-resolved', 'reference-section-fallback', 'cite-covered', 'section-miss', 'unreferenced-doc', 'reading-guide-extended'];
@@ -711,7 +665,7 @@ function ownerBlockerView(store, campaignId) {
   if (!store.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'blocker_parents'")) return [];
   const iso = (ms) => (ms ? new Date(ms).toISOString() : null);
   return store.all(`SELECT DISTINCT b.* FROM blockers b JOIN blocker_parents p ON p.fingerprint = b.fingerprint
-    WHERE p.campaign_id = ? ORDER BY b.first_detected_at`, campaignId).map((b) => ({
+    WHERE p.campaign_id = ? ORDER BY b.first_detected_at`, campaignId).filter((b) => b.dependency !== 'budget' || /worker-run cap/.test(b.identity ?? '')).map((b) => ({
     fingerprint: b.fingerprint, class: b.class, dependency: b.dependency, status: b.status, episode: b.episode,
     summary: b.summary, requestedAction: b.requested_action, recheck: b.recheck_procedure, probe: b.probe,
     firstDetectedAt: iso(b.first_detected_at), occurrences: b.occurrences, recheckAttempts: b.recheck_attempts,

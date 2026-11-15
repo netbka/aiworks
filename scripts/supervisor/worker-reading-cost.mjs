@@ -8,9 +8,10 @@
 // id under the Claude CLI projects directory (default ~/.claude/projects), and reports:
 // - by kind of tool result: calls, characters, share, and share weighted by the turns that re-read it from cache;
 // - per role: whole-file re-reads, whole-file reads over 20 KB and full git diff or show output;
-// - the share of reported dollars spent on repeated runs (each task's later implement and verify runs).
-// Dollars are as the CLI reported them; a run with none counts as unknown, never zero. An image counts as an estimated
+// - the share of reported tokens spent on repeated runs (each task's later implement and verify runs).
+// Tokens come from operation receipts; a run with none counts as unknown, never zero. An image counts as an estimated
 // 1,600 tokens (IMAGE_CHARS), not its base64 length. No network or GitHub call.
+import { operationUsage } from '../../src/supervisor/token-usage.mjs';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -95,19 +96,19 @@ export function summarise(sessions) {
   return { chars, weighted, kinds, roles };
 }
 
-/** Reported dollars of first runs and of repeated runs (a task's second and later implement or verify run). */
-export function repeatCost(operations) {
+/** Reported tokens of first runs and of repeated runs (a task's second and later implement or verify run). */
+export function repeatTokens(operations) {
   const seen = new Set();
-  const cost = { first: 0, repeat: 0, unknownRuns: 0 };
+  const totals = { first: null, repeat: null, unknownRuns: 0 };
   for (const op of [...operations].sort((a, b) => a.created_at - b.created_at)) {
     const key = `${op.campaign_id}/${op.task_id}/${op.kind}`;
-    const usd = JSON.parse(op.outcome || '{}').receipt?.costUsd;
-    if (typeof usd !== 'number') cost.unknownRuns++;
-    else if (seen.has(key)) cost.repeat += usd;
-    else cost.first += usd;
+    const usage = operationUsage({ ...op, outcome: JSON.parse(op.outcome || '{}') });
+    const bucket = seen.has(key) ? 'repeat' : 'first';
+    if (usage.unknownRuns || usage.partialRuns) totals.unknownRuns++;
+    if (usage.total !== null) totals[bucket] = (totals[bucket] ?? 0) + usage.total;
     seen.add(key);
   }
-  return cost;
+  return totals;
 }
 
 function transcriptFinder(directory) {
@@ -118,7 +119,7 @@ function transcriptFinder(directory) {
 export async function measure({ data, hours = 48, transcripts = join(homedir(), '.claude', 'projects'), now = Date.now() }) {
   const { DatabaseSync } = await import('node:sqlite');
   const db = new DatabaseSync(join(data, 'supervisor.db'), { readOnly: true });
-  const operations = db.prepare("SELECT campaign_id, task_id, kind, created_at, outcome FROM operations WHERE state = 'finished' AND created_at > ?").all(now - hours * 3_600_000);
+  const operations = db.prepare("SELECT campaign_id, task_id, kind, executor_kind, created_at, outcome FROM operations WHERE state = 'finished' AND created_at > ?").all(now - hours * 3_600_000);
   db.close();
   const find = transcriptFinder(transcripts);
   const sessions = [];
@@ -129,7 +130,7 @@ export async function measure({ data, hours = 48, transcripts = join(homedir(), 
     if (!file) { missing++; continue; }
     sessions.push({ role: op.kind, ...analyseTranscript(readFileSync(file, 'utf8').split('\n').filter(Boolean)) });
   }
-  return { hours, operations: operations.length, transcriptsFound: sessions.length, transcriptsMissing: missing, ...summarise(sessions), dollars: repeatCost(operations) };
+  return { hours, operations: operations.length, transcriptsFound: sessions.length, transcriptsMissing: missing, ...summarise(sessions), tokens: repeatTokens(operations) };
 }
 
 const pct = (part, whole) => (whole ? `${(100 * part / whole).toFixed(1)}%` : '-');
@@ -143,8 +144,8 @@ function print(report) {
   for (const [role, r] of Object.entries(report.roles)) {
     console.log(`${role}: ${r.sessions} sessions; whole-file re-reads ${pct(r.rereads, r.chars)}, whole-file reads over 20 KB ${pct(r.bigReads, r.chars)}, full diffs ${pct(r.fullDiffs, r.chars)}`);
   }
-  const { first, repeat, unknownRuns } = report.dollars;
-  console.log(`reported dollars: $${(first + repeat).toFixed(2)}, of which repeated runs $${repeat.toFixed(2)} (${pct(repeat, first + repeat)}); runs with no reported cost: ${unknownRuns}`);
+  const { first, repeat, unknownRuns } = report.tokens;
+  console.log(`First-run tokens: ${first ?? 'unreported'}, repeated-run tokens: ${repeat ?? 'unreported'}, runs without a complete total: ${unknownRuns}`);
 }
 
 async function main(argv) {

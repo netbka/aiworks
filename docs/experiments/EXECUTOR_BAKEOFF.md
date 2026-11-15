@@ -85,16 +85,17 @@ One JSON object per attempt in a **private** `runs.jsonl` file. No secrets, real
   "ownerMinutes": 0,
   "inputTokens": null,
   "outputTokens": null,
-  "costUsd": null,
+  "tier": null,
+  "effort": null,
   "processCustody": "unknown",
   "duplicateSideEffects": false,
   "notes": ""
 }
 ```
 
-Use null for unknown usage and cost. Record every retry and verifier run in the outcome totals; do not treat subscriptions as an exact per-task dollar charge. Store stdout/stderr in private evidence, redact credentials and sensitive content. Publish only sanitized aggregates and source refs.
+Use null for missing token counters. Include retries and verification runs. Keep raw evidence private and publish sanitized aggregates.
 
-Report: every run, pass count by variant, median elapsed time, total owner interventions/minutes, retry counts, known token/cost totals and number of unknown receipts, hard-gate incidents, integration complexity (new files, dependencies, extra daemons, owned adapters removed). Explain differences rather than hiding failures in an average.
+Report: every run, pass count by variant, median elapsed time, total owner interventions/minutes, retry counts, reported token totals and number of unknown receipts, hard-gate incidents, integration complexity (new files, dependencies, extra daemons, owned adapters removed). Explain differences rather than hiding failures in an average.
 
 ## Hard gates and decision
 

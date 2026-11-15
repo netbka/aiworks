@@ -53,7 +53,7 @@ test('native results require terminal completion, fresh identity and exact nonce
     assert.equal(result.class, 'result');
     assert.equal(result.receipt.sessionId, 'bound-run');
     assert.ok(result.receipt.nativeSessionId.startsWith('native-'));
-    assert.equal(result.receipt.costUsd, null, 'unreported cost stays unknown');
+    assert.equal(result.receipt.usage?.total ?? null, kind === 'codex-cli' ? 15 : null);
     for (const changed of [{ runId: 'stale' }, { packetDigest: 'b'.repeat(64) }, { extra: true }]) {
       assert.equal(classifyRun(kind, output(envelope(terminal, changed))).class, 'invalid-result');
     }
@@ -64,15 +64,18 @@ test('native results require terminal completion, fresh identity and exact nonce
     assert.equal(classifyRun(kind, output(envelope()), { stderrText: 'rate limit; retry recovered' }).class, 'result');
     assert.equal(classifyRun(kind, output(envelope()), { run: { exitCode: 1 } }).class, 'error');
   }
+  const mixed = classifyRun('codex-cli', codex(envelope()) + '\n' + JSON.stringify({ type: 'turn.completed' }));
+  assert.equal(mixed.receipt.models[0].usage.total, 15);
+  assert.ok(mixed.receipt.models[0].partialFields.includes('total'));
   assert.equal(classifyRun('codex-cli', codex(envelope()).split('\n').slice(0, -1).join('\n')).class, 'exit-without-result');
   assert.equal(classifyRun('codex-cli', codex(envelope()) + '\n' + JSON.stringify({ type: 'thread.started', thread_id: 'other' })).class, 'exit-without-result');
 });
 
 test('quota and authentication may trigger fallback; denied actions may not', () => {
-  const quota = { class: 'quota', receipt: { measured: true, costUsd: 0, numTurns: 1 } };
-  assert.equal(refusedBeforeWork(quota), true, 'legacy Claude refund remains supported');
+  const quota = { class: 'quota', receipt: { measured: true, usage: { total: 0 }, numTurns: 1 } };
+  assert.equal(refusedBeforeWork(quota), true, 'a measured zero-token refusal is refunded');
   for (const kind of ['codex-cli', 'cursor-cli']) {
-    assert.equal(refusedBeforeWork({ ...quota, executorKind: kind, receipt: { measured: true, costUsd: null } }), false);
+    assert.equal(refusedBeforeWork({ ...quota, executorKind: kind, receipt: { measured: true, usage: null } }), false);
   }
   for (const kind of ['codex-cli', 'claude-cli', 'cursor-cli']) {
     assert.equal(classifyRun(kind, '', { run: { spawnError: 'EACCES' } }).class, 'error');
@@ -309,6 +312,7 @@ test('legacy operations acquire Claude identity without losing historical state'
   const path = join(env.dataDir, 'legacy.db');
   const oldStore = new Store(path);
   campaignStart(oldStore, declaration());
+  oldStore.run('ALTER TABLE campaigns ADD COLUMN cost_usd REAL DEFAULT 0');
   oldStore.run('UPDATE campaigns SET runs_used = 12, cost_usd = 7.342');
   oldStore.db.exec('ALTER TABLE operations DROP COLUMN executor_kind');
   oldStore.db.exec('DROP TABLE executor_waits');
@@ -338,7 +342,7 @@ test('executor amendment is idle, versioned, scope-preserving and keeps the spen
     task_id: 'T1', kind: 'implement', seq: i, idempotency_key: `spent-${i}`, lease_generation: 1,
     state: 'finished', session_id: `spent-session-${i}`, run_dir: 'synthetic', workspace: 'synthetic',
     packet: {}, packet_digest: digest, created_at: 1, updated_at: 1 });
-  store.run('UPDATE campaigns SET runs_used = 12, cost_usd = 7.342 WHERE id = ?', d.campaignId);
+  store.run('UPDATE campaigns SET runs_used = 12 WHERE id = ?', d.campaignId);
   const amended = { ...d, authorization: { ...d.authorization, version: 2 }, executor: chain };
   assert.throws(() => campaignStart(store, amended), /paused campaign/);
   campaignPause(store, d.campaignId);
@@ -346,7 +350,7 @@ test('executor amendment is idle, versioned, scope-preserving and keeps the spen
   assert.throws(() => campaignStart(store, { ...amended, constraints: ['different work scope'] }), /immutable scope/);
   const status = campaignStart(store, amended);
   assert.equal(status.runsUsed, 12);
-  assert.equal(status.costUsd, 7.342);
+  assert.equal(status.usage.total, null);
   assert.equal(status.scopeDigest, scopeDigest(amended));
   assert.deepEqual(status.executorOrder, ['codex-cli', 'claude-cli', 'cursor-cli']);
   assert.equal(store.all("SELECT * FROM journal WHERE kind = 'executor-amended'").length, 1);

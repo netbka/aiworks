@@ -1,5 +1,7 @@
 # Adaptive worker concurrency across tasks and projects
 
+[AW-021](../DECISIONS.md#aw-021---measure-model-usage-in-tokens) supersedes the historical monetary accounting in this design. Current usage is measured in tokens by model, tier, effort and role.
+
 **Privacy boundary:** this is a design proposal, not a live installation record. Campaign declarations and approval records stay private under [AW-009](../DECISIONS.md#aw-009---public-commits-contain-no-installation-data). Any proposal to publish declarations through source branches or pull requests is superseded. Merged executable code, explicit owner authorization, scope binding and independent verification remain required.
 
 **Status:** slices S1 to S4, S7 and S8 are built in source since this design, behind `scheduler.enabled` (off by default; [SUPERVISOR.md section 7](../SUPERVISOR.md#7-evidence-and-remaining-gates)). S5 (host pressure) and S6 (per-account concurrency) are built and applied in the controller's admission pass. S9 is the activation package (RUN10): its critical tests and the operator's switch-on and rollback runbook ([SUPERVISOR.md section 6](../SUPERVISOR.md#scheduler-rehearsal-switch-on-and-switch-back-run10)); the live switch itself is the operator's and is not evidenced here. The rest of this document is the design as written: its "today", "observed" and "planned" statements describe the code at its basis revision, and [STATUS.md](../STATUS.md) holds what the source does now. Refs #9, #5, #14.

@@ -1,3 +1,4 @@
+import { providerTokens } from '../token-usage.mjs';
 // Antigravity CLI (agy) adapter: the browser worker for web acceptance tasks (a task that declares `web`). Each
 // operation is one fresh `agy` print-mode session with a stream-json prompt on stdin, a JSON-schema terminal result
 // and a per-step event log that the supervisor audits. Probed with agy 1.3.3 on workstation (2026-10-11):
@@ -313,10 +314,9 @@ export function classify({ role, run, stdoutText, stderrText, expect, now, logBy
   }
   const named = ({ update, parameters }) => update.tool_name === 'call_mcp_tool' ? `${parameters?.ServerName}/${parameters?.ToolName}`
     : update.tool_name ?? `step ${update.step_type}`;
-  const usage = final?.usage ? { input: final.usage.input_tokens ?? null, output: final.usage.output_tokens ?? null,
-    cacheRead: final.usage.cache_read_tokens ?? null, cacheCreation: null } : null;
-  const receipt = { executorKind: 'agy-cli', nativeSessionId: final?.conversation_id || null, sessionId: null, costUsd: null,
-    usage, measured: Boolean(usage) };
+  const tokens = providerTokens({ ...final, model: final?.model ?? init?.model }, 'agy-cli');
+  const receipt = { executorKind: 'agy-cli', nativeSessionId: final?.conversation_id || null, sessionId: null,
+    ...tokens, measured: Boolean(tokens.usage || tokens.models?.length) };
   const base = { receipt, exitCode: run.exitCode ?? null };
   const violation = (detail) => ({ ...base, class: 'error', violation: true, detail: `${detail}; held for the owner, no provider fallback` });
   if (inits.length > 1 || (init && init.permission_mode !== 'request-review')) {

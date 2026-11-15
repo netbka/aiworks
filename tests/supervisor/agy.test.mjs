@@ -148,8 +148,7 @@ test('agy results bind the run and packet, and any tool outside the browser void
   assert.equal(ok.class, 'result', 'a denied shell call never ran');
   assert.equal(ok.receipt.sessionId, 'bound-run');
   assert.equal(ok.receipt.nativeSessionId, 'c1');
-  assert.equal(ok.receipt.costUsd, null, 'unreported cost stays unknown');
-  assert.deepEqual(ok.receipt.usage, { input: 10, output: 2, cacheRead: 30, cacheCreation: null });
+  assert.deepEqual(ok.receipt.usage, { input: 10, output: 2, cacheRead: 30, cacheCreation: null, reasoning: null, total: null });
   for (const tool_name of ['search_web', 'send_message', 'define_subagent', 'open_browser_url']) {
     const voided = run(events({ tools: [browserTool('DONE'), { state: 'DONE', tool_name }] }));
     assert.equal(voided.class, 'error');

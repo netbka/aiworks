@@ -67,7 +67,7 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   message <text>                        send a message to the coordinator agent; prints its receipt
   messages                              list coordinator message receipts (received, read, answered)
   coordinator-clear                     after inspecting a boundary violation, let the coordinator read again
-  baseline [--since <date>] [--json]    print the cost and outcome baseline (read-only; --json prints the report only)
+  baseline [--since <date>] [--json]    print token usage and outcomes (read-only; --json prints the report only)
   base-compare-inventory                list each registered project's check command, detected test runner, whether it gives
                                         a failed-test list, and the exact config.json baseCompare.projects entry to add; projects
                                         that need a readable list first are follow-up candidates. Read-only: opens no store,

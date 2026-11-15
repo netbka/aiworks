@@ -97,9 +97,9 @@ function build() {
           store.insert('operations', { id, campaign_id: campaignId, task_id: task.id, kind: verify ? 'verify' : 'implement', seq: k, idempotency_key: id, lease_generation: 1,
             state: 'finished', session_id: `s-${opCount}`, run_dir: join(root, 'runs', id), workspace: join(root, 'worktrees', id), base_sha: sha('base'), target_sha: head,
             report_digest: digest(text), packet: { references: [{ path: 'AGENTS.md' }, { path: 'docs/GUIDE.md#setup' }] }, packet_digest: digest(id),
-            outcome: verify ? { class: 'result', receipt: { costUsd: 0.4 }, value: { verdict, findings: verdict === 'rejected' ? [{ id: 'F1', severity: 'blocking', description: 'Synthetic finding.' }] : [] },
+            outcome: verify ? { class: 'result', receipt: { usage: { total: 420 } }, value: { verdict, findings: verdict === 'rejected' ? [{ id: 'F1', severity: 'blocking', description: 'Synthetic finding.' }] : [] },
               reading: { cites: [{ finding: 'F1', path: 'docs/GUIDE.md', anchor: 'setup', heading: 'Setup', classification: 'covered' }] } }
-              : { class: 'result', receipt: { costUsd: 1.2 }, value: { result: 'resolved' } },
+              : { class: 'result', receipt: { usage: { total: 1300 } }, value: { result: 'resolved' } },
             created_at: opAt, updated_at: opAt + 30_000, executor_kind: 'claude-cli',
             routing: { decision: { indicators: { risk: ['R0', 'R1', 'R2'][opCount % 3] } }, stage: verify ? 'verify' : 'implement', tier: 'standard', model: 'opus' } });
           opCount++;
@@ -133,7 +133,7 @@ function build() {
       store.insert('work_item_comments', { item_number: k, idempotency_key: `c-${k}`, body: `Synthetic comment ${k}.`, author_kind: 'supervisor', author: null, created_at: now - k * 1000, recorded_at: now - k * 1000 });
     }
     for (const [k, project] of REPOSITORIES.entries()) {
-      const settings = { protectedAreas: [], notes: `Synthetic notes ${k}.`, budget: { totalUsd: null, monthlyUsd: null, unknownRunCostUsd: null }, acceptance: k % 2 ? 'owner' : 'automatic' };
+      const settings = { protectedAreas: [], notes: `Synthetic notes ${k}.`, acceptance: k % 2 ? 'owner' : 'automatic' };
       store.insert('project_settings', { project, version: 1, settings: JSON.stringify(settings), digest: digest(JSON.stringify(settings)), request_id: `ps-${k}`, created_at: now - day });
     }
   });

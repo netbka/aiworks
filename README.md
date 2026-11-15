@@ -69,11 +69,9 @@ On 12–13 October 2026, AIWorks spent a day building the next version of itself
 
 The owner set the goal and approved the plan once. An AI assistant session wrote the step-by-step plans and merged the checked pull requests on his behalf. He stepped in only a handful of times, for example to update the running copy of AIWorks, and two progress notes posted during the night read "nothing needs you".
 
-### What it costs
+### Model usage
 
-Builds and tests run locally for every managed project. AIWorks must not use GitHub Actions or paid GitHub features such as Codespaces, paid runners or billable package/LFS storage. AI usage is allowed through subscriptions or metered APIs, subject to the existing campaign budgets and authority. See the [development policy and enforcement limits](docs/SUPERVISOR.md#1-boundary).
-
-The AI tools report their own usage: a building run typically costs about **$5** and a checking run **$2–3**. In an earlier measurement the average came to about **$10 per delivered step**, retries and checks included. On a subscription plan this is usage counted against your plan, not an extra bill. The dashboard shows the cost of every project and step, and never shows an unknown cost as zero.
+Open **Settings › Usage** to compare tokens by model, tier, reasoning effort and role. Project Overview breaks usage down by goal and step. A run can report input, output, cache reads, cache writes and reasoning tokens. Partial sums show their coverage. A CLI that supplies no usage appears as unreported.
 
 ### Where the savings come from
 
@@ -104,12 +102,12 @@ Day to day, you don't type commands. You work in the AIWorks dashboard on your c
 
 ### 3. Follow the work, if you want to
 
-Inside a project, four tabs answer four questions:
+Inside a project you can follow:
 
 - **Now:** where are we?
 - **Work:** what is running or waiting, and why? You see who is on each step (the builder or the checker), whether it is working normally or may be stuck, and what a waiting step is waiting for.
 - **Results:** what has been delivered? Pull requests waiting for your review, merged work and reports to read.
-- **Cost:** what did each step cost?
+- **Token usage:** which model ran each step and how many tokens did it report?
 
 <p align="center"><img src="docs/assets/readme/work.png" alt="The Work tab: one step being checked, one being built, one waiting for it" width="100%"></p>
 
@@ -158,7 +156,7 @@ Everything ends up in GitHub, next to the rest of your project:
 | Dashboard | Home, Projects and Needs you; each project with its Overview, Plan, Review and Knowledge tabs (Releases where a release is configured); Step, Settings, Messages and Diagnostics screens. |
 | Controls | Pause, Resume, Check again, Cancel and Send guidance. |
 | Planning assistant | Answers your messages and proposes plans, right in the dashboard. It can read your projects but never changes them, and it posts nothing to GitHub. |
-| Cost tracking | Cost per project and per step, taken from each run's own record. |
+| Token usage | Provider-reported tokens per project and step, grouped by model, tier, effort and role. |
 
 ### 🔧 Built, off by default
 
@@ -171,7 +169,7 @@ Everything ends up in GitHub, next to the rest of your project:
 | Website checks in a real browser | Built. Needs AGY or Chrome set up on the computer, and has not been proven on a real project yet. |
 | Alerts when something is blocked | Recording and grouping blockers is built and switched off, with your alert rules and quiet hours. A Telegram sender is built too: it sends only when you name your bot and chat as references into your own secret store and switch sending on, never answers or approves anything, and never sends again an alert that may already have arrived. It has been tested only against a made-up network, not a real bot. Stopped work always shows up in **Needs you**. |
 | Plan and do, Add project and projects without GitHub | Built and tested on synthetic projects. You add a GitHub checkout, a local Git repository or a plain folder, confirm its rules, edit and approve a plan, and work starts from that approval. A project without GitHub gets checked results you try, Apply and Undo apply in Review; it never gets a pull request. Two settings turn it on. |
-| Smarter choice of AI model per step | Every run records why its AI worker was chosen, and each step shows its models and cost. A plan can opt in to automatic choice among the models it already allows. No saving is claimed until a measured comparison has run. |
+| Smarter choice of AI model per step | Every run records why its AI worker was chosen, and each step shows its models and tokens. A plan can opt in to automatic choice among the models it already allows. No saving is claimed until a measured comparison has run. |
 | Several AI accounts with automatic switching | Choosing a login per run and starting the worker inside that login's own home folder is built and switched off. Turning it on waits for the owner's pilot. |
 | Slowing down when the PC is busy or an account is throttled | The building blocks are written and the status reports them, but they do not yet hold back new work. |
 | Automatic release, opt-in per project | With the installation switch enabled and a valid standing grant, finished campaigns continue from the verified merge through the project's deploy, observe, check and rollback commands. Interrupted deployments are reconciled before another action. Other release kinds remain outside automatic continuation. |
@@ -181,7 +179,7 @@ Everything ends up in GitHub, next to the rest of your project:
 
 - **Approve an outcome once**, and let AIWorks split it into steps and add steps as it learns.
 - **Phone notifications** you can act on: Telegram alerts are built (above); answering from the phone needs remote access, which is not designed yet.
-- **Automatic model choice by cost and quality** for every plan, once a measured comparison supports it.
+- **Automatic model choice by token usage and quality** for every plan, once a measured comparison supports it.
 - **An AI-assisted setup guide** for newcomers: a first version is in [docs/guides](docs/guides/AI_ASSISTED_START.md).
 - **Instant reaction to GitHub events**, instead of checking every minute.
 - **A public demo page**, once the dashboard passes its own usability review. Its static source is in [`site/`](site/README.md): a walk through the synthetic owner journey, not yet published anywhere.
@@ -251,7 +249,7 @@ The [getting-started guides](docs/guides/README.md) explain the same setup step 
 - External writes follow the authority the owner registered. Merging is off by default. The supervisor merges a pull request only under the merge gate, and only in a repository the owner lists in `config.json` (`merges.delegatedTo: "supervisor"`, decision AW-001, #138): the pull request is its own, its head is the checked commit, and what lands on the base branch is exactly the checked version. Project deployment requires an AW-010 grant and exact verification; the supervisor never deploys its own runtime or creates provider resources.
 - AIWorks runs only from its own merged code; a supervisor running unmerged code starts no new work. Plans are private files on your computer, registered explicitly, and their scope can only change with a higher authorization version.
 - The dashboard listens on `127.0.0.1` only and needs the same origin plus a per-session token for every action. Text that looks like a secret is refused. The one exception is the optional external campaign API (below), off by default: a static bearer token instead, for a local system that is not a browser.
-- There are no budget caps by default. A plan can set run, retry, repair and cost limits.
+- A plan can set worker-run, retry and repair limits. Token usage is observational.
 - A denied command, a sandbox refusal or a failed check is never routed around to another provider.
 - `config.json` holds executable and repository paths, never credentials.
 

@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
   authorization_version INTEGER NOT NULL, declaration TEXT NOT NULL,
   control TEXT NOT NULL, status TEXT NOT NULL, next_action TEXT, next_wakeup_at INTEGER,
   blocker TEXT, liveness_defect INTEGER NOT NULL DEFAULT 0,
-  runs_used INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0,
+  runs_used INTEGER NOT NULL DEFAULT 0,
   version INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS leases (
   campaign_id TEXT PRIMARY KEY, instance_id TEXT NOT NULL, generation INTEGER NOT NULL,
@@ -128,7 +128,7 @@ CREATE TABLE IF NOT EXISTS owner_messages (
   run_id TEXT, read_at INTEGER, answered_at INTEGER, failure TEXT, response_key TEXT, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS coordinator_runs (
   id TEXT PRIMARY KEY, state TEXT NOT NULL, session_id TEXT NOT NULL, run_dir TEXT NOT NULL, workspace TEXT NOT NULL,
-  message_ids TEXT NOT NULL, outcome TEXT, cost_usd REAL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+  message_ids TEXT NOT NULL, outcome TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS coordinator_replies (
   run_id TEXT PRIMARY KEY, body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS blockers (

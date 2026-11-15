@@ -623,8 +623,6 @@ export function intakeState(request, draft) {
   if (!draft) {
     if (request.state === 'failed') return { code: 'DRAFT_FAILED', reason: request.failure };
     // Waiting for its project budget (coordinator.mjs budgetHold): still to be drafted, with the budget's reason.
-    const wait = request.state === 'received' && /^project-budget: /.test(request.failure ?? '') ? request.failure.slice('project-budget: '.length) : null;
-    if (wait) return { code: 'RECEIVED', budgetWait: wait };
     // Received, no planning run recorded yet: queued, or waiting to try again after a read that could not draft it
     // (failRequest), by the code of that read and never its reason. Only a recorded coordinator run (state 'drafting') is drafting.
     if (request.state === 'received') return request.not_before ? { code: 'RECEIVED', retryAt: request.not_before, retryCode: String(request.failure ?? '').split(':')[0] || null } : { code: 'RECEIVED' };

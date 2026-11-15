@@ -447,32 +447,32 @@ export async function journey(root) {
     record('drafts-per-project-and-focus', drafts.other !== 'A site-only draft.' && drafts.own === 'A site-only draft.' && drafts.focus === 'view-title', drafts);
     await chatSteps({ p, ui, record, shot });
 
-    // Owner writes, each through the caller check: a Knowledge fact, the project budget, the alert rules.
+    // Owner writes, each through the caller check: a Knowledge fact, protected areas, the alert rules.
     const knowledge = await ui(`location.hash = '#/p/notes/knowledge'; return press('Confirm');`);
     record('knowledge-confirmed', /Confirmed/.test(knowledge), { notice: knowledge });
-    const settings = await ui(`location.hash = '#/p/notes/settings'; await sleep(1500); type('settings-areas', 'AGENTS.md'); type('settings-total', '25'); type('settings-price', '0.50');
+    const settings = await ui(`location.hash = '#/p/notes/settings'; await sleep(1500); type('settings-areas', 'AGENTS.md');
       const saved = await press('Save settings'); return { notice: saved, text: main() };`);
-    record('project-budget-saved', /Saved as version 1/.test(settings.notice) && /counted of \$25\.00/.test(settings.text), { notice: settings.notice });
+    record('project-rules-saved', /Saved as version 1/.test(settings.notice), { notice: settings.notice });
     const alertRules = await ui(`location.hash = '#/settings/alerts'; return press('Save alert rules');`);
     record('alert-rules-saved', /Saved as version 1/.test(alertRules), { notice: alertRules });
 
     // What is reported stays true: Usage counts local work's runs; Releases sends a local project's results to Review.
-    const usage = await ui(`const u = await api('/api/v2/settings/usage'); return { usd: u.workers.usd, runs: u.workers.usdRuns };`);
-    record('usage-counts-local-runs', usage.usd > 0 && usage.runs > 0, usage);
-    // Local work's runs per goal and step, by project: models and cost from the same builders as GitHub work, each run
+    const usage = await ui(`const u = await api('/api/v2/settings/usage'); return { tokens: u.workers.total, runs: u.workers.reportedRuns };`);
+    record('usage-counts-local-runs', usage.tokens > 0 && usage.runs > 0, usage);
+    // Local work's runs per goal and step, by project: models and tokens from the same builders as GitHub work, each run
     // counted once (Usage equals the goals' sum), a project's total equal to its own goals' and no goal in two projects.
     const local = await ui(`const s = await api('/api/state'), u = await api('/api/v2/settings/usage'), sv = s.supervisor;
-      const sum = (list) => Math.round(list.reduce((n, c) => n + (c.costByUnit.usd ?? 0), 0) * 10000) / 10000;
+      const sum = (list) => list.reduce((n, c) => n + (c.usage.total ?? 0), 0);
       const of = (project) => sv.local.filter((c) => c.project === project);
-      const total = (project) => sv.localCosts.find((t) => t.project === project);
+      const total = (project) => sv.localUsage.find((t) => t.project === project);
       const model = (used) => used ? used.executor + '/' + (used.model ?? 'not recorded') : null;
       location.hash = '#/p/notes'; await sleep(2000);
       return { notes: of('notes').map((c) => c.id), site: of('site').map((c) => c.id),
-        runsMatch: ['notes', 'site'].every((p) => total(p)?.runs === of(p).reduce((n, c) => n + c.runsUsed, 0)),
+        runsMatch: ['notes', 'site'].every((p) => total(p)?.usage.runs === of(p).reduce((n, c) => n + c.usage.runs, 0)),
         models: [...new Set(sv.local.flatMap((c) => c.tasks.map((t) => model(t.routing.implement))).filter(Boolean))],
-        stepRuns: sv.local.reduce((n, c) => n + c.tasks.reduce((m, t) => m + t.cost.runs, 0), 0), runs: sv.local.reduce((n, c) => n + c.runsUsed, 0),
-        usage: u.workers.usd, sum: Math.round((sum(sv.campaigns) + sum(sv.local)) * 10000) / 10000, breakdown: main().includes('See the breakdown') };`);
-    record('local-cost-per-step', local.notes.length >= 2 && local.site.length >= 1 && !local.notes.some((id) => local.site.includes(id)) && local.runsMatch &&
+        stepRuns: sv.local.reduce((n, c) => n + c.tasks.reduce((m, t) => m + t.stats.runs, 0), 0), runs: sv.local.reduce((n, c) => n + c.runsUsed, 0),
+        usage: u.workers.total, sum: sum(sv.campaigns) + sum(sv.local), breakdown: main().includes('Worker tokens') };`);
+    record('local-tokens-per-step', local.notes.length >= 2 && local.site.length >= 1 && !local.notes.some((id) => local.site.includes(id)) && local.runsMatch &&
       local.models.length > 0 && local.stepRuns > 0 && local.usage === local.sum && local.breakdown, local);
     const releases = await ui(`location.hash = '#/p/site/releases'; await sleep(2500); return main();`);
     record('releases-local-truthful', /Release does not apply to a project without GitHub/.test(releases) && /never released/.test(releases), null);

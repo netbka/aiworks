@@ -1,3 +1,4 @@
+import { emptyUsage, mergeUsage, planningUsage } from '../supervisor/token-usage.mjs';
 // Knowledge and Usage in the dashboard (docs/design/OWNER_UI_V2.md section 9, work package WP8). The rules live in
 // src/supervisor/knowledge.mjs; this module finds the project, reads its suggestions and saves the owner's act.
 //
@@ -11,7 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store } from '../supervisor/store.mjs';
 import { MIRROR_REPO, SNAPSHOT_DIR } from '../supervisor/adapters/mirror.mjs';
-import { coordinatorUsage, factsKey, KnowledgeError, materialSuggestions, planningEstimate, planSuggestions, projectEvidence, projectKnowledge, saveFact } from '../supervisor/knowledge.mjs';
+import { factsKey, KnowledgeError, materialSuggestions, planSuggestions, projectEvidence, projectKnowledge, saveFact } from '../supervisor/knowledge.mjs';
 import { projectOf } from '../supervisor/project-settings.mjs';
 import { projects as projectRecords } from '../supervisor/projects.mjs';
 import { configuredRepositories } from './projects.mjs';
@@ -140,42 +141,13 @@ export async function saveKnowledge(dataDir, input, { caller, now = Date.now() }
   } finally { store.close(); }
 }
 
-/** Every campaign's cost by unit (supervisor.mjs costByUnit) added up, each unit on its own: dollars only where reported, tokens per provider. */
-function workerUsage(campaigns) {
-  const total = { usd: null, usdRuns: 0, unknownRuns: 0, tokens: new Map() };
-  for (const campaign of campaigns) {
-    const cost = campaign.costByUnit;
-    if (!cost) continue;
-    if (cost.usd !== null) total.usd = Math.round(((total.usd ?? 0) + cost.usd) * 10000) / 10000;
-    total.usdRuns += cost.usdRuns; total.unknownRuns += cost.unknownRuns;
-    for (const item of cost.tokens) {
-      const sum = total.tokens.get(item.executor) ?? { executor: item.executor, runs: 0, input: 0, output: 0 };
-      sum.runs += item.runs; sum.input += item.input; sum.output += item.output;
-      total.tokens.set(item.executor, sum);
-    }
-  }
-  return { usd: total.usd, usdRuns: total.usdRuns, unknownRuns: total.unknownRuns, tokens: [...total.tokens.values()] };
-}
-
-/**
- * GET /api/v2/settings/usage: usage by source, with unknown kept unknown. AI worker runs (finished, counted runs of all
- * work) and the AI coordinator (planning and messages) by unit; hosting and subscriptions are not tracked by AIWorks and
- * say so, never $0. Read-only.
- */
+/** Token usage of finished worker and coordinator operations on this installation. */
 export function usageView(dataDir, supervisor) {
   if (!supervisor?.available || !existsSync(storePath(dataDir))) return { available: false };
   const store = new Store(storePath(dataDir), { readOnly: true });
   try {
-    // Work in projects without GitHub is the snapshot's `local` list, apart from its campaigns, so each run counts once.
-    return { available: true, workers: workerUsage([...(supervisor.campaigns ?? []), ...(supervisor.local ?? [])]), coordinator: coordinatorUsage(store), planning: planningEstimate(store),
-      untracked: ['hosting', 'subscriptions'] };
+    const workers = emptyUsage();
+    for (const campaign of [...supervisor.campaigns, ...supervisor.local]) mergeUsage(workers, campaign.usage);
+    return { available: true, workers, coordinator: planningUsage(store) };
   } finally { store.close(); }
-}
-
-/** The planning-cost estimate First run states before anything is planned; unavailable without a store. */
-export function planningCost(dataDir) {
-  if (!existsSync(storePath(dataDir))) return { available: false, runs: 0, reportedRuns: 0, unknownRuns: 0 };
-  let store;
-  try { store = new Store(storePath(dataDir), { readOnly: true }); return planningEstimate(store); }
-  catch { return { available: false, runs: 0, reportedRuns: 0, unknownRuns: 0 }; } finally { store?.close(); }
 }

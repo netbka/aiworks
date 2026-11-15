@@ -255,32 +255,3 @@ export function saveFact(store, input, { suggestions = [], now = Date.now() } = 
   store.journal(null, 'project-fact-saved', { project: key, fact: factId, version, act: ACT_WORDS[input.action], basis: basis?.source ?? null }, now);
   return { factId, version, duplicate: false };
 }
-
-/**
- * What planning a goal has cost on this computer: the dollars reported by the last 20 finished planning runs (the AI
- * coordinator's intake runs). Unavailable, never $0, until at least one reported its cost; runs that reported none are
- * counted apart and never priced. An estimate from history, not a quote: the next plan may cost more or less.
- */
-export function planningEstimate(store) {
-  if (!hasTable(store, 'coordinator_runs')) return { available: false, runs: 0, reportedRuns: 0, unknownRuns: 0 };
-  const runs = store.all("SELECT cost_usd FROM coordinator_runs WHERE id LIKE 'intake.%' AND state IN ('answered', 'failed') ORDER BY created_at DESC LIMIT 20");
-  const reported = runs.map((run) => run.cost_usd).filter((cost) => Number.isFinite(cost) && cost > 0).sort((a, b) => a - b);
-  const base = { runs: runs.length, reportedRuns: reported.length, unknownRuns: runs.length - reported.length };
-  if (!reported.length) return { available: false, ...base };
-  const round = (value) => Math.round(value * 100) / 100;
-  const middle = reported.length % 2 ? reported[(reported.length - 1) / 2] : (reported[reported.length / 2 - 1] + reported[reported.length / 2]) / 2;
-  return { available: true, ...base, lowUsd: round(reported[0]), medianUsd: round(middle), highUsd: round(reported.at(-1)) };
-}
-
-/**
- * The AI coordinator's runs by unit (planning goals and answering messages): reported dollars (null, never 0, when none
- * reported), and the runs that reported none, counted apart.
- */
-export function coordinatorUsage(store) {
-  if (!hasTable(store, 'coordinator_runs')) return { runs: 0, usd: null, reportedRuns: 0, unknownRuns: 0, openRuns: 0 };
-  const runs = store.all('SELECT state, cost_usd FROM coordinator_runs');
-  const finished = runs.filter((run) => !['recorded', 'dispatched'].includes(run.state));
-  const reported = finished.filter((run) => Number.isFinite(run.cost_usd) && run.cost_usd > 0);
-  return { runs: runs.length, usd: reported.length ? Math.round(reported.reduce((sum, run) => sum + run.cost_usd, 0) * 10000) / 10000 : null,
-    reportedRuns: reported.length, unknownRuns: finished.length - reported.length, openRuns: runs.length - finished.length };
-}

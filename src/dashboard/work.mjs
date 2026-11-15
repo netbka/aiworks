@@ -118,7 +118,7 @@ function planView(store, record, request, draft, textChecks) {
   const textCheck = states.includes('unavailable') ? 'unavailable' : states.includes('checking') ? 'checking' : 'ready';
   const startable = ['DRAFT_READY', 'PLAN_ONLY_READY', 'CONFLICT'].includes(state.code) && textCheck === 'ready';
   const view = { ...base, code: state.code, startable, approvedAt,
-    failure: state.code === 'DRAFT_FAILED' ? safeText(state.reason, 80) : null, budgetWait: state.budgetWait ? safeText(state.budgetWait, 300) : null, retryAt: Number.isSafeInteger(state.retryAt) ? state.retryAt : null,
+    failure: state.code === 'DRAFT_FAILED' ? safeText(state.reason, 80) : null, retryAt: Number.isSafeInteger(state.retryAt) ? state.retryAt : null,
     retryCode: /^[A-Za-z][A-Za-z0-9_-]{0,39}$/.test(state.retryCode ?? '') ? state.retryCode : null, staleWhat: state.code === 'DRAFT_STALE' ? list(state.what, 120, 8) : [] };
   if (!draft) return view;
   const d = draft.declaration, envelope = d.envelope ?? {};

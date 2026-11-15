@@ -1,5 +1,7 @@
 # Owner journey acceptance (synthetic, disposable runtime)
 
+[AW-021](../DECISIONS.md#aw-021---measure-model-usage-in-tokens) supersedes the historical monetary accounting in this design. Current usage is measured in tokens by model, tier, effort and role.
+
 **Privacy boundary:** synthetic only. Two fictional projects, a synthetic AI worker and the synthetic governance fixture; no installation, account, recipient or private project. Screenshots and `journey.json` stay in the disposable folder, outside this repository; only the reviewed selection of the [static showcase](../../site/README.md) is committed.
 
 **What this is.** The local owner journey of [issue #39](https://github.com/netbka/aiworks/issues/39), run on the production entry points of the source revision under test, with findings repaired in the same change. It is a scripted behaviour and layout check by an AI implementer, **not a human usability study**, and it says nothing about any installed version: merged source is not deployed.

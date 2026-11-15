@@ -82,7 +82,6 @@ const STATES = {
   // Projects, never here (OWNER_WORKSPACE §4.2; aiworks#11 review F8).
   'needs-calm': { section: '7.1', needsYou: false, copy: () => ['No work is blocked on you right now.', '', null] },
   'results-empty': { section: '7.1', needsYou: false, copy: () => ['No results yet.', 'Results appear here when a step finishes and passes the independent check.', null] },
-  'cost-empty': { section: '7.1', needsYou: false, copy: () => ['No cost yet.', 'Nothing has run for this project.', null] },
   // §7.2 Disconnected
   'page-disconnected': { section: '7.2', needsYou: null, copy: (d, f) => ['Can’t reach AIWorks on this computer.',
     `${d.loadedAt ? `Showing what was loaded at ${f.time(d.loadedAt)}.` : 'No state has been loaded yet.'} Buttons are off until it reconnects. Trying again every 5 seconds.`, null] },
@@ -494,7 +493,7 @@ export function blockerWords(kind, { check = true } = {}) {
   const then = check ? ', then choose Check again' : '';
   if (kind === 'executors') return { reason: 'No AI worker on this computer can do this step',
     action: `Set up an AI worker that can do it on this computer (see Settings)${then}` };
-  if (kind === 'budget') return { reason: 'This work has used all the runs or cost it was approved for',
+  if (kind === 'budget') return { reason: 'This work has used all its approved runs',
     action: 'Decide whether to allow more. If you do, approve it again with higher limits' };
   if (kind === 'auth') return { reason: 'The AI worker on this computer is signed out',
     action: `Sign in to it again on this computer${then}` };
@@ -824,17 +823,6 @@ export function readingLines(reading) {
   return lines.length ? { title: 'What it reads and the rules it broke', lines } : null;
 }
 
-/**
- * The Cost summary of a project (§4.10): its counted runs, and in how many of its pieces of work they ran, so the
- * sentence matches the breakdown under it, which lists every piece (aiworks#11 review F14). `total` is the server's
- * project total; null when no run is counted yet (runs still running are said apart).
- */
-export function costRunsLine(total) {
-  if (!total.runs) return null;
-  const ran = total.worksWithRuns ?? total.works;
-  return `${plural(total.runs, 'run')} in ${ran === total.works ? plural(ran, 'piece') : `${ran} of ${plural(total.works, 'piece')}`} of work.`;
-}
-
 /** The current dashboard semantic version, kept below 1.0.0 until the roadmap is completed. */
 export const DASHBOARD_VERSION = '0.9.0';
 /** The name of the current dashboard version describing its primary feature theme. */
@@ -893,11 +881,11 @@ export const DASHBOARD_VERSIONS = [
   },
   {
     version: '0.5.0',
-    name: 'Usage & Cost Transparency',
-    description: 'Token math and cost tracking per project and step.',
+    name: 'Model token usage',
+    description: 'Reported tokens by project, step and model.',
     features: [
       'Detailed token counts (input, cache read, cache write, output)',
-      'Cost calculation per project and per step',
+      'Token counts per project and step',
       'Unreported run accounting',
     ],
     status: 'completed',

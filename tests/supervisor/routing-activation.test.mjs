@@ -68,7 +68,7 @@ test('a routed cohort picks the eligible model, sidesteps a refused one, escalat
 
   const ops = operations(store, id);
   for (const op of ops) {
-    assert.equal(op.routing.policy, 'routing-policy/1');
+    assert.equal(op.routing.policy, 'routing-policy/2');
     assert.equal(op.routing.mode, 'auto');
     // No history yet: the expected cost is unknown, never zero or invented.
     for (const row of op.routing.decision.costs) assert.equal(row.expectedCost, null);

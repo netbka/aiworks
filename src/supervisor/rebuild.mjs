@@ -71,7 +71,7 @@ export function snapshot(store) {
     const journal = store.get('SELECT COUNT(*) AS n, MAX(seq) AS last FROM journal WHERE campaign_id = ?', c.id);
     campaigns[c.id] = {
       control: c.control, scopeDigest: c.scope_digest, authorizationVersion: c.authorization_version, authority: authorityDigest(c.declaration),
-      runsUsed: c.runs_used, costUsd: c.cost_usd,
+      runsUsed: c.runs_used,
       tasks: Object.fromEntries(store.tasks(c.id).map((t) => [t.task_id, { state: t.state, attempts: t.attempts, repairRounds: t.repair_rounds,
         headSha: t.head_sha, verifiedSha: t.verified_sha, prUrl: t.pr_url, retryAt: t.retry_at, result: digest(t.result) }])),
       operations: Object.fromEntries(store.all('SELECT id, state, outcome FROM operations WHERE campaign_id = ?', c.id)
@@ -94,12 +94,12 @@ export function preservationProblems(drained, store) {
     const after = now.campaigns[id];
     if (!after) { problems.push(`${id} is no longer registered`); continue; }
     for (const key of ['scopeDigest', 'authorizationVersion', 'authority']) if (after[key] !== before[key]) problems.push(`${id}: ${key} changed`);
-    if (after.runsUsed < before.runsUsed || after.costUsd < before.costUsd) problems.push(`${id}: recorded runs or cost went down`);
+    if (after.runsUsed < before.runsUsed) problems.push(`${id}: recorded runs went down`);
     for (const [op, value] of Object.entries(before.operations)) if (after.operations[op] !== value) problems.push(`${id}: run ${op} changed or is missing`);
     const kept = store.get('SELECT COUNT(*) AS n FROM journal WHERE campaign_id = ? AND seq <= ?', id, before.journal.last).n;
     if (kept !== before.journal.count) problems.push(`${id}: journal history changed`);
     if (after.control === before.control && ['paused', 'cancelled'].includes(before.control)) {
-      if (after.runsUsed !== before.runsUsed || after.costUsd !== before.costUsd) problems.push(`${id}: budget use changed while ${before.control}`);
+      if (after.runsUsed !== before.runsUsed) problems.push(`${id}: run count changed while ${before.control}`);
       if (canonicalJson(after.tasks) !== canonicalJson(before.tasks)) problems.push(`${id}: tasks, outcomes or retry timers changed while ${before.control}`);
     }
   }

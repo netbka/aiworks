@@ -100,8 +100,8 @@ test('serial DAG: implement, independent verify of the exact SHA, publish that S
   }
   const ops = store.all('SELECT * FROM operations WHERE campaign_id = ?', id);
   assert.equal(new Set(ops.map((op) => op.idempotency_key)).size, 4);
-  assert.ok(ops.every((op) => op.outcome.receipt.measured && op.outcome.receipt.costUsd === 0.01));
-  assert.equal(Math.round(store.campaign(id).cost_usd * 100), 4);
+  assert.ok(ops.every((op) => op.outcome.receipt.measured && op.outcome.receipt.usage.total === 165));
+  assert.equal(ops.reduce((sum, op) => sum + op.outcome.receipt.usage.total, 0), 660);
   await runUntil(controller, store, id, () => store.all("SELECT * FROM outbox WHERE state = 'pending'").length === 0).catch(() => {});
   const notes = env.comments().filter((c) => c.issue === '443');
   assert.ok(notes.some((c) => c.body.includes('aiworks:test-campaign:ready')), 'ready note posted to the tracking issue');
@@ -191,8 +191,8 @@ test('an authorization amendment recounts runs from the stored operations, never
   t.after(() => { store.close(); env.cleanup(); });
   const decl = declaration({ limits: { maxWorkerRuns: 3 } });
   m.campaignStart(store, decl, 1000);
-  const refused = { class: 'quota', detail: 'provider usage/rate limit', receipt: { sessionId: 's', costUsd: 0, usage: null, numTurns: 1, permissionDenials: 0, measured: true } };
-  const worked = { ...refused, receipt: { ...refused.receipt, costUsd: 2.26, numTurns: 41 } };
+  const refused = { class: 'quota', detail: 'provider usage/rate limit', receipt: { sessionId: 's', usage: { total: 0 }, numTurns: 1, permissionDenials: 0, measured: true } };
+  const worked = { ...refused, receipt: { ...refused.receipt, usage: { total: 250 }, numTurns: 41 } };
   // Refusals recorded without a refund marker, a run cut off mid-work, an admission-blocked record and a run still in flight.
   [[refused, 'finished'], [refused, 'finished'], [worked, 'finished'], [{ class: 'admission-blocked', detail: 'x' }, 'abandoned'], [null, 'dispatched']]
     .forEach(([outcome, state], i) => store.insert('operations', {
@@ -212,7 +212,7 @@ test('usage-limit wording and wall-clock reset times are parsed', { skip: skipWi
   const { claude } = await load();
   const expect = { deliverable: 'report', targetSha: 'a'.repeat(40), reportDigest: 'b'.repeat(64) };
   const refusal = (result, now, extra = {}) => claude.classify({ role: 'implementer', run: { exitCode: 1 }, expect, now, stderrText: '',
-    stdoutText: JSON.stringify({ type: 'result', subtype: 'success', is_error: true, session_id: 's', num_turns: 1, total_cost_usd: 0, result, ...extra }) });
+    stdoutText: JSON.stringify({ type: 'result', subtype: 'success', is_error: true, session_id: 's', num_turns: 1, usage: { total_tokens: 0 }, result, ...extra }) });
   const text = "You've hit your session limit · resets 1:50pm (Asia/Jerusalem)";
   const morning = Date.UTC(2026, 9, 9, 8, 23); // 11:23 in Jerusalem (UTC+3)
   const v = refusal(text, morning);
@@ -222,7 +222,7 @@ test('usage-limit wording and wall-clock reset times are parsed', { skip: skipWi
   assert.equal(refusal("You've hit your session limit · resets 9am (Europe/London)", Date.UTC(2026, 0, 15, 12, 0)).retryAt, Date.UTC(2026, 0, 16, 9, 0) + 60_000);
   assert.equal(refusal("You've hit your session limit · resets 1:50pm (Nowhere/Zone)", morning).retryAt, morning + 30 * 60_000, 'unknown zone keeps the default wait');
   assert.equal(claude.refusedBeforeWork(v), true);
-  assert.equal(claude.refusedBeforeWork(refusal(text, morning, { num_turns: 41, total_cost_usd: 2.26 })), false, 'a run that worked before the limit still counts');
+  assert.equal(claude.refusedBeforeWork(refusal(text, morning, { num_turns: 41, usage: { total_tokens: 250 } })), false, 'a run that worked before the limit still counts');
   const unmeasured = claude.classify({ role: 'implementer', run: { exitCode: 1 }, expect, now: morning, stdoutText: '', stderrText: 'usage limit' });
   assert.deepEqual([unmeasured.class, claude.refusedBeforeWork(unmeasured)], ['quota', false], 'no measured receipt, no refund');
 });
