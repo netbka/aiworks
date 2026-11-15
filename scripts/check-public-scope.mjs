@@ -42,21 +42,34 @@ export function allowedBinaries(text) {
   return new Set(String(text ?? '').split(/\r?\n/).map(line => line.trim().split(/\s+/)[0]).filter(word => /^[0-9a-f]{40}$/.test(word)));
 }
 
-function inspect(root, entries, terms, binaries) {
+/**
+ * `memo` carries what earlier trees of the same history check already found: per blob id whether it has NUL bytes
+ * and how many content findings it has, and per path its findings. A history of hundreds of commits shares almost
+ * every blob and path, so each is read and checked once; the result is the same as checking every tree in full.
+ */
+function inspect(root, entries, terms, binaries, memo = { blobs: new Map(), paths: new Map() }) {
   if (privatePaths(entries.map(entry => entry.path)).length) throw new Error('Private installation files are in the Git index or proposed history. Keep installation data under ignored .local/.');
   if (entries.some(entry => !['100644', '100755'].includes(entry.mode))) throw new Error('Public source must not contain symlinks, submodules or unresolved index entries.');
   if (!entries.length) return;
-  const bytes = git(root, ['cat-file', '--batch'], entries.map(entry => entry.oid).join('\n') + '\n');
-  let offset = 0, failures = 0;
-  const unlisted = [];
-  for (const entry of entries) {
+  const unread = [...new Set(entries.map(entry => entry.oid).filter(oid => !memo.blobs.has(oid)))];
+  const bytes = unread.length ? git(root, ['cat-file', '--batch'], unread.join('\n') + '\n') : Buffer.alloc(0);
+  let offset = 0;
+  for (const wanted of unread) {
     const end = bytes.indexOf(10, offset);
     const [oid, type, size] = bytes.subarray(offset, end).toString().split(' ');
-    if (oid !== entry.oid || type !== 'blob' || !/^\d+$/.test(size)) throw new Error('Cannot inspect a public source blob.');
+    if (oid !== wanted || type !== 'blob' || !/^\d+$/.test(size)) throw new Error('Cannot inspect a public source blob.');
     const raw = bytes.subarray(end + 1, end + 1 + Number(size));
     offset = end + 2 + Number(size);
-    if ((BINARY_PATH.test(entry.path) || raw.subarray(0, 8000).includes(0)) && !binaries.has(oid)) unlisted.push(oid);
-    failures += contentFindings(raw.toString('utf8'), terms).length + contentFindings(entry.path, terms).length;
+    memo.blobs.set(oid, { nul: raw.subarray(0, 8000).includes(0), findings: contentFindings(raw.toString('utf8'), terms).length });
+  }
+  let failures = 0;
+  const unlisted = [];
+  for (const entry of entries) {
+    const blob = memo.blobs.get(entry.oid);
+    if (!memo.paths.has(entry.path)) memo.paths.set(entry.path, contentFindings(entry.path, terms).length);
+    // A blob's binary status also depends on the path it sits at (its extension), so it is decided per entry.
+    if ((BINARY_PATH.test(entry.path) || blob.nul) && !binaries.has(entry.oid)) unlisted.push(entry.oid);
+    failures += blob.findings + memo.paths.get(entry.path);
   }
   // Blob ids name no private value, so the refusal can say which ones to look at.
   if (unlisted.length) throw new Error(`Binary files not in ${BINARY_LIST}: ${[...new Set(unlisted)].join(', ')}. Open each one, confirm it shows no private data (people, emails, paths, project names), then add its id with a path to ${BINARY_LIST}.`);
@@ -83,6 +96,7 @@ export function checkPublicHistory(root, revisions, tip = revisions.at(-1).split
   const listed = spawnSync('git', ['cat-file', 'blob', `${tip}:${BINARY_LIST}`], { cwd: root, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
   const binaries = allowedBinaries(listed.status === 0 ? listed.stdout.toString() : '');
   const commits = git(root, ['rev-list', ...revisions]).toString().trim().split('\n').filter(Boolean);
+  const memo = { blobs: new Map(), paths: new Map() };
   for (const commit of commits) {
     const message = git(root, ['show', '-s', '--format=%B', commit]).toString();
     let findings = contentFindings(message, terms);
@@ -100,12 +114,32 @@ export function checkPublicHistory(root, revisions, tip = revisions.at(-1).split
       const [mode, , oid] = line.slice(0, tab).split(' ');
       return { mode, oid, path };
     });
-    inspect(root, entries, terms, binaries);
+    inspect(root, entries, terms, binaries, memo);
   }
 }
+/**
+ * The commits the push remote already serves, as the remote itself answers (git ls-remote), never as local
+ * remote-tracking refs claim: those can be moved locally. Only tips present here are returned. Any failure, or no
+ * remote named, returns null, and the caller then checks the whole history.
+ */
+export function publishedTips(root, remote) {
+  if (!remote || remote.startsWith('-')) return null;
+  // A hidden credential prompt would only stall; no prompt, and a failure falls back to the whole history.
+  const listed = spawnSync('git', ['ls-remote', '--heads', '--tags', '--', remote], {
+    cwd: root, encoding: 'utf8', windowsHide: true, timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  });
+  if (listed.error || listed.status !== 0) return null;
+  const tips = [...new Set(listed.stdout.split('\n').map(line => line.split('\t')[0]).filter(sha => /^[0-9a-f]{40}$/.test(sha)))];
+  return tips.filter(sha => spawnSync('git', ['cat-file', '-e', `${sha}^{commit}`], { cwd: root, windowsHide: true }).status === 0);
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     if (process.argv[2] === '--pre-push') {
+      // The hook passes the URL the push goes to, never the remote's name: a name answers ls-remote from its fetch URL,
+      // which a pushurl or pushInsteadOf can point elsewhere. A new branch skips only what that push URL already serves.
+      let published;
       for (const line of readFileSync(0, 'utf8').trim().split('\n').filter(Boolean)) {
         const [localRef, local, remoteRef, remote] = line.split(/\s+/);
         if (!/^[0-9a-f]{40}$/.test(local) || !/^[0-9a-f]{40}$/.test(remote)) throw new Error('Invalid push reference.');
@@ -120,7 +154,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
           if (!object) throw new Error('Cannot inspect a proposed tag.');
         }
         if (git(process.cwd(), ['cat-file', '-t', object]).toString().trim() !== 'commit') throw new Error('A public branch or tag must resolve to a commit.');
-        checkPublicHistory(process.cwd(), /^0+$/.test(remote) ? [local] : [`${remote}..${local}`]);
+        if (!/^0+$/.test(remote)) { checkPublicHistory(process.cwd(), [`${remote}..${local}`]); continue; }
+        if (published === undefined) published = publishedTips(process.cwd(), process.argv[3]);
+        checkPublicHistory(process.cwd(), published?.length ? [local, '--not', ...published] : [local], local);
       }
     } else checkPublicScope();
   }

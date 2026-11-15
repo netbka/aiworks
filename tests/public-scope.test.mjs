@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -176,4 +176,66 @@ test('a Git checkout under a configured repository root is a private term withou
   assert.throws(() => checkPublicScope(self), /Public content check failed/);
   // The supervisor's publications to a target name that target: they keep to the listed terms only.
   assert.deepEqual(privateTerms(self), []);
+});
+
+test('a local merge counts every commit message a push of main would refuse, and malformed private terms never block it', async t => {
+  const { privateMessages } = await import('../src/supervisor/merge.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'aiworks-private-messages-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const git = (...args) => {
+    const out = spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', ...args], { cwd: root, encoding: 'utf8', windowsHide: true });
+    assert.equal(out.status, 0, out.stderr);
+    return out.stdout.trim();
+  };
+  git('init', '-q');
+  writeFileSync(join(root, '.gitignore'), '.local/\n');
+  git('add', '.'); git('commit', '-qm', 'Public baseline');
+  const trusted = git('rev-parse', 'HEAD');
+  git('commit', '--allow-empty', '-qm', 'work fictional-session-term');
+  git('commit', '--allow-empty', '-qm', 'Public follow-up');
+  const sha = git('rev-parse', 'HEAD');
+  const count = (also = []) => privateMessages({ git: ['git'], repoPath: root, trusted, sha, also });
+  assert.equal(count(), 0, 'without private terms both messages are public');
+  mkdirSync(join(root, '.local'));
+  writeFileSync(join(root, '.local/publication.json'), JSON.stringify({ privateTerms: ['fictional-session-term'] }));
+  assert.equal(count(), 1, 'an installation private term in a message main would take');
+  assert.equal(count([['ghp', 'E'.repeat(36)].join('_')]), 2, 'the merge message itself is checked too');
+  writeFileSync(join(root, '.local/publication.json'), '{ not json');
+  assert.equal(count(), 0, 'malformed settings never block a local review');
+  assert.equal(count([['ghp', 'E'.repeat(36)].join('_')]), 1, 'the built-in checks still apply');
+});
+
+test('a new branch skips only the history its real push URL already serves, never what the fetch URL holds', t => {
+  const base = mkdtempSync(join(tmpdir(), 'aiworks-push-remote-'));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const root = join(base, 'work'), fetched = join(base, 'fetch.git'), published = join(base, 'push.git'), hooks = join(base, 'hooks');
+  mkdirSync(root); mkdirSync(hooks);
+  const git = (cwd, ...args) => spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', ...args], { cwd, encoding: 'utf8', windowsHide: true });
+  const ok = (cwd, ...args) => { const out = git(cwd, ...args); assert.equal(out.status, 0, out.stderr); return out.stdout.trim(); };
+  // The real hook, with its script path made absolute so it runs from the scratch repository.
+  const slashes = path => path.split('\\').join('/');
+  const script = slashes(fileURLToPath(new URL('../scripts/check-public-scope.mjs', import.meta.url)));
+  const hook = readFileSync(fileURLToPath(new URL('../.githooks/pre-push', import.meta.url)), 'utf8')
+    .replace('node scripts/check-public-scope.mjs', `"${slashes(process.execPath)}" "${script}"`);
+  writeFileSync(join(hooks, 'pre-push'), hook, { mode: 0o755 });
+  ok(base, 'init', '-q', '--bare', fetched); ok(base, 'init', '-q', '--bare', published);
+  ok(root, 'init', '-q'); ok(root, 'config', 'core.hooksPath', hooks);
+  ok(root, 'remote', 'add', 'origin', fetched); ok(root, 'remote', 'set-url', '--push', 'origin', published);
+  writeFileSync(join(root, 'README.md'), ['ghp', 'D'.repeat(36)].join('_'));
+  ok(root, 'add', '.'); ok(root, 'commit', '-qm', 'Private history');
+  ok(root, 'push', '-q', '--no-verify', fetched, 'HEAD:refs/heads/main');
+  writeFileSync(join(root, 'README.md'), 'Public source');
+  ok(root, 'add', '.'); ok(root, 'commit', '-qm', 'Clean change');
+  // The fetch URL serves the private commit; the push URL does not, so the push is refused.
+  assert.notEqual(git(root, 'push', '-q', 'origin', 'HEAD:refs/heads/feature').status, 0);
+  assert.equal(git(published, 'rev-parse', '--verify', '-q', 'refs/heads/feature').status, 1);
+  // Once the push URL itself serves that history, a new branch on top of it passes.
+  ok(root, 'push', '-q', '--no-verify', published, 'HEAD~1:refs/heads/main');
+  ok(root, 'push', '-q', 'origin', 'HEAD:refs/heads/feature');
+  // An unpublished private commit between the served history and the tip is still refused.
+  writeFileSync(join(root, 'README.md'), ['ghp', 'E'.repeat(36)].join('_'));
+  ok(root, 'add', '.'); ok(root, 'commit', '-qm', 'Unpublished private content');
+  writeFileSync(join(root, 'README.md'), 'Public source again');
+  ok(root, 'add', '.'); ok(root, 'commit', '-qm', 'Hide it again');
+  assert.notEqual(git(root, 'push', '-q', 'origin', 'HEAD:refs/heads/second').status, 0);
 });

@@ -1,4 +1,4 @@
-// Shared harness of the merge-refresh, BASE-HOLD and merge-batch tests. Merge-gate refresh (merges.refresh, src/supervisor/merge-refresh.mjs): when the base moved past a verified pull request
+// Shared harness of the merge-refresh and BASE-HOLD tests. Merge-gate refresh (merges.refresh, src/supervisor/merge-refresh.mjs): when the base moved past a verified pull request
 // without touching its files, the supervisor runs the gate on the exact merge result itself and merges the unchanged
 // head, instead of reopening the task for an AI repair round. A shared file, a failed or stuck gate falls back to that
 // repair. Workers are played through applyOutcome; the gate is a synthetic command (fixtures/fake-refresh-gate.mjs) run

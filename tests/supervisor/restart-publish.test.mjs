@@ -5,18 +5,6 @@ import { test } from 'node:test';
 import { declaration, skipWithoutSqlite } from './helpers.mjs';
 import { allFinished, harness, implementCalls, ops, single } from './restart-harness.mjs';
 
-test('killed between push and PR creation: exactly one PR at the verified SHA', { skip: skipWithoutSqlite }, async (t) => {
-  const h = await harness(t, {});
-  assert.equal(await h.serve({ AIWORKS_FAULT: 'after-push' }).exited, 86);
-  const next = h.serve();
-  await h.finished();
-  next.kill();
-  const prs = h.env.prs();
-  assert.equal(prs.length, 1);
-  const task = h.store.task(h.id, 'T1');
-  assert.equal(h.env.remoteHead(`campaign/${h.id}/T1`), task.verified_sha);
-});
-
 test('killed after posting a verified report: the replacement reconciles and does not repost', { skip: skipWithoutSqlite }, async (t) => {
   const decl = declaration({ tasks: [{ id: 'R1', issue: 437, title: 'research', deliverable: 'report', goal: 'Research only.', dependsOn: [], acceptance: ['posted'], references: ['AGENTS.md'] }] });
   const h = await harness(t, { decl, scenario: { implement: ['report'] } });

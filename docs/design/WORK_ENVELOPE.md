@@ -88,7 +88,7 @@ The envelope is a **version 2 campaign declaration**. Version 1 declarations sta
   "authorization": { "version": 1, "grantedBy": "owner", "grantedAt": "2026-10-20",
     "reference": "https://github.com/example-org/example-repository "text": "Approved in the AIWorks dashboard: ..." },
   "target": { "tenantId": "example-org", "projectId": "sampleapp", "environment": "development",
-    "repository": "example-org/sampleapp", "baseBranch": "main", "trackingIssue": 512 },
+    "repository": "example-org/sampleapp", "baseBranch": "main", "trackingIssue": 512, "closeWhenDone": true },
   "limits": { "maxWorkerRuns": 12 },
   "executor": { "kind": "cli-chain", "providers": [ { "kind": "claude-cli", "model": "opus", "permissionMode": "auto" } ],
     "implementerTimeoutMinutes": 240, "verifierTimeoutMinutes": 120 },
@@ -130,6 +130,7 @@ The envelope is a **version 2 campaign declaration**. Version 1 declarations sta
 
 - `target.trackingIssue` and task `issue` are optional. Without an issue, only `commit` deliverables are allowed on a GitHub project, because a report needs a place to be posted (`src/supervisor/controller.mjs:2292-2315`). A local project never has issues; its reports go to the local evidence ledger (slice E10).
 - `authorization.reference` is the request's issue or PR URL. For a goal without an issue it is an explicitly authorized request reference; a future local-reference contract remains a design proposal. For a local project it is `aiworks-local:<approvalId>` (section 8), accepted only while local admission is on.
+- `target.closeWhenDone` (optional boolean, default false) lets AIWorks close the tracking issue once every step is done ([SUPERVISOR.md, Closing finished work](../SUPERVISOR.md#closing-finished-work-built-not-enabled)). The draft sets it only for the `issue` route whose issue is the tracking issue; a goal, plan file or PR reports to an issue that may be shared, so it never closes. It is part of the scope like every target field.
 - A local target replaces `repository`, `baseBranch` and `trackingIssue` with `{ source: "local-git" | "folder", baseline: { seq, commit } }`, and `projectId` must be the project's D2 overlay id (`lp-…`).
 
 **Every initial commit task must declare `writes` within `envelope.writes`.** The same admission check as for children applies (section 6.3), so the owner-approved plan and later steps obey one rule.

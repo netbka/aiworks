@@ -9,8 +9,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../../src/supervisor/store.mjs';
-import { acquireLock, createRelease, destinationState, markUnknownAfterRestart, reconcile, release, runStep } from '../../src/supervisor/release/state.mjs';
+import { acquireLock, createRelease, destinationState, markUnknownAfterRestart, reconcile, release, resolveIncident, runStep } from '../../src/supervisor/release/state.mjs';
 import { deployAdapter } from '../../src/supervisor/release/deploy.mjs';
+import { healthCheckBlocker } from '../../src/supervisor/release/health.mjs';
 
 const GRANT = 'g'.repeat(64);
 const ELIGIBLE = () => ({ eligible: true, failed: [], inputs: { grantDigest: GRANT } });
@@ -154,6 +155,24 @@ test('a deploy interrupted by a crash is settled by observe after the restart, n
   const checkout = realpathSync.native(join(r.dataDir, 'releases', id, 'checkout'));
   assert.ok(r.calls().every((call) => realpathSync.native(call.cwd) === checkout), 'every command ran in the release checkout, never in the repository');
   assert.equal(r.lock().free, true, 'accepted frees the lock');
+  // Check the site now (release/health.mjs) on the settled release runs only the check command and changes nothing.
+  const before = r.calls().length;
+  assert.equal(await adapter.health(release(r.store, id), id + '.health.1'), 'passed');
+  assert.deepEqual(r.calls().slice(before).map((call) => call.name), ['check'], 'nothing was deployed or rolled back');
+  assert.equal(release(r.store, id).state, 'accepted');
+  assert.notEqual(healthCheckBlocker({ release: release(r.store, id), config: { release: { enabled: false } }, stop: false }), null, 'with release off it is refused');
+});
+
+test('a grant revoked between planning and the lock refuses the release before any command runs', async (t) => {
+  const r = rig(t);
+  const id = createRelease(r.store, { project: 'sampleapp', destination: 'prod', campaignId: 'c', taskId: 'T1', verifiedSha: r.verified,
+    grantVersion: 1, grantDigest: GRANT, steps: ['deploy', 'check'], ...r.at() }).id;
+  const revoked = () => ({ eligible: false, failed: [{ check: 'E2', reason: 'grant version 1 is revoked' }], inputs: { grantDigest: GRANT } });
+  const lock = acquireLock(r.store, id, { ...r.at(), recheck: revoked });
+  assert.equal(lock.refused, true);
+  assert.equal(release(r.store, id).state, 'refused');
+  assert.equal(r.lock().free, true, 'the destination lock was never taken');
+  assert.deepEqual(r.calls(), [], 'no project command ran');
 });
 
 test('a deploy proven not done after it may have started goes to the owner and is not run again', async (t) => {
@@ -193,6 +212,7 @@ test('a failed rollback is an incident that keeps the destination lock', async (
   for (const rollback of ['fail', 'claims-only']) {
     const r = rig(t, { behave: { check: { 'sha256:new': 1 }, rollback } });
     const adapter = r.adapter(), id = r.locked();
+    assert.throws(() => resolveIncident(r.store, id, { note: 'early', now: r.time }), /only a rollback-failed incident/);
     await runStep(r.store, adapter, id, r.at());
     await runStep(r.store, adapter, id, r.at());
     assert.equal((await runStep(r.store, adapter, id, r.at())).state, 'rollback-failed', rollback);
@@ -200,5 +220,12 @@ test('a failed rollback is an incident that keeps the destination lock', async (
     assert.equal(r.lock().releaseId, id, 'nothing else is released on top of it');
     await assert.rejects(runStep(r.store, adapter, id, r.at()), /no step to run/);
     assert.equal(r.calls('rollback').length, 1, rollback);
+    // Only the owner's resolution, with a note, frees the lock; the release keeps its state and nothing runs.
+    assert.throws(() => resolveIncident(r.store, id, { note: ' ', now: r.time }), /owner's note/);
+    const resolved = resolveIncident(r.store, id, { note: 'restored by hand', now: r.time });
+    assert.equal(resolved.state, 'rollback-failed', rollback);
+    assert.equal(r.lock().free, true, rollback);
+    assert.throws(() => resolveIncident(r.store, id, { note: 'again', now: r.time }), /no longer holds/);
+    assert.equal(r.calls('rollback').length + r.calls('deploy').length, 2, 'nothing ran at the destination');
   }
 });

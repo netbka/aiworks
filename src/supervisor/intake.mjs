@@ -304,8 +304,12 @@ export function draftDeclaration({ request, project: found, pinned, proposal, ex
     : request.route === 'issue' ? `https://github.com/${repo}/issues/${request.reference}`
       : request.route === 'pr' ? `https://github.com/${repo}/pull/${request.reference}`
         : `https://github.com/${repo}/issues/${tracking}`;
+  // Work asked for in an issue (or a work item of AIWorks's own repository) closes that issue once all of it is done; a
+  // goal, plan file or PR reports to an issue that may be shared, so it never does.
+  const closeWhenDone = request.route === 'issue' && Number(request.reference) === tracking;
   const target = github
-    ? { tenantId: found.tenant_id, projectId: found.governance?.entryId ?? found.id, environment, repository: repo, baseBranch: found.base_branch, trackingIssue: tracking }
+    ? { tenantId: found.tenant_id, projectId: found.governance?.entryId ?? found.id, environment, repository: repo, baseBranch: found.base_branch, trackingIssue: tracking,
+      ...(closeWhenDone ? { closeWhenDone: true } : {}) }
     // A local plan names its project by the `lp-` id of the rules the owner confirms for it (dashboard projects.mjs), is
     // for the local environment and is fixed (campaign.mjs validateLocalTarget): local admission binds those rules.
     : { tenantId: found.tenant_id, projectId: `lp-${found.id}`.slice(0, 42), environment: 'local', source: found.source_kind, baseline: { seq: pinned.baselineSeq, commit: pinned.base } };

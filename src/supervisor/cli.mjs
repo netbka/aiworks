@@ -31,7 +31,7 @@ import { safeSync, syncSettings } from './maintenance-sync.mjs';
 import { comments as workItemComments, item as workItem, items as workItems } from './work-list.mjs';
 import { importIssues } from './work-list-import.mjs';
 import { approveProgram, programFromFile, programStatus, stopPrograms } from './program.mjs';
-import { RELEASE_STOP, REVIEW_ONLY, releaseNarrowings, setReviewOnly } from './release/state.mjs';
+import { destinationState, RELEASE_STOP, REVIEW_ONLY, releaseNarrowings, resolveIncident, setReviewOnly } from './release/state.mjs';
 import { modelPreferences, setRoleModelPreference, clearRoleModelPreferences, configuredAccounts, addDashboardAccount, removeDashboardAccount, exportDashboardAccounts, importDashboardAccounts } from './accounts.mjs';
 
 const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--governance <governance-checkout>] ...
@@ -78,6 +78,9 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
   release-mode <project> <destination> review-only
                                         narrow one destination to Review only. review-only is the only mode accepted:
                                         no command switches a destination to Auto Release, only a newer valid grant does
+  release-resolve <releaseId> <note>    after a failed rollback, once the owner has settled the destination by other means:
+                                        free its lock so the next eligible release may take it. Only a rollback-failed release
+                                        that still holds the lock; the note says how the destination was settled. Runs nothing
   program-approve <program.json>        keep the owner's private program record (aiworks-program/1) by its digest. A higher
                                         authorization.version replaces it; a lower or equal one is refused; revoked stays
                                         revoked. Registers nothing (built switched off: config.json "program": { "enabled": true })
@@ -337,6 +340,11 @@ try {
   else if (command === 'release-mode') {
     setReviewOnly(store, { project: rest[0], destination: rest[1], source: 'owner (cli)', now: Date.now() });
     print({ project: rest[0], narrowed: releaseNarrowings(store, rest[0]).find((row) => row.destination === rest[1]) });
+  }
+  else if (command === 'release-resolve') {
+    if (!rest[0] || !rest.slice(1).join(' ').trim()) throw new CampaignError('RELEASE_RESOLVE_USAGE', 'use release-resolve <releaseId> <note of how the destination was settled>');
+    const after = resolveIncident(store, rest[0], { note: rest.slice(1).join(' '), source: 'owner (cli)', now: Date.now() });
+    print({ release: after.id, state: after.state, reason: after.reason, destination: destinationState(store, after.project, after.destination) });
   }
   else if (command === 'message') print(postOwnerMessage(store, { text: rest.join(' '), requestId: randomUUID(), source: 'owner (cli)' }));
   else if (command === 'messages') {

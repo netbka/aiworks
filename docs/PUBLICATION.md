@@ -25,6 +25,6 @@ Git hooks see only commits. Text that an agent posts with `gh` (pull request bod
 - the private terms, the names of the checkouts under the repository roots, personal paths and session links;
 - `--no-verify`, and binary files not in that repository's `.public-binaries`.
 
-It refuses the call when any check fails, and leaves private repositories alone. Its settings stay in `~/.claude/hooks/public-guard.json`, outside the repository (see `scripts/claude-guard/public-guard.example.json`).
+It refuses the call when any check fails, and leaves private repositories alone. Its settings stay in `~/.claude/hooks/public-guard.json`, outside the repository (see `scripts/claude-guard/public-guard.example.json`). [PUBLIC_GUARD.md](PUBLIC_GUARD.md) covers setup on a computer, the installation check (`node scripts/claude-guard/check.mjs`), the settings and what to do when a guard refuses.
 
 Hooks and pattern scanners are additional checks, not proof that arbitrary text is safe. Do not bypass them. Review source, assets, every proposed commit and public metadata before publishing. Source cleanup cannot erase existing Git objects, GitHub edit history or downloaded copies; history and remote-record cleanup require an explicit reviewed plan.
