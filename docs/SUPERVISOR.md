@@ -1202,10 +1202,11 @@ The production components are:
 
 A stop prevents the **next** step. It never interrupts a running step and never prevents recovery: after a merge, deploy or apply, the check still runs, and a rollback still runs if the check fails. A stopped release keeps its place and its destination lock; its `reason` says why.
 
-Owner commands (both only narrow):
+Owner commands (the first two only narrow):
 
 - `node src/supervisor/cli.mjs release-stop --data <dir>` writes `RELEASE-STOP`: **stop all releases** on this machine. It needs no database. To allow releases again, the owner deletes the file.
 - `node src/supervisor/cli.mjs release-mode <project> <destination> review-only --data <dir>` narrows one destination to Review only. It needs no grant and takes effect before the next step. `review-only` is the only mode the command accepts. **No command switches a destination to Auto Release**: only a newer valid grant does.
+- `node src/supervisor/cli.mjs release-resolve <releaseId> <note> --data <dir>` closes a failed-rollback incident once the owner has brought the destination back by other means. It frees the destination lock of a `rollback-failed` release that still holds it, so the next eligible release may take it again; the release keeps its state, and the note is kept in its `reason` and the journal (`release-incident-resolved`). It runs no step and reaches nothing at the destination; every other release state is refused.
 
 `status` shows `release.stopped` while `RELEASE-STOP` exists and `release.narrowed` for destinations of the campaign's project that the owner narrowed. Neither appears until used.
 
