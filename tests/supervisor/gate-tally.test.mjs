@@ -93,7 +93,7 @@ test('base compare with only a per-project command runs that command on the base
   const command = [`"${process.execPath}"`, `"${script}"`];
   const { store, controller, id } = await setup(t, { scenario: { gate: [{ log: `${block(A)}\n`, exit: '1', command }, { log: `${PASSED}\n`, exit: '0' }] } });
   // config.json as an operator writes it: no top-level command, only the project's own entry.
-  controller.baseCompare = baseCompareSettings({ timeoutMinutes: 1, projects: { 'example-org/sampleapp': { command } } });
+  controller.baseCompare = baseCompareSettings({ projects: { 'example-org/sampleapp': { command } } });
   await runUntil(controller, store, id, (c) => c.control === 'finished', { timeoutMs: 120_000 });
   const [base] = store.all('SELECT command, state, failed FROM base_checks');
   assert.equal(base.command, JSON.stringify(command), 'the base ran the project command');
