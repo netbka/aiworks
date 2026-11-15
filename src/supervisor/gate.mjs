@@ -42,8 +42,11 @@ const summary = (text) => {
 // The final node:test summary only: the block after "# all test files", else the last run of node:test count lines.
 // Unlike `summary`, never the log's last lines, so nothing but the tally reaches a published PR body.
 const COUNT_LINE = /^# (tests|suites|pass|fail|cancelled|skipped|todo|duration_ms) \d+(\.\d+)?$/;
+// node --test's spec reporter (what a plain `node --test` gate may print) writes the same counts as "ℹ tests 569";
+// they are read as "# tests 569" so every reader of the summary sees one form.
+const SPEC_COUNT = /^ℹ (?=(tests|suites|pass|fail|cancelled|skipped|todo|duration_ms) \d)/;
 export function testSummary(text) {
-  const lines = (text ?? '').replaceAll('\r\n', '\n').trimEnd().split('\n');
+  const lines = (text ?? '').replaceAll('\r\n', '\n').trimEnd().split('\n').map((line) => line.replace(SPEC_COUNT, '# '));
   const all = lines.findLastIndex((line) => line.startsWith('# all test files'));
   if (all >= 0) return lines.slice(all).join('\n');
   const first = lines.findLastIndex((line) => /^# tests \d+$/.test(line));
