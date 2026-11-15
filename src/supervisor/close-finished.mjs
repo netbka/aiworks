@@ -156,6 +156,9 @@ async function finishedWork(ctl, c, bases) {
   return lines.length && !store.openOperations(c.id).length ? lines : null;
 }
 
+/** Read again under the write lock before a close starts: the campaign is still finished, idle and alone on its issue. */
+const stillFinished = (ctl, c) => ctl.store.campaign(c.id)?.control === 'finished' && !ctl.store.openOperations(c.id).length && !otherHolder(ctl, c);
+
 const planCancelled = (store, campaignId, taskId) => Boolean(store.get(`SELECT cancelled_at FROM task_specs WHERE campaign_id = ? AND task_id = ?
   ORDER BY revision DESC LIMIT 1`, campaignId, taskId)?.cancelled_at);
 
@@ -180,7 +183,7 @@ function closeIssue(ctl, ctx, c, issue, text) {
   }
   const key = `${c.id}:source-closed`;
   const started = ctl.fenced(ctx, () => {
-    if (records(ctl, c.id, 'source-close-started', 'source-closed', (detail) => detail?.subject === 'source').open) return null;
+    if (!stillFinished(ctl, c) || records(ctl, c.id, 'source-close-started', 'source-closed', (detail) => detail?.subject === 'source').open) return null;
     return ctl.store.journal(c.id, 'source-close-started', { subject: 'source', repository, issue }, ctl.now());
   });
   if (!started) return false;
@@ -222,7 +225,7 @@ function commentAndClose(ctl, decl, { issue, key, body, reason }) {
 function closeWorkItem(ctl, ctx, c, number, body) {
   return ctl.fenced(ctx, () => {
     const now = ctl.now(), found = workItem(ctl.store, number);
-    if (records(ctl, c.id, 'source-close-started', 'source-closed', (detail) => detail?.subject === 'source').open) return false;
+    if (!stillFinished(ctl, c) || records(ctl, c.id, 'source-close-started', 'source-closed', (detail) => detail?.subject === 'source').open) return false;
     if (!found || found.state === 'closed') {
       ctl.store.journal(c.id, 'source-closed', { subject: 'source', item: number, outcome: found ? 'already-closed' : 'no-item' }, now);
       return false;
@@ -280,7 +283,7 @@ async function closePulls(ctl, c, bases, report, state) {
       continue;
     }
     const started = ctl.fenced(ctx, () => {
-      if (openOperation(store, c.id, task.task_id) || records(ctl, c.id, 'pr-close-started', 'pr-closed', mine).open) return null;
+      if (!['finished', 'cancelled'].includes(store.campaign(c.id)?.control) || openOperation(store, c.id, task.task_id) || records(ctl, c.id, 'pr-close-started', 'pr-closed', mine).open) return null;
       return ctl.store.journal(c.id, 'pr-close-started', { subject: 'pull', task: task.task_id, url, number, why, head: pr.headSha }, ctl.now());
     });
     if (!started) continue;
