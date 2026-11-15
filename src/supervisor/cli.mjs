@@ -19,6 +19,7 @@ import { GATE_PIPE, gateListening, gateSettings, pipeHost, serveGate } from './d
 import { heldSlotCount } from './gate.mjs';
 import { startGateRecovery } from './gate-slot.mjs';
 import { checkServicesEnvironment, SERVICES_ENV } from './check-services.mjs';
+import { createCheckServiceCaller } from './check-service-caller.mjs';
 import { cpuSettings, createCpuMonitor } from './worker-cpu.mjs';
 import { configuredGovernanceRoot, projectContracts, requireGovernanceRoot } from './governance.mjs';
 import { baseCompareInventory } from './base-check.mjs';
@@ -482,6 +483,15 @@ async function serve() {
     gates: () => heldSlotCount() });
   // Recovery must run even when gate pressure prevents every new worker from being admitted.
   const gateRecovery = startGateRecovery({ log });
+  // The authorized check-service caller (check-service-caller.mjs): verified commits offered, as information only, to
+  // the services that opted in. Its services and credential brokers come from this config.json, never from the
+  // environment above. It runs on its own timer, outside every controller tick, and changes no task.
+  const checkCaller = createCheckServiceCaller({ store, config, log, checkoutOf: (decl) => controller.checkout(decl)?.path ?? null });
+  if (checkCaller.services.length) log(`verified commits are offered to check service(s) ${checkCaller.services.map((service) => service.name).join(', ')}`);
+  const checkTimer = checkCaller.services.length ? setInterval(() => {
+    try { checkCaller.tick(); } catch (error) { log(`check service caller: ${error.message}`); }
+  }, 30_000) : null;
+  checkTimer?.unref();
   log(`supervisor instance ${controller.instanceId} started (pid ${process.pid}, code ${codeRevision ?? 'unknown'}, data ${dataDir}, ${governanceNote})`);
   const unmerged = controller.unmergedRevision();
   if (unmerged) log(`no new work will start: ${unmerged} (AW-005)`);
@@ -509,6 +519,8 @@ async function serve() {
     for (let waited = 0; waited < controller.config.tickMs && !stopping; waited += 100) await new Promise((done) => setTimeout(done, 100));
   }
   clearInterval(leaseTimer);
+  if (checkTimer) clearInterval(checkTimer);
+  await checkCaller.stop();
   await gateRecovery.stop();
   await controller.drainReleases();
   probe.stop();
