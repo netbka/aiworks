@@ -1,6 +1,6 @@
 // REL5 (AUTO_RELEASE slice R5, section 6): merge, deploy and apply calls, and the release credential, live only under
 // src/supervisor/release/. A static scan of every source file under src/; the scanner is first shown to catch each
-// kind of call, so an empty answer means something. The one exception is named with its reason.
+// kind of call, so an empty answer means something. Each exception is named with its reason.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -31,6 +31,8 @@ const RULES = [
 /** Text outside release/ that matches a rule but is not a call: [file, exact text, why]. */
 const ALLOWED = [
   ['src/supervisor/adapters/claude.mjs', "'Bash(gh pr merge:*)'", 'the worker deny list: it forbids the call'],
+  ['src/supervisor/check-services.mjs', "git(['update-ref', 'refs/heads/aiworks-source', sha], own)",
+    'the one head of a self-contained bundle, in a temporary repository fullBundleOf creates and deletes; no project ref'],
 ];
 
 /** Every match of a rule in one file's text: [{ file, line, rule, text }]. Matches under release/ are allowed. */
