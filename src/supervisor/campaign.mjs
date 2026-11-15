@@ -166,6 +166,9 @@ export function validateDeclaration(declaration) {
     if (!REPO.test(t.repository ?? '')) bad('target.repository must be owner/name');
     if (!ID.test(t.baseBranch ?? '')) bad('target.baseBranch required');
     if (!int(t.trackingIssue, 1, 1e9)) bad('target.trackingIssue must be an issue number');
+    // Optional: AIWorks closes the tracking issue (or work item) once every task is done (close-finished.mjs). Never
+    // inferred from trackingIssue alone, which may be a shared roadmap; part of the scope like every target field.
+    if (t.closeWhenDone !== undefined && typeof t.closeWhenDone !== 'boolean') bad('target.closeWhenDone must be true or false when present');
   }
 
   if (d.limits !== undefined && (d.limits === null || typeof d.limits !== 'object' || Array.isArray(d.limits))) bad('limits must be an object when present');

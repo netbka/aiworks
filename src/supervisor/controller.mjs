@@ -41,6 +41,7 @@ import { mergePass, mergeSettings } from './merge.mjs';
 import { mainLedger, selfHostingSettings, trustedTip, trustsLocalMain } from './self-hosting.mjs';
 import { programPass } from './program.mjs';
 import { cleanupPass } from './cleanup.mjs';
+import { closeFinishedPass } from './close-finished.mjs';
 import { BROWSER_RUN, browserLockPath, GATE_FILES, gateFailureList, gateFailure, gateHeadProblem, readGateRun, slotSettings } from './gate.mjs';
 import { baseCheckStep, baseCompareSettings, baseRecord, claimBaseRed, projectBaseCompare, settleBaseRed, sharedBaseFailures } from './base-check.mjs';
 import { CACHE_RULE, checkClaims, hasRunner, insertResults, offerCache, otherNodeMajor, resultsOf, testCacheSettings } from './test-cache.mjs';
@@ -680,6 +681,10 @@ export class Controller {
     // removes only finished, owned, clean worktrees and the local task branches the trusted main contains.
     try { await cleanupPass(this); }
     catch (error) { this.log(`cleanup pass failed: ${error.stack || error}`); }
+    // Closing finished work: off unless config.json `closeFinished.enabled` is true; closes the source issue or work item of
+    // a finished campaign declared `closeWhenDone`, and AIWorks's own pull requests that will never merge.
+    try { await closeFinishedPass(this); }
+    catch (error) { this.log(`close-finished pass failed: ${error.stack || error}`); }
     // Admission: at most one launch per tick across every campaign this instance holds (ADAPTIVE_SCHEDULER 4.1).
     if (this.sched) {
       try { await this.admit(); }

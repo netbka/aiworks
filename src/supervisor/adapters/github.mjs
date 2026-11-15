@@ -248,12 +248,20 @@ export function postComment({ gh, repository, issue, body, bodyFile, terms = [] 
 }
 
 /**
- * Close an issue as not planned (SELF11): one REST PATCH of its state and state reason, never its labels or anything
- * else. Returns the issue GitHub answers with; throws when GitHub does not report it closed.
+ * Close an issue (SELF11: as not planned; close-finished.mjs: as completed), or with `reason` null a pull request, which
+ * takes no state reason: one REST PATCH of its state and state reason, never its labels, branch or anything else. Returns
+ * the issue GitHub answers with; throws when GitHub does not report it closed.
  */
-export function closeIssue({ gh, repository, issue }) {
+export function closeIssue({ gh, repository, issue, reason = 'not_planned' }) {
   const closed = rest(gh, 'PATCH issue', ['--method', 'PATCH', `repos/${repository}/issues/${issue}`,
-    '-f', 'state=closed', '-f', 'state_reason=not_planned']);
+    '-f', 'state=closed', ...(reason ? ['-f', `state_reason=${reason}`] : [])]);
   if (closed?.state !== 'closed') throw new Error('PATCH issue did not report the issue closed');
   return closed;
+}
+
+/** One issue's state as GitHub reports it: { state, pullRequest } (a pull request is an issue to this route). Throws when unread. */
+export function issueState({ gh, repository, issue }) {
+  const found = rest(gh, 'GET issue', ['--method', 'GET', `repos/${repository}/issues/${issue}`], { timeoutMs: 30_000 });
+  if (!['open', 'closed'].includes(found?.state)) throw new Error('GET issue returned no state');
+  return { state: found.state, pullRequest: Boolean(found.pull_request) };
 }

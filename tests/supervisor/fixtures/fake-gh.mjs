@@ -6,6 +6,8 @@
 // that route refuse with a 403 rate-limit response carrying the reset headers, `times` times.
 // <FAKE_GH_STATE>/check-runs.json ({ "<sha>": [{ name, status, conclusion }] }) holds the CI check runs of each commit; a
 // commit it does not list has none yet. Commit statuses (GET .../status) are always empty.
+// <FAKE_GH_STATE>/issues.json ({ "<number>": "open" | "closed" }) holds issue states: GET and PATCH repos/{repo}/issues/{n}
+// read and close an issue, or a pull request of prs.json by its number (closed, never merged). An unlisted issue is open.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -53,6 +55,7 @@ const pull = /^repos\/([^/]+\/[^/]+)\/pulls\/(\d+)$/.exec(path);
 const issueComments = /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/comments$/.exec(path);
 const checkRuns = /^repos\/([^/]+\/[^/]+)\/commits\/([0-9a-f]{40})\/check-runs$/.exec(path);
 const commitStatus = /^repos\/([^/]+\/[^/]+)\/commits\/([0-9a-f]{40})\/status$/.exec(path);
+const issue = /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)$/.exec(path);
 const route = `${method} ${pulls ? 'pulls' : pull ? 'pull' : issueComments ? 'comments' : checkRuns ? 'check-runs' : commitStatus ? 'status' : path}`;
 
 const limit = existsSync(limitFile) ? JSON.parse(readFileSync(limitFile, 'utf8')) : null;
@@ -63,7 +66,7 @@ if (limit && limit.times > 0 && (limit.route === route || limit.route === '*')) 
     { 'X-Ratelimit-Remaining': '0', 'X-Ratelimit-Reset': String(reset), ...(limit.retryAfter !== undefined ? { 'Retry-After': String(limit.retryAfter) } : {}) });
 }
 
-const receipt = (pr) => ({ html_url: pr.url, number: Number(/\/pull\/(\d+)$/.exec(pr.url)[1]), state: pr.merged ? 'closed' : 'open',
+const receipt = (pr) => ({ html_url: pr.url, number: Number(/\/pull\/(\d+)$/.exec(pr.url)[1]), state: pr.merged || pr.closed ? 'closed' : 'open',
   merged: Boolean(pr.merged), merge_commit_sha: pr.mergeCommit ?? null, head: { ref: pr.head, sha: pr.headSha ?? null }, base: { ref: pr.base } });
 
 if (/^repos\/[^/]+\/[^/]+\/actions\/permissions$/.test(path) && method === 'GET') {
@@ -92,6 +95,17 @@ if (/^repos\/[^/]+\/[^/]+\/actions\/permissions$/.test(path) && method === 'GET'
   const needle = /contains\((".*")\)/.exec(option('--jq') ?? '')?.[1];
   const text = needle ? JSON.parse(needle) : null;
   for (const comment of comments.filter((c) => c.issue === issueComments[2] && (!text || c.body.includes(text)))) process.stdout.write(`${comment.url}\n`);
+} else if (issue && ['GET', 'PATCH'].includes(method)) {
+  const issuesFile = join(state, 'issues.json');
+  const issues = existsSync(issuesFile) ? JSON.parse(readFileSync(issuesFile, 'utf8')) : {};
+  const pr = prs.find((item) => item.url === `https://github.com/${issue[1]}/pull/${issue[2]}`);
+  if (method === 'PATCH') {
+    if (fields.state !== 'closed' || Object.keys(fields).some((key) => !['state', 'state_reason'].includes(key))) refuse('PATCH of anything but closing refused');
+    if (pr) { pr.closed = true; writeFileSync(prsFile, JSON.stringify(prs)); } else writeFileSync(issuesFile, JSON.stringify({ ...issues, [issue[2]]: 'closed' }));
+  }
+  const now = pr ? (pr.merged || pr.closed ? 'closed' : 'open') : method === 'PATCH' ? 'closed' : issues[issue[2]] ?? 'open';
+  respond(200, { number: Number(issue[2]), state: now, ...(method === 'PATCH' && fields.state_reason ? { state_reason: fields.state_reason } : {}),
+    ...(pr ? { pull_request: { html_url: pr.url } } : {}) });
 } else if (checkRuns && method === 'GET') {
   const runsFile = join(state, 'check-runs.json');
   const runs = (existsSync(runsFile) ? JSON.parse(readFileSync(runsFile, 'utf8')) : {})[checkRuns[2]] ?? [];
