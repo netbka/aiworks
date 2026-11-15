@@ -262,6 +262,27 @@ export async function reconcile(store, adapter, id, { lease, now }) {
   });
 }
 
+/**
+ * The owner closes a failed-rollback incident (AUTO_RELEASE.md section 7.4: a failed rollback goes to the owner) once
+ * the destination has been brought back by other means. Only a `rollback-failed` release that still holds its
+ * destination lock qualifies, and only with the owner's note of how the destination was settled. The release keeps its
+ * state, since its rollback did fail; the lock is freed, so the next eligible release may take it, and the note is kept
+ * in `reason` and the journal. No step runs and nothing reaches the destination. Returns the release afterwards.
+ */
+export function resolveIncident(store, id, { note, source = 'owner', now }) {
+  if (typeof note !== 'string' || !note.trim()) throw new TypeError('resolving an incident needs the owner\'s note of how the destination was settled');
+  if (!Number.isFinite(now)) throw new TypeError('resolveIncident needs the time');
+  return store.tx(() => {
+    const r = release(store, id);
+    if (!r) throw new Error(`no release ${id}`);
+    if (r.state !== 'rollback-failed') throw new Error(`release ${id} is ${r.state}; only a rollback-failed incident is resolved by the owner`);
+    if (!store.get('SELECT 1 AS held FROM release_locks WHERE release_id = ?', id)) throw new Error(`release ${id} no longer holds a destination lock`);
+    store.run('DELETE FROM release_locks WHERE release_id = ?', id);
+    store.journal(r.campaign_id, 'release-incident-resolved', { release: id, destination: destinationKey(r.project, r.destination), source, note: note.trim() }, now);
+    return update(store, id, { reason: `incident resolved by ${source}: ${note.trim()}` }, now);
+  });
+}
+
 // ---- The switches and the mode (AUTO_RELEASE.md sections 3 and 4.5, slice REL4). Built switched off (#33). ----
 
 /** The file in the supervisor data directory that stops every release on the machine. Removing it is the owner's. */
