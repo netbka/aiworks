@@ -18,7 +18,7 @@ Then:
 
 | Service state | Additional result |
 | --- | --- |
-| `passed` with `exitCode` 0, `commitSha` the exact commit, a step whose `phase` ends in `-check`, whose `argv` ends in `run check` and whose `exitCode` is 0, and a non-empty `stdout.log` (for a project tested by `scripts/run-tests.mjs`, one with its `# all test files` summary) | service check passed (exit 0), with the local gate still required |
+| `passed` with `exitCode` 0, `commitSha` the exact commit, a step whose `phase` ends in `-check`, whose `argv` ends in `run check` and whose `exitCode` is 0 (for a project mapping with `gate`, instead a step whose `argv` ends in exactly those words and whose `exitCode` is 0), and a non-empty `stdout.log` (for a project tested by `scripts/run-tests.mjs`, one with its `# all test files` summary) | service check passed (exit 0), with the local gate still required |
 | `test_failure` | service check failed (exit 1) |
 | `environment_failure`, `cancelled`, `interrupted` | no accepted additional result; recorded as `environment_failure` |
 | a pass missing any of the conditions above | no accepted additional result; recorded as `not_counted` |
@@ -50,7 +50,7 @@ A service of kind `remote-gate-http` must provide the following.
 
 States: `pending` (queued; `waiting.reason` may say why, such as too little free memory), `running`, then one terminal state: `passed`, `test_failure`, `environment_failure`, `cancelled` or `interrupted`.
 
-The result holds at least `jobId`, `projectId`, `profile`, `requestedSha`, `commitSha`, `state`, `exitCode` and `commands`, a list of `{ phase, argv, exitCode }` for every step the service ran. The full gate step must be listed with its real `argv` (ending in `run check`) and exit code.
+The result holds at least `jobId`, `projectId`, `profile`, `requestedSha`, `commitSha`, `state`, `exitCode` and `commands`, a list of `{ phase, argv, exitCode }` for every step the service ran. The full gate step must be listed with its real `argv` (ending in `run check`, or in the project mapping's `gate`) and exit code.
 
 ### Authentication
 
@@ -129,7 +129,9 @@ Add `checkServices` to the supervisor's `config.json` in its data folder (instal
 | `kind` | The plug-in. Known: `remote-gate-http`. |
 | `baseUrl` | The service's `https://` origin only: no path, query or credentials. |
 | `caFile` | The CA certificate that signed the service certificate. A relative path is read from the supervisor data folder. |
-| `projects` | Which repositories may go to this service: `"<owner>/<repository>"` as in the checkout's `origin`, mapped to the service's own `projectId` and `profile`. Other repositories never go to it. |
+| `projects` | Which repositories may go to this service: `"<owner>/<repository>"` as in the checkout's `origin`, mapped to the service's own `projectId` and `profile`, and optionally `gate`. Other repositories never go to it. |
+| `projects.*.gate` | Optional. For a project whose full gate is not `npm run check`: the last words of that step's `argv`, for example `["npm", "test"]` or `["npm", "run", "unit:test"]` (1 to 16 non-empty words). A pass then counts only when a step whose `argv` ends in exactly those words exited 0. Absent: the step must end in `run check` and its `phase` in `-check`. |
+| `sources` | Optional. `true`: a commit origin does not have yet is sent as a bundle of only the commits origin lacks. `"full"`: every offered commit, also one already on origin, is sent as a self-contained bundle, for a service whose copy of the repository cannot fetch origin (a frozen seed without credentials). Absent or `false`: no bundle is ever sent. See [Unpublished commits as a bundle](#unpublished-commits-as-a-bundle). |
 | `queueSeconds` | Added to `timeoutMinutes`, the longest AIWorks waits for an offered job to answer. 10 to 3600, default 120. |
 | `timeoutMinutes` | The longest run AIWorks waits for. 5 to 75, default 60. The service is told to stop a minute earlier (`timeoutSeconds`, at least 300). |
 | `offer` | `"verified"` lets the caller offer this service each commit a verifier accepted here (see [Offering verified commits](#offering-verified-commits)). Absent: the service is never offered anything. No other value is accepted. |
@@ -146,10 +148,10 @@ When `serve` starts it checks the entries and puts the accepted ones, without `a
 
 1. A verify operation of a commit task finishes with an accepted verdict of the exact head commit (an acceptance the supervisor refused, for example over the verifier's gate run, does not count).
 2. The task's repository is the declaration's `target.repository` (`<owner>/<repository>`, compared case-insensitively), or, for a target that names none, its checkout's `origin`. Each service with `"offer": "verified"` that lists that repository is offered the commit once.
-3. The commit must be on an origin branch. Until it is (a head verified before its publication), the caller looks again every five minutes. A service with `"sources": true` instead gets the commit as a bundle from the verifier's checkout while that still holds it. A commit that reaches no origin within the offer window is recorded as `unavailable`.
+3. The commit must be on an origin branch: one of the checkout's `origin/` branches contains it, or `git ls-remote` of origin's address lists it as a branch tip. That `ls-remote` runs outside the checkout, so no value a worker could write into the checkout's configuration (an `uploadpack`, a credential helper, `core.askPass`, an `ext::` transport) runs a command in the supervisor. Until it is (a head verified before its publication), the caller looks again every five minutes. A service with `"sources": true` instead gets the commit as a bundle from the verifier's checkout while that still holds it. A commit that reaches no origin within the offer window is recorded as `unavailable`.
 4. The job is submitted under one idempotency key per service, project and commit (`aiworks-verified-<service>-<projectId>-<sha>`), with `aiworksTaskId` `<campaign>-<task>`. At most one offer per service is in flight; the others wait their turn.
 5. The caller polls until the job ends, at most `queueSeconds` plus `timeoutMinutes` from the submission. It never cancels a job: a wait that ends, a stop or a restart leaves it running on the service. A stop also ends any request in flight and submits nothing more.
-6. A failure that may pass (no answer, an answer cut short, HTTP `5xx` or `429`, an unhealthy `/health`) records nothing: the service is left alone for five minutes and then asked again, and a recorded job is re-attached to rather than resubmitted. Only when such failures last to the end of the offer window is the commit recorded as `unavailable`. Configuration and credential problems, `401`/`403`, another client error, a job the service no longer knows (`404`), a mismatched answer or receipt and a state outside the contract are recorded at once.
+6. A failure that may pass (no answer, an answer cut short, HTTP `5xx` or `429`, an unhealthy `/health`) records nothing: the service is left alone for five minutes and then asked again, and a recorded job is re-attached to rather than resubmitted. Only when such failures last to the end of the offer window is the commit recorded as `unavailable`. Configuration and credential problems, `401`/`403`, another client error, a job the service no longer knows (`404`), a mismatched answer or receipt and a state outside the contract are recorded at once. A finished job without a `stdout.log` (`404` on the log alone) keeps its own state as the verdict, with empty output.
 
 Each step is recorded in the journal of the task's campaign:
 
@@ -158,7 +160,9 @@ Each step is recorded in the journal of the task's campaign:
 | `check-service-offered` | `task`, `service`, `sha`, `project`, `jobId`: the service accepted the job |
 | `check-service-result` | `task`, `service`, `sha`, `project`, `jobId`, `state`, `exitCode`, `summary` |
 
-`state` is `passed` or `test_failure` (an answer that counts under [Which answers count](#which-answers-count)), `environment_failure` (also for `cancelled` and `interrupted`), `not_counted` (a terminal answer that fails those rules), `unavailable` (a credential problem, `401`/`403`, a mismatched receipt, a state outside the contract, or a failure that may pass and lasted to the end of the offer window) or `timeout`. `summary` is one plain line in which the credential, if any, is replaced by `[credential]`. `status` shows the latest record per service on each task as `checkServices`.
+`state` is `passed` or `test_failure` (an answer that counts under [Which answers count](#which-answers-count)), `environment_failure` (also for `cancelled` and `interrupted`), `not_counted` (a terminal answer that fails those rules), `unavailable` (a credential problem, `401`/`403`, a mismatched receipt, a state outside the contract, a failure that may pass and lasted to the end of the offer window, or an offer window that ended without an answer) or `timeout`. `summary` is one plain line in which the credential, if any, is replaced by `[credential]`. `status` shows the latest record per service on each task as `checkServices`.
+
+Every offer ends with one `check-service-result`. A commit whose offer window ended without one (its service was busy with another job until then, or its recorded job outlived its wait) is recorded as `unavailable` the next time the caller lists its due offers, once; the caller looks back two windows for such commits.
 
 A restart reads the journal: a commit with a result is never offered to that service again; one with a recorded job and no result re-attaches to that job (its wait still ends at the original bound) and submits nothing; one whose job was accepted but not yet recorded is submitted again under the same key, which the service answers with the same job. Only verifications from the last 24 hours are offered, so turning `offer` on does not send older history.
 
@@ -184,7 +188,7 @@ A restart reads the journal: a commit with a result is never offered to that ser
 
 - A commit that is not yet on origin can be offered before its publication only to a service configured with `"sources": true`, as a bundle (below); other services get it once origin has it.
 - `runOnService`, the client that stood in for a gate, is kept but called by nothing.
-- Every 30 seconds the caller reads the finished verify operations of the last 24 hours and the check-service journal records of their campaigns. That is small today but grows with the number of verifications in the window; an index or a cursor is a follow-up if it shows up in the supervisor's tick times.
+- Every 30 seconds the caller reads the finished verify operations of the last 48 hours (24 to offer, 24 more to close the ones whose window ended) and the check-service journal records of their campaigns. That is small today but grows with the number of verifications in the window; an index or a cursor is a follow-up if it shows up in the supervisor's tick times.
 - Authentication schemes other than `bearer` and a named `header` are not supported.
 
 ## Unpublished commits as a bundle
@@ -199,4 +203,8 @@ A service checks a commit that is not on origin yet (a verifier gate before publ
 6. The service drops a source and its quarantine ref after seven days.
 
 A merge-refresh result is a local merge commit: its bundle carries every commit origin lacks, so both parents arrive with it.
+
+### Self-contained bundles
+
+A service whose copy of a repository is only a seed and cannot fetch origin answers a commit it does not hold with `rejected:sha_unknown`, and a `"sources": true` bundle of it with HTTP `422` (its prerequisites are missing). With `"sources": "full"` the caller sends such a service every offered commit, also one already on origin, as a self-contained bundle (`fullBundleOf`): every object the commit reaches, no prerequisite, one head `refs/heads/aiworks-source` at the commit. It is made from the verifier's checkout or, once that is gone, the campaign's checkout, in a new repository of its own that only borrows that checkout's objects, so the checkout is not changed and none of its configuration applies. The 64 MiB limit still holds: a commit whose bundle is larger is recorded `unavailable` with its size and the limit, and a commit no checkout holds yet is looked for again until the offer window ends. Steps 2 to 6 above are unchanged. `"full"` applies to the caller's offers only: `runOnService` treats it like `true` and sends no self-contained bundle.
 

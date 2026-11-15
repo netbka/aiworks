@@ -106,7 +106,7 @@ Only `script` (a repository-relative `.mjs`, `.cjs` or `.js` path) and optional 
 
 ### External check services
 
-`checkServices` lists other computers that may run a repository's full gate (`npm run check`) as an additional check. The required gate always runs here. A service with `"offer": "verified"` is offered each commit a verifier accepted here, once, and its answer is recorded as information only; without `offer` it is offered nothing. The service's requirements, the fields and the setup steps are in [External check services](check-services.md).
+`checkServices` lists other computers that may run a repository's full gate (`npm run check`) as an additional check. The required gate always runs here. A service with `"offer": "verified"` is offered each commit a verifier accepted here, once, and its answer is recorded as information only; without `offer` it is offered nothing. A project mapping may name its own full gate (`"gate": ["npm", "test"]`, the last words of the step's command) when it is not `npm run check`. `"sources": "full"` sends a service that cannot fetch origin every offered commit as a self-contained bundle, at most 64 MiB. The service's requirements, the fields and the setup steps are in [External check services](check-services.md).
 
 ### Notifications
 
