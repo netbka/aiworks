@@ -27,6 +27,29 @@ export const GITHUB_ROUTES = Object.freeze(['issue', 'pr']);
 export const DRAFT_EXECUTOR = Object.freeze({ kind: 'claude-cli', model: 'opus', permissionMode: 'auto',
   implementerTimeoutMinutes: 240, verifierTimeoutMinutes: 120 });
 /**
+ * AW-022: the owner's stored implementer preferences (config.json `modelPreferences.implementer`, from `account
+ * set-preference` or Settings) make a new draft's providers, in their order: one provider per kind, only kinds whose CLI
+ * is configured on this PC (`configured(kind)`), at most four. Claude keeps DRAFT_EXECUTOR's permission mode, and when
+ * no preferred provider is Claude, DRAFT_EXECUTOR's Claude ends the chain, so a draft never loses the one worker every
+ * task kind accepts. Without a usable preference the draft keeps DRAFT_EXECUTOR. It shapes a proposal the owner approves
+ * on Review; a registered declaration is never rewritten.
+ */
+export function preferredDraftExecutor(config, configured = () => true) {
+  const entries = Array.isArray(config?.modelPreferences?.implementer) ? config.modelPreferences.implementer : [];
+  const providers = [];
+  for (const raw of entries) {
+    const entry = typeof raw === 'string' ? { model: raw } : raw;
+    if (!plainObject(entry) || !text(entry.model, 80)) continue;
+    const kind = entry.kind ?? 'claude-cli';
+    if (!['claude-cli', 'codex-cli', 'cursor-cli'].includes(kind) || providers.some((item) => item.kind === kind) || !configured(kind)) continue;
+    providers.push({ kind, model: entry.model.trim(), ...(kind === 'claude-cli' ? { permissionMode: DRAFT_EXECUTOR.permissionMode } : {}) });
+  }
+  if (!providers.length) return DRAFT_EXECUTOR;
+  if (!providers.some((item) => item.kind === 'claude-cli')) providers.push({ kind: 'claude-cli', model: DRAFT_EXECUTOR.model, permissionMode: DRAFT_EXECUTOR.permissionMode });
+  const timeouts = { implementerTimeoutMinutes: DRAFT_EXECUTOR.implementerTimeoutMinutes, verifierTimeoutMinutes: DRAFT_EXECUTOR.verifierTimeoutMinutes };
+  return providers.length === 1 ? { ...providers[0], ...timeouts } : { kind: 'cli-chain', providers: providers.slice(0, 4), ...timeouts };
+}
+/**
  * The draft's model choice (MODEL_ROUTING 4.1 and 6): automatic, among the models the draft's providers already name and
  * nothing else, with checks pinned to the strongest of them. A Claude model's tier follows its family; any other model is
  * treated as the strongest, so it is never taken for a cheap one. A provider without a model adds no candidate, and with

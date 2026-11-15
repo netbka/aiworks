@@ -27,7 +27,7 @@ const refuse = (code, message) => { throw new AlertRulesError(code, message); };
 const plainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
 export const ALERT_CLASSES = Object.freeze(['B2', 'B3', 'B4', 'B5']);
-export const DEFAULT_RULES = Object.freeze({ classes: Object.freeze({ B2: true, B3: true, B4: false, B5: true }), reminders: true, quietHours: null });
+export const DEFAULT_RULES = Object.freeze({ classes: Object.freeze({ B2: true, B3: true, B4: true, B5: true }), reminders: true, quietHours: null });
 
 const CLOCK = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const ZONE = /^(?:UTC|[A-Za-z_]+(?:\/[A-Za-z0-9_+-]+){1,2})$/;

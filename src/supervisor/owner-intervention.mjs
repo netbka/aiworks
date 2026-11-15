@@ -76,7 +76,7 @@ export function reminderDue(record, now) {
   return now - record.last_notified_at >= wait ? record.reminders + 1 : null;
 }
 
-const OWNER_ROUTED = new Set(['auth', 'budget']);
+const OWNER_ROUTED = new Set(['auth', 'budget', 'provider-stall']);
 
 /** §8 message content. Every free-text field is redacted; no secret, token or private content is carried. */
 export function ownerMessage({ record, kind, parents, repository, trackingIssue, tried, workList = false, projectName = null }) {
@@ -90,7 +90,7 @@ export function ownerMessage({ record, kind, parents, repository, trackingIssue,
     blocked: redact(record.summary),
     class: cls,
     label: LABEL[cls],
-    impact: `${parents.length} parent task(s) held until recheck evidence passes`,
+    impact: parents.length ? `${parents.length} parent task(s) held until recheck evidence passes` : 'No task is held: waiting work starts by itself when it can',
     tried: redact(tried ?? 'bounded retry and authorized fallback before raising this blocker'),
     nextAction: cls === 'B4' ? null : redact(record.requested_action ?? ''),
     safeState: 'Nothing was merged or deployed; held work keeps its phase in the supervisor store.',

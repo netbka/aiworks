@@ -9,12 +9,12 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Ajv from 'ajv';
-import { ALWAYS_DENIED, AUTH, CREDIT_LIMIT, ISOLATION_ARGS, ISOLATION_ENV, QUOTA, VERIFIER_DENIED } from './adapters/claude.mjs';
+import { ALWAYS_DENIED, AUTH, CREDIT_LIMIT, ISOLATION_ARGS, ISOLATION_ENV, QUOTA, VERIFIER_DENIED, quotaRetryAt } from './adapters/claude.mjs';
 import { BUNDLE_STEPS_RULE, MARK_SECTIONS_RULE, UNBOUNDED_MODEL, classify as classifyExecutor, prepare as prepareExecutor } from './adapters/executors.mjs';
 import { DEVELOPMENT_RESOURCE_RULE } from './development-policy.mjs';
 import { assertManagedWorktree, exec as gitExec } from './adapters/git.mjs';
 import { readJsonIfExists, readTextIfExists, stopOwnedRun, writeAtomic } from './proc.mjs';
-import { failRequest, IntakeError, pinRequest, recordDraft } from './intake.mjs';
+import { failRequest, IntakeError, pinRequest, preferredDraftExecutor, recordDraft } from './intake.mjs';
 // messageRepository recovers the fixed header of dashboard requests queued before structured repository storage.
 import { messageRepository, projectKey, requestProjectKey } from './project-settings.mjs';
 import { project as readProject } from './projects.mjs';
@@ -426,7 +426,7 @@ function buildCursorPrompt({ messages, repositories, revision, context, history 
   ].join('\n');
 }
 
-function classify({ run, stdoutText, stderrText, sessionId, check = validate }) {
+function classify({ run, stdoutText, stderrText, sessionId, check = validate, now = Date.now() }) {
   let out = null;
   try { out = stdoutText.trim() ? JSON.parse(stdoutText) : null; } catch { out = null; }
   const receipt = providerTokens(out, 'claude-cli');
@@ -436,7 +436,8 @@ function classify({ run, stdoutText, stderrText, sessionId, check = validate }) 
   if (!out || out.is_error || run.exitCode !== 0) {
     const cls = out?.api_error_status === 401 || AUTH.test(errorText) ? 'auth'
       : out?.api_error_status === 429 || QUOTA.test(errorText) || CREDIT_LIMIT.test(errorText) ? 'quota' : 'error';
-    return { class: cls, receipt };
+    // A usage limit keeps the reset time the provider stated, so the coordinator waits until then, not a fixed half hour.
+    return { class: cls, receipt, ...(cls === 'quota' ? { retryAt: quotaRetryAt(errorText, now) } : {}) };
   }
   if (out.session_id !== sessionId) return { class: 'invalid-result', receipt };
   if (!out.structured_output || !check(out.structured_output)) return { class: 'invalid-result', receipt };
@@ -700,7 +701,7 @@ async function reconcile(ctl, ctx, cfg, run) {
       stdoutText: readTextIfExists(join(run.run_dir, 'stdout.json')), stderrText: readTextIfExists(join(run.run_dir, 'stderr.log')) });
   } else outcome = result.containment === 'windows-job-v1' && result.containmentStopped === true
     ? classify({ run: result, stdoutText: readTextIfExists(join(run.run_dir, 'stdout.json')), stderrText: readTextIfExists(join(run.run_dir, 'stderr.log')),
-      sessionId: run.session_id, check: isIntake(run) ? validateIntake : validate })
+      sessionId: run.session_id, check: isIntake(run) ? validateIntake : validate, now })
     : { class: 'lost' };
   if (spec?.argv) {
     const executorKind = spec.executorKind ?? 'claude-cli';
@@ -753,7 +754,10 @@ function finishIntake(ctl, ctx, run, outcome) {
     let reason = null;
     if (cls === 'result') {
       try {
-        recordDraft(ctl.store, { request, proposal: outcome.value, pinned: request.pinned, runId: run.id, selfHosting: ctl.selfHosting, now });
+        // AW-022: the owner's stored preferences, read fresh from config.json, order the new draft's providers.
+        const settings = (ctl.dataDir ? readJsonIfExists(join(ctl.dataDir, 'config.json')) : null) ?? ctl.config;
+        const executor = preferredDraftExecutor(settings, (kind) => Boolean(ctl.cmd?.[kind.replace('-cli', '')]?.length));
+        recordDraft(ctl.store, { request, proposal: outcome.value, pinned: request.pinned, runId: run.id, selfHosting: ctl.selfHosting, executor, now });
       } catch (error) {
         if (!(error instanceof IntakeError)) throw error;
         cls = error.code === 'DRAFT_WITHHELD' ? 'reply-withheld' : 'invalid-draft';
@@ -765,7 +769,7 @@ function finishIntake(ctl, ctx, run, outcome) {
     if (cls === 'result' || !request) return;
     if (cls === 'boundary-violation') ctl.store.journal(LANE, 'coordinator-boundary-violation', { run: run.id, workspace: run.workspace }, now);
     const retry = !['boundary-violation', 'reply-withheld'].includes(cls) && (request.attempts < MAX_ATTEMPTS || ['quota', 'auth'].includes(cls));
-    const delay = ['quota', 'auth'].includes(cls) ? 30 * 60_000 : 2 * 60_000;
+    const delay = cls === 'quota' && outcome.retryAt > now ? outcome.retryAt - now : ['quota', 'auth'].includes(cls) ? 30 * 60_000 : 2 * 60_000;
     failRequest(ctl.store, request.request_id, { code: (reason ? `${cls}: ${reason}` : cls).slice(0, 1000), retryAt: retry ? now + delay : null }, now);
   });
   ctl.log(`coordinator: intake run ${run.id} settled (${outcome.class})`);
@@ -806,7 +810,7 @@ function finish(ctl, ctx, cfg, run, outcome) {
     for (const m of messages) {
       const attempts = m.state === 'read' ? m.attempts : m.attempts + 1; // a run lost before it started still counts once
       const retry = outcome.class !== 'boundary-violation' && (attempts < MAX_ATTEMPTS || ['quota', 'auth'].includes(outcome.class));
-      const delay = ['quota', 'auth'].includes(outcome.class) ? 30 * 60_000 : 2 * 60_000;
+      const delay = outcome.class === 'quota' && outcome.retryAt > now ? outcome.retryAt - now : ['quota', 'auth'].includes(outcome.class) ? 30 * 60_000 : 2 * 60_000;
       ctl.store.run('UPDATE owner_messages SET state = ?, failure = ?, not_before = ?, attempts = ?, updated_at = ? WHERE id = ?',
         retry ? 'received' : 'failed', outcome.class, retry ? now + delay : null, attempts, now, m.id);
       ctl.store.journal(LANE, retry ? 'message-retry' : 'message-failed', { message: m.id, run: run.id, class: outcome.class }, now);

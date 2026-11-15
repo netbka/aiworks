@@ -463,6 +463,20 @@ export function configuredAccounts(store, config, { now = Date.now(), dataDir = 
     }
   } catch { /* operations table may not have account_identity in review fixture */ }
 
+  // The one static account of each worker kind without CAAM profiles: a kind configured on this PC or seen in a run.
+  // Its runs record no account identity, so it is counted by executor kind.
+  try {
+    const kinds = new Set(['claude', 'codex', 'cursor', 'agy'].filter((name) => Array.isArray(config?.commands?.[name]) && config.commands[name].length)
+      .map((name) => `${name}-cli`));
+    for (const { executor_kind: kind } of store.all('SELECT DISTINCT executor_kind FROM operations WHERE account_identity IS NULL AND executor_kind IS NOT NULL')) kinds.add(kind);
+    for (const kind of kinds) {
+      const id = accountOf(config, kind);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      accounts.push({ id, provider: kind.replace('-cli', ''), kind, name: id, usage: accountUsageSummary(store, config, { kind, now }) });
+    }
+  } catch { /* a store without operations lists no static account */ }
+
   try {
     const waitAccounts = store.all('SELECT DISTINCT account, executor_kind FROM provider_waits WHERE account IS NOT NULL');
     for (const { account: id, executor_kind: kind } of waitAccounts) {
