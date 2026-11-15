@@ -8,10 +8,11 @@
 // registered worktree inside its registered folder is removed, with `git worktree remove` (never --force); one with
 // changes, untracked files or ignored files other than installed dependencies is kept and reported, and so is a
 // worktree nobody owns. A local task branch goes with
-// `git branch -d` (never -D) only when the trusted main contains its tip. Nothing deletes a remote branch, a run
-// directory or a folder recursively. Each removal is journaled `cleanup-started` before and `cleanup-finished` after,
-// so a restart settles an interrupted one from what git shows and never repeats it.
-import { constants, copyFileSync, existsSync, lstatSync, readFileSync, realpathSync, unlinkSync } from 'node:fs';
+// `git branch -d` (never -D) only when the trusted main contains its tip. Nothing deletes a remote branch or a run
+// directory; the one folder removed recursively is a finished run's throwaway Chrome profile. Each worktree or branch
+// removal is journaled `cleanup-started` before and `cleanup-finished` after, so a restart settles an interrupted one
+// from what git shows and never repeats it.
+import { constants, copyFileSync, existsSync, lstatSync, readFileSync, realpathSync, rmSync, unlinkSync } from 'node:fs';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import * as gitA from './adapters/git.mjs';
 import { GATE_FILES } from './gate.mjs';
@@ -100,6 +101,7 @@ export async function cleanupPass(ctl) {
   // Shared planning checkouts have no repository scope; a scoped cleanup leaves them alone. Their owners are read after
   // every await of the repositories above (aiworks#140): a coordinator run recorded meanwhile keeps its checkout.
   if (ctl.config.cleanup.repositories === undefined) cleanCoordinator(ctl, report, keep);
+  report.profiles = removeBrowserProfiles(ctl);
   if (report.removed.length || report.deleted.length) ctl.log(`cleanup removed ${report.removed.length} worktrees and ${report.deleted.length} branches`);
   return report;
 }
@@ -210,6 +212,29 @@ function finishRemoval(ctl, { started, item, campaignId, path }, result, report,
   const reason = result.ok ? null : (result.stderr || result.error || `exit ${result.status}`).slice(0, 300);
   ctl.store.journal(campaignId, 'cleanup-finished', { started, outcome: result.ok ? 'removed' : 'kept', reason }, ctl.now());
   if (result.ok) report.removed.push(path); else keep(campaignId, { ...item, reason: 'git-refused' });
+}
+
+/**
+ * A finished run's throwaway Chrome profile (browser-mcp.mjs, about 100 MB each): Chrome's caches and downloaded models,
+ * no evidence. browser-mcp tries to remove it when it exits, but Windows keeps Chrome's files locked for a moment after
+ * the kill, and a hard stop skips it, so it stayed in every run directory. Only `<dataDir>/runs/<operation>/chrome-profile`
+ * of an operation that is no longer recorded or dispatched goes; the rest of the run directory stays. A profile still
+ * locked is tried again on a later pass. Returns how many were removed.
+ */
+export function removeBrowserProfiles(ctl) {
+  if (!ctl.dataDir) return 0;
+  const runs = resolve(ctl.dataDir, 'runs');
+  let removed = 0;
+  for (const op of ctl.store.all(`SELECT id, campaign_id, run_dir FROM operations WHERE state NOT IN (${OPEN.map(() => '?').join(', ')}) AND run_dir IS NOT NULL`, ...OPEN)) {
+    const runDir = resolve(op.run_dir);
+    if (relative(runs, runDir) !== basename(runDir)) continue;
+    const profile = join(runDir, 'chrome-profile');
+    try { if (!existsSync(profile) || lstatSync(profile).isSymbolicLink() || !lstatSync(profile).isDirectory()) continue; } catch { continue; }
+    try { rmSync(profile, { recursive: true, force: true, maxRetries: 2 }); removed++; }
+    catch { /* still locked: a later pass */ }
+  }
+  if (removed) ctl.store.journal(null, 'cleanup-browser-profiles', { removed }, ctl.now());
+  return removed;
 }
 
 /** Copy each gate file into the run directory under a name of this worktree; an identical earlier copy counts. */
