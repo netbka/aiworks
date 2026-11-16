@@ -191,11 +191,14 @@ export async function capturePreview({ chrome, workDir, page, entry, sha, signal
     runner.on('error', () => controller.abort(new CaptureError('PREVIEW_CAPTURE_FAILED', 'AIWorks could not start its browser.')));
     // Chrome writes the port it chose once its DevTools endpoint listens.
     const portFile = join(dirs.profile, 'DevToolsActivePort');
-    while (!existsSync(portFile) || !/^\d+\r?\n/.test(readFileSync(portFile, 'utf8'))) {
+    // While Chrome still holds the file open to write it, Windows refuses the read (EBUSY): not written yet.
+    const written = () => { try { return /^(\d+)\r?\n/.exec(readFileSync(portFile, 'utf8'))?.[1] ?? null; } catch { return null; } };
+    let portText = null;
+    while (!(portText = written())) {
       if (runner.exitCode !== null) throw new CaptureError('PREVIEW_CAPTURE_FAILED', 'The browser stopped before the capture began.');
       await delay(100, bounded);
     }
-    const port = Number(readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
+    const port = Number(portText);
     const version = await (await fetch(`http://127.0.0.1:${port}/json/version`, { signal: bounded })).json();
     client = await devtools(version.webSocketDebuggerUrl, bounded);
     const { targetId } = await client.send('Target.createTarget', { url: 'about:blank' });
