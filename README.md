@@ -86,6 +86,8 @@ Projects with a standing release grant can also continue from an independently v
 
 Day to day, you don't type commands. You work in the AIWorks dashboard on your computer and in GitHub. Setup is done once ([see below](#set-it-up-with-your-ai-assistant)).
 
+**New to using Claude with AIWorks?** [Using Claude with AIWorks](docs/guides/USING_CLAUDE.md) explains Claude's three jobs here (your assistant, the worker and the coordinator), what to say to it, and what it can and cannot do.
+
 > The screenshots show made-up example projects.
 
 ### 1. See every project at a glance
@@ -222,7 +224,7 @@ Do not change any of my project files.
 
 The assistant runs the commands below. You handle any sign-in it cannot do for you.
 
-The [getting-started guides](docs/guides/README.md) explain the same setup step by step, then your first task, a manual installation, every command and what to do when something stops.
+[Using Claude with AIWorks](docs/guides/USING_CLAUDE.md) has more prompts for planning, status and stops. The [getting-started guides](docs/guides/README.md) explain the same setup step by step, then your first task, a manual installation, every command and what to do when something stops.
 
 ### How it works
 
