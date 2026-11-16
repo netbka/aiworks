@@ -308,8 +308,10 @@ export function validateTask(task, where, { seen, constraints, bad, local = fals
   // Dependencies must be declared earlier: the declared order is a topological order, so no cycles.
   for (const dep of task.dependsOn ?? []) if (!seen.has(dep)) bad(`${where}.dependsOn ${dep} must name an earlier task`);
   const own = task.constraints ?? [];
-  if (!Array.isArray(own) || own.length > 12 || !own.every((c) => text(c, 2000))) bad(`${where}.constraints must be 0..12 strings`);
-  if ((constraints?.length ?? 0) + own.length > 24) bad(`${where}: campaign + task constraints exceed 24 (packet room is kept for findings)`);
+  // A task's own constraints carry its data in 2000-character parts (a long request with its attached specification, Wiki's
+  // analyst checks, 2026-11-16); the packet budget (worker-context-policy.json) still bounds the whole packet.
+  if (!Array.isArray(own) || own.length > 36 || !own.every((c) => text(c, 2000))) bad(`${where}.constraints must be 0..36 strings`);
+  if ((constraints?.length ?? 0) + own.length > 48) bad(`${where}: campaign + task constraints exceed 48 (packet room is kept for findings)`);
   if (!Array.isArray(task.acceptance) || task.acceptance.length < 1 || task.acceptance.length > 16 || !task.acceptance.every((c) => text(c, 2000))) {
     bad(`${where}.acceptance must be 1..16 strings`);
   }
@@ -465,7 +467,7 @@ function validateEnvelope(d, bad) {
     if (task.issue !== undefined && !issues.includes(task.issue)) bad(`${where}.issue ${task.issue} is not in envelope.issues (WIDEN_DESTINATION)`);
     // The envelope adds one constraint to every packet (WORK_ENVELOPE 6.5), so it counts against the limit of 24.
     const own = Array.isArray(task.constraints) ? task.constraints.length : 0;
-    if ((Array.isArray(d.constraints) ? d.constraints.length : 0) + own + 1 > 24) bad(`${where}: campaign + task + envelope constraints exceed 24`);
+    if ((Array.isArray(d.constraints) ? d.constraints.length : 0) + own + 1 > 48) bad(`${where}: campaign + task + envelope constraints exceed 48`);
   }
 }
 

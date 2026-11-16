@@ -112,7 +112,7 @@ test('packet hash is stable across object key order, not content changes', () =>
 });
 test('byte limit includes multibyte text; invalid references cannot masquerade as pointers', () => {
   const packet = fixture().packet;
-  packet.constraints = Array(32).fill('Ж'.repeat(1000));
+  packet.constraints = Array(30).fill('Ж'.repeat(2000));
   assert.throws(() => validatePacket(packet, policy), /byte budget/);
   for (const path of ['../secret', '/etc/passwd', 'C:\\private', 'https://host/token', 'docs/%2e%2e/x', 'docs/\nraw']) {
     const candidate = fixture().packet; candidate.references[0].path = path;

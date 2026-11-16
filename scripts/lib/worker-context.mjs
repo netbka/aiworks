@@ -89,8 +89,10 @@ export function validatePacket(packet, policy) {
       !/^[a-f0-9]{40}$/.test(packet.revision) || !digest(packet.authorityDigest) ||
       !['implementer', 'verification', 'security-review', 'browser-review'].includes(packet.role) ||
       !['read-only', 'write'].includes(packet.access) || !text(packet.goal) ||
+      // Constraints: a campaign's and a task's (at most 48, campaign.mjs validateTask) plus the controller's own lines (write
+      // domain, beyond, up to 8 findings, refusal, plan head); 64 leaves room. Acceptance stays at 32.
       !['constraints', 'acceptance'].every((key) => Array.isArray(packet[key]) && packet[key].length > 0 &&
-        packet[key].length <= 32 && Array.from(packet[key]).every((item) => text(item))) ||
+        packet[key].length <= (key === 'constraints' ? 64 : 32) && Array.from(packet[key]).every((item) => text(item))) ||
       !Array.isArray(packet.references) || packet.references.length === 0 || packet.references.length > policy.maxReferences ||
       !Array.from(packet.references).every((ref) => ref && Object.keys(ref).length === 2 && text(ref.path, 512) &&
         /^[a-f0-9]{40}$/.test(ref.revision) && !ref.path.startsWith('/') && !ref.path.includes('\\') &&

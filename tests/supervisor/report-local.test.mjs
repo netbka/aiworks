@@ -72,7 +72,7 @@ test('the report route never returns a report that independent verification has 
 test('a task whose declared packet exceeds the worker budget stops with a reason instead of retrying without end', { skip: skipWithoutSqlite }, async (t) => {
   // 2026-10-29: two Wiki AI checks with long Russian briefs failed «Task packet byte budget exceeded» every few seconds
   // for hours, so the Wiki slots they held never freed. The packet cannot shrink on a retry, so the task is blocked.
-  const big = { ...reportTask, constraints: Array.from({ length: 12 }, (_, i) => `Часть ${i + 1}: ${'х'.repeat(1900)}`) };
+  const big = { ...reportTask, constraints: Array.from({ length: 36 }, (_, i) => `Часть ${i + 1}: ${'х'.repeat(1900)}`) };
   const decl = { ...declaration({ campaignId: 'packet-too-large', tasks: [big] }), reportPublication: 'local' };
   const h = await harness(t, { decl, scenario: { implement: ['report'], verify: ['accept-report-criterion'] } });
   const run = h.serve();
