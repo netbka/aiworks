@@ -1,10 +1,14 @@
 # Static showcase
 
-`index.html` is a one-page walk through the owner journey of the [acceptance record](../docs/design/OWNER_JOURNEY_ACCEPTANCE.md), with screenshots from its synthetic runtime. It is source only: nothing here configures hosting, and no workflow builds or publishes it.
+`index.html` is a one-page walk through the owner journey of the [acceptance record](../docs/design/OWNER_JOURNEY_ACCEPTANCE.md), with screenshots from its synthetic runtime. It is published on GitHub Pages at <https://netbka.github.io/aiworks/> from the `gh-pages` branch; no workflow file in this repository builds or publishes it.
 
 ## Preview it
 
 Open `site/index.html` in a browser from a checkout. There is no build step and no dependency. The page loads only `showcase.css` and the images in `assets/`; its content security policy refuses every other request, so it makes no external call. Links to the documentation are relative to this repository (`../docs/…`); a copy of `site/` published on its own needs them pointed at the repository's documentation.
+
+## Publish it
+
+The `gh-pages` branch holds only a copy of `site/` plus an empty `.nojekyll`, with every `../` link rewritten to `https://github.com/netbka/aiworks/blob/main/`. To publish a change, merge it to `main`, then rebuild that branch from the merged `site/` the same way and push it. GitHub Pages serves the branch root through GitHub's own Pages job (the owner's one exception to the no-Actions rule); never add a workflow file for it.
 
 ## What the page may say
 
