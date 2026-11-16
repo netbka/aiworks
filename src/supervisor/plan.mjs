@@ -214,7 +214,7 @@ export function admitAmendment({ declaration, stored, head, merged = true, specs
     // A7: destination.
     if (!(envelope.issues ?? []).includes(task.issue)) return at('WIDEN_DESTINATION', `${id} reports to issue ${task.issue}, which the approval does not list`);
     // A11: the envelope adds one constraint to every child packet (WORK_ENVELOPE 6.5).
-    if (declaration.constraints.length + (task.constraints?.length ?? 0) + 1 > 24) return at('INVALID_TASK', `${id}: campaign + task + envelope constraints exceed 24`);
+    if (declaration.constraints.length + (task.constraints?.length ?? 0) + 1 > 48) return at('INVALID_TASK', `${id}: campaign + task + envelope constraints exceed 48`);
     if (cyclic(new Map(live).set(id, task), id)) return at('INVALID_TASK', `${id}: dependsOn makes a cycle`);
     // A12: duplicate work, in this campaign or owned by another active one. Only this operation is dropped.
     const fingerprint = workFingerprint(task);
