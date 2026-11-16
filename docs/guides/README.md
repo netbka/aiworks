@@ -6,6 +6,8 @@ You do not need to learn a list of commands before trying AIWorks. Let your usua
 
 **[Open your AI client and follow this guide](AI_ASSISTED_START.md).** It has a short setup message for Codex, Claude Code, Cursor Agent or Gemini CLI, followed by a message for your first task.
 
+Using Claude Code? [Using Claude with AIWorks](USING_CLAUDE.md) explains what to ask it, and how AIWorks runs Claude as its worker and coordinator.
+
 These clients need permission to work on your computer. The current preview may still need access from the project owner; your assistant checks before trying to start real work.
 
 ## What would you like to do?
