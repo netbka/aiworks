@@ -1355,9 +1355,12 @@ browser session. The exemption exists only while the API is enabled, for exactly
 `GET /api/campaigns/:id/status|report`. Each is answered in full before another route is considered. The server gives
 no CORS answer; every other dashboard route retains its Host, Origin, CSRF and caller checks.
 
-- **The switch.** `config.json` `"campaignApi": { "enabled": true, "tokenRef": "<name>", "credentialStore"?: { "kind":
-  "windows" } | { "kind": "command", "command": [...] }, "port"?: <number> }`. Absent, malformed, `enabled` not exactly
-  `true`, or an invalid `tokenRef`, store or port leaves it off. References use `token-store.mjs` `validTokenRef`:
+- **The switch.** `config.json` `"campaignApi": { "enabled": true, "tokenRef"?: "<name>", "tokenRefs"?: ["<name>",
+  ...], "credentialStore"?: { "kind": "windows" } | { "kind": "command", "command": [...] }, "port"?: <number> }`, naming
+  at least one reference: a single `tokenRef` (the shape older installations use, still accepted unchanged), a
+  `tokenRefs` list of several tokens active at once (one per project), or both. Absent, malformed, `enabled` not
+  exactly `true`, or any invalid reference, store or port leaves it off. All references resolve from the one
+  configured store. References use `token-store.mjs` `validTokenRef`:
   short segments joined by `/` or `:`. While off, requests meet the dashboard's original gates (`403` for a foreign
   Host or Origin or a POST without its CSRF token, `404` for the read paths); the dedicated API listener returns `404`.
   Without `credentialStore` the Windows Credential Manager is used.
@@ -1429,7 +1432,9 @@ no CORS answer; every other dashboard route retains its Host, Origin, CSRF and c
   token to the project's repository in the governance checkout. Registration and amendments of another project's
   campaign are refused with `403 TOKEN_OUT_OF_SCOPE`, including an incoming declaration that disguises a stored id.
   Status and report reads of another project's campaign return `404` as for an unknown id, on either listener.
-  Other reference shapes retain the same repository reach as the CLI.
+  Other reference shapes retain the same repository reach as the CLI. With several tokens configured, each request
+  is scoped to the project of the one token that authenticated it, so one project's caller never reaches another's
+  campaigns.
 - **A web build task needs its origins listed.** A new campaign with a `web.mode: "build"` task whose origins are not
   all in its project's `web.buildOrigins` is refused with `403 WEB_BUILD_ORIGIN_NOT_ALLOWED`. Amendments of a stored
   campaign skip this check: the build scope cannot change, and the controller checks the list again before every dispatch
@@ -1450,13 +1455,22 @@ the governance checkout, the same registration a new campaign already needs
 (`crypto.randomBytes(32).toString('base64url')`, 256 bits) and writes it over stdin to the operator's credential store
 (`token-store.mjs`: the Windows Credential Manager by default) under the one
 standard reference `aiworks-campaign-api:<projectId>` -- never a name the caller invents, so the store's own listing
-already says which project a token belongs to. It then points `config.json` `campaignApi` at that reference:
-`{ enabled: true, tokenRef: "aiworks-campaign-api:<projectId>" }`, keeping every other setting; a `config.json` that is
-not a JSON object refuses (`CONFIG_INVALID`) before anything is written. `create` refuses to overwrite a value already
+already says which project a token belongs to. It then adds that reference to `config.json` `campaignApi`, keeping
+every other setting and every other project's reference: the first token is written as `{ enabled: true, tokenRef:
+"aiworks-campaign-api:<projectId>" }`, and once there are several they are listed as `tokenRefs`. The token goes into
+the store `campaignApi` already names; a `config.json` that is not a JSON object, or whose `campaignApi` is malformed,
+refuses (`CONFIG_INVALID`) before anything is written. `create` refuses to overwrite a value already
 stored there (`TOKEN_ALREADY_EXISTS`: run `rotate` instead); `rotate` refuses when nothing is there yet to replace
 (`TOKEN_NOT_FOUND`: run `create` first). Either command prints only the fact that a token now exists and the
 reference it lives under -- **never the token value itself**, in any form, on any stream: an operator reads the value
 back from the credential store (Windows Credential Manager, `cmdkey`, or a configured credential helper command)
-only at the moment an external caller needs to be given it. Only one token is active at a time per installation
-(`config.json` `campaignApi` names one reference), so pointing it at a different project's token is itself a `create`
-or `rotate` for that project id. Critical-behaviour tests: `tests/supervisor/campaign-token.test.mjs`.
+only at the moment an external caller needs to be given it. Several projects' tokens are active at once, one per
+project: issuing a token for another project never switches an existing one off, and `rotate` replaces only that
+project's value. Two exceptions narrow access: a configured reference not tied to a project (it reaches every
+repository) is dropped when a project's token is issued, and the command says so; and while `campaignApi` is switched
+off (`enabled` not `true`), its old references are not carried over, so the API comes back with the issued project's
+token alone. A bearer value held under more than one configured reference matches none of them. There is no revoke
+command; to switch one project's token off, remove its reference from
+`campaignApi` by hand. A runtime older than `tokenRefs` support reads a `tokenRefs` setting as off, so deploy this
+version before issuing a second project's token. Critical-behaviour tests: `tests/supervisor/campaign-token.test.mjs`
+and `tests/dashboard/campaign-api.test.mjs`.

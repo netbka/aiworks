@@ -8,7 +8,8 @@
 // (campaign.mjs assertRegisteredTarget), the same optional owner approval requirement (approvals.mjs).
 // `registerRemoteCampaign` is exactly `cli.mjs start` with no `--approval`, given an already-parsed declaration instead
 // of a private file. A token stored under a project's standard reference (`aiworks-campaign-api:<projectId>`,
-// campaign-token.mjs) reaches only that project's campaigns.
+// campaign-token.mjs) reaches only that project's campaigns; several such tokens may be active at once, and each request
+// is scoped to the project of the one token that authenticated it.
 //
 // Authentication is a static bearer token, resolved by reference from the operator's own secret store
 // (token-store.mjs): config.json never holds the token value itself (AGENTS.md: configuration holds paths, never secret
@@ -24,66 +25,82 @@ import { CODE_ROOT, revisionNotMerged, runtimeTrust } from './provenance.mjs';
 import { assertRegisteredTarget } from './campaign.mjs';
 import { approvalRequired, approvedStart } from './approvals.mjs';
 import { requireGovernanceRoot } from './governance.mjs';
-import { CAMPAIGN_TOKEN_PREFIX, PROJECT_ID } from './campaign-token.mjs';
-import { readToken, tokenStoreFrom, validTokenRef } from './token-store.mjs';
+import { CAMPAIGN_TOKEN_PREFIX, PROJECT_ID, configuredTokenRefs } from './campaign-token.mjs';
+import { readToken, tokenStoreFrom } from './token-store.mjs';
 
 const validStoreSpec = (store) => store === undefined || (store && typeof store === 'object' && !Array.isArray(store) &&
   (store.kind === 'windows' || (store.kind === 'command' && Array.isArray(store.command) && store.command.length > 0 &&
     store.command.every((part) => typeof part === 'string' && part))));
 
 /**
- * config.json `campaignApi`: `{ enabled: true, tokenRef: "<name>", credentialStore?: { kind: "windows" } | { kind:
- * "command", command: [...] } }`. Off by default; absent, malformed, an unknown key, `enabled` not exactly `true`, an
- * invalid `tokenRef` or store all answer `{ enabled: false }` — never a partial or best-effort enablement. Without
- * `credentialStore` the Windows Credential Manager is used. `projectId` is set when `tokenRef` is a project's standard
- * reference: the token then reaches that project's campaigns only.
+ * config.json `campaignApi`: `{ enabled: true, tokenRef?: "<name>", tokenRefs?: ["<name>", ...], credentialStore?: {
+ * kind: "windows" } | { kind: "command", command: [...] } }`, naming at least one reference: the single `tokenRef` an
+ * older installation wrote, a `tokenRefs` list (one per project, so several callers work at once), or both. Off by
+ * default; absent, malformed, an unknown key, `enabled` not exactly `true`, any invalid reference or store all answer
+ * `{ enabled: false }` — never a partial or best-effort enablement. Without `credentialStore` the Windows Credential
+ * Manager is used. Each entry of `tokens` carries its `projectId` when its reference is a project's standard reference:
+ * that token then reaches that project's campaigns only.
  */
 export function campaignApiSettings(config) {
   const raw = config?.campaignApi;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.enabled !== true || !validTokenRef(raw.tokenRef)) return { enabled: false };
-  if (Object.keys(raw).some((key) => !['enabled', 'tokenRef', 'credentialStore', 'port'].includes(key))) return { enabled: false };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.enabled !== true) return { enabled: false };
+  if (Object.keys(raw).some((key) => !['enabled', 'tokenRef', 'tokenRefs', 'credentialStore', 'port'].includes(key))) return { enabled: false };
+  const refs = configuredTokenRefs(raw);
+  if (!refs) return { enabled: false };
   if (!validStoreSpec(raw.credentialStore)) return { enabled: false };
   if (raw.port !== undefined && !(Number.isSafeInteger(raw.port) && raw.port >= 1024 && raw.port <= 65535)) return { enabled: false };
   const prefix = `${CAMPAIGN_TOKEN_PREFIX}:`;
-  const named = raw.tokenRef.startsWith(prefix) ? raw.tokenRef.slice(prefix.length) : null;
-  if (named !== null && !PROJECT_ID.test(named)) return { enabled: false };
-  return { enabled: true, tokenRef: raw.tokenRef, credentialStore: raw.credentialStore ?? { kind: 'windows' }, projectId: named, port: raw.port ?? null };
+  const tokens = refs.map((tokenRef) => ({ tokenRef, projectId: tokenRef.startsWith(prefix) ? tokenRef.slice(prefix.length) : null }));
+  if (tokens.some(({ projectId }) => projectId !== null && !PROJECT_ID.test(projectId))) return { enabled: false };
+  return { enabled: true, tokens, credentialStore: raw.credentialStore ?? { kind: 'windows' }, port: raw.port ?? null };
 }
 
 const digest = (value) => createHash('sha256').update(value, 'utf8').digest();
 
 /**
- * Whether `authorization` (the request's Authorization header) is `Bearer <token>` for the configured reference's
- * current value. The value is resolved fresh from the store on every call and only when a bearer token was supplied;
- * it is compared as fixed-length digests in constant time and never returned, logged or cached. A store that cannot
- * tell, an unresolved reference or an empty value refuse exactly like a wrong token: this never opens access.
+ * Which configured token `authorization` (the request's Authorization header) carries: `{ tokenRef, projectId }` when
+ * it is `Bearer <token>` for one configured reference's current value, else null. Every reference is resolved fresh
+ * from the store on every call, only when a bearer token was supplied, and each is compared as fixed-length digests in
+ * constant time; no value is returned, logged or cached. A reference the store cannot tell about, an unresolved
+ * reference or an empty value matches nothing, exactly like a wrong token, and so does a value held under more than
+ * one reference: this never opens access.
  */
 export function campaignApiAuthorized(settings, authorization, { store = null } = {}) {
-  if (!settings?.enabled) return false;
+  if (!settings?.enabled || !Array.isArray(settings.tokens)) return null;
   const match = /^Bearer ([\x21-\x7e]+)$/.exec(typeof authorization === 'string' ? authorization : '');
-  if (!match) return false;
-  let expected = null;
-  try { expected = readToken(store ?? tokenStoreFrom(settings.credentialStore), settings.tokenRef); } catch { return false; }
-  if (!expected) return false;
-  return timingSafeEqual(digest(match[1]), digest(expected));
+  if (!match) return null;
+  const supplied = digest(match[1]);
+  let source = store;
+  try { source ??= tokenStoreFrom(settings.credentialStore); } catch { return null; }
+  // Every reference is checked, with no early exit. Two references holding the same value cannot say which project the
+  // caller is, so that matches nothing rather than whichever is listed first.
+  const callers = [];
+  for (const { tokenRef, projectId } of settings.tokens) {
+    let expected = null;
+    try { expected = readToken(source, tokenRef); } catch { expected = null; }
+    if (expected && timingSafeEqual(supplied, digest(expected))) callers.push({ tokenRef, projectId });
+  }
+  return callers.length === 1 ? callers[0] : null;
 }
 
 const remoteFail = (status, code, message) => Object.assign(new Error(message), { status, code });
 
 /**
- * The one repository a project-named token reaches (lower case), or null for a token under any other reference, which
- * reaches what `cli.mjs start` and `status` reach. The repository is read from the project's registry entry in the
- * governance checkout; a missing checkout or entry refuses.
+ * The one repository reached by the token that authenticated a request (`caller`, from campaignApiAuthorized), lower
+ * case, when that token is project-named; null for a token under any other reference, which reaches what `cli.mjs
+ * start` and `status` reach. The repository is read from the project's registry entry in the governance checkout; a
+ * missing checkout or entry refuses.
  */
-export function campaignApiScope(settings, governanceRoot) {
-  if (!settings?.enabled || settings.projectId === null || settings.projectId === undefined) return null;
+export function campaignApiScope(caller, governanceRoot) {
+  const projectId = caller?.projectId ?? null;
+  if (projectId === null) return null;
   let root;
   try { root = requireGovernanceRoot(governanceRoot); }
   catch (error) { throw remoteFail(503, error.code ?? 'GOVERNANCE_ROOT_INVALID', error.message); }
   let repository = null;
-  try { repository = JSON.parse(readFileSync(join(root, 'registry', 'projects', `${settings.projectId}.json`), 'utf8'))?.repository?.github; } catch { repository = null; }
+  try { repository = JSON.parse(readFileSync(join(root, 'registry', 'projects', `${projectId}.json`), 'utf8'))?.repository?.github; } catch { repository = null; }
   if (typeof repository !== 'string' || !repository) {
-    throw remoteFail(403, 'PROJECT_NOT_REGISTERED', `${settings.projectId} is not a registered project in the governance checkout`);
+    throw remoteFail(403, 'PROJECT_NOT_REGISTERED', `${projectId} is not a registered project in the governance checkout`);
   }
   return repository.toLowerCase();
 }

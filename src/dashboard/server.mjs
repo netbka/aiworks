@@ -71,12 +71,14 @@ const RECORDS_UNREADABLE = 'AIWorks can’t read its work records on this comput
  * session's CSRF secret. Registration, status and verified reports are limited to a project-named token's own project.
  */
 async function answerCampaignApi(req, route, { dataDir, settings, config, provenanceRoot }) {
-  if (!campaignApiAuthorized(settings, req.headers.authorization)) return [401, { error: TOKEN_REQUIRED }];
+  // Each request is scoped to the project of the one token that authenticated it.
+  const caller = campaignApiAuthorized(settings, req.headers.authorization);
+  if (!caller) return [401, { error: TOKEN_REQUIRED }];
   const governanceRoot = configuredGovernanceRoot(dataDir);
   if (route.register) {
     const declaration = await readJsonBody(req, CAMPAIGN_API_BYTES);
     if (!existsSync(join(dataDir, 'supervisor.db'))) return [503, { error: RECORDS_UNREADABLE }];
-    const scope = campaignApiScope(settings, governanceRoot);
+    const scope = campaignApiScope(caller, governanceRoot);
     const store = new Store(join(dataDir, 'supervisor.db'));
     try {
       const { status, created } = registerRemoteCampaign(store, declaration, { provenanceRoot, governanceRoot, config, scope });
@@ -87,7 +89,7 @@ async function answerCampaignApi(req, route, { dataDir, settings, config, proven
   try { id = decodeURIComponent(route.id); } catch { /* refused below */ }
   if (!CAMPAIGN_ID.test(id ?? '')) return [404, { error: 'Not found.' }];
   if (!existsSync(join(dataDir, 'supervisor.db'))) return [503, { error: RECORDS_UNREADABLE }];
-  const scope = campaignApiScope(settings, governanceRoot);
+  const scope = campaignApiScope(caller, governanceRoot);
   const store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
   try {
     if (route.kind === 'report') return [200, campaignReports(store, id, { scope })];

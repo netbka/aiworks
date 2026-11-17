@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import {
   applyCampaignApiConfig, assertRegisteredProjectId, campaignTokenRef, issueCampaignToken,
 } from '../../src/supervisor/campaign-token.mjs';
+import { campaignApiAuthorized, campaignApiSettings } from '../../src/supervisor/remote-campaigns.mjs';
 import { GOVERNANCE } from './helpers.mjs';
 
 /** A synthetic credential-helper command (token-store.mjs commandTokenStore's contract), has/get/set
@@ -105,6 +106,39 @@ test('create refuses to overwrite an existing token; rotate refuses when none ex
   assert.equal(rotated.ref, first.ref);
   const secondValue = vault.read(first.ref);
   assert.notEqual(secondValue, firstValue, 'rotate replaces the value; it is never reused');
+});
+
+test('issuing or rotating a second project\'s token keeps the first project\'s token active and unchanged', (t) => {
+  const vault = vaultHelper(t);
+  const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-campaign-token-data-'));
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }));
+  const spec = { governanceRoot: GOVERNANCE, dataDir, credentialStoreSpec: { kind: 'command', command: vault.command } };
+  const wiki = issueCampaignToken('sample-wiki', spec);
+  const wikiValue = vault.read(wiki.ref);
+  const app = issueCampaignToken('sampleapp', { governanceRoot: GOVERNANCE, dataDir }); // the configured store is reused
+  assert.deepEqual(app.config.tokenRefs, ['aiworks-campaign-api:sample-wiki', 'aiworks-campaign-api:sampleapp']);
+  issueCampaignToken('sampleapp', { ...spec, rotate: true });
+  assert.equal(vault.read(wiki.ref), wikiValue, 'another project\'s create or rotate never touches this value');
+  const settings = campaignApiSettings(JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')));
+  assert.equal(campaignApiAuthorized(settings, `Bearer ${wikiValue}`)?.projectId, 'sample-wiki');
+  assert.equal(campaignApiAuthorized(settings, `Bearer ${vault.read(app.ref)}`)?.projectId, 'sampleapp');
+});
+
+test('create never keeps a token that reaches every repository, nor revives references of a switched-off API', (t) => {
+  const vault = vaultHelper(t);
+  const command = { kind: 'command', command: vault.command };
+  for (const [campaignApi, dropped] of [
+    [{ enabled: true, tokenRef: 'aiworks-campaign-api', credentialStore: command }, ['aiworks-campaign-api']],
+    [{ enabled: false, tokenRefs: ['aiworks-campaign-api:sampleapp', 'aiworks-campaign-api'], credentialStore: command }, []],
+  ]) {
+    const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-campaign-token-data-'));
+    t.after(() => rmSync(dataDir, { recursive: true, force: true }));
+    writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ campaignApi }));
+    const result = issueCampaignToken('sample-wiki', { governanceRoot: GOVERNANCE, dataDir, rotate: vault.read('aiworks-campaign-api:sample-wiki') !== undefined });
+    assert.deepEqual(result.dropped, dropped);
+    assert.deepEqual(JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')).campaignApi,
+      { enabled: true, tokenRef: 'aiworks-campaign-api:sample-wiki', credentialStore: command }, JSON.stringify(campaignApi));
+  }
 });
 
 test('applyCampaignApiConfig keeps the rest of config.json and names only tokenRef (and a non-default store)', () => {
