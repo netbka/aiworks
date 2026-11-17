@@ -124,6 +124,23 @@ test('issuing or rotating a second project\'s token keeps the first project\'s t
   assert.equal(campaignApiAuthorized(settings, `Bearer ${vault.read(app.ref)}`)?.projectId, 'sampleapp');
 });
 
+test('create never keeps a token that reaches every repository, nor revives references of a switched-off API', (t) => {
+  const vault = vaultHelper(t);
+  const command = { kind: 'command', command: vault.command };
+  for (const [campaignApi, dropped] of [
+    [{ enabled: true, tokenRef: 'aiworks-campaign-api', credentialStore: command }, ['aiworks-campaign-api']],
+    [{ enabled: false, tokenRefs: ['aiworks-campaign-api:sampleapp', 'aiworks-campaign-api'], credentialStore: command }, []],
+  ]) {
+    const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-campaign-token-data-'));
+    t.after(() => rmSync(dataDir, { recursive: true, force: true }));
+    writeFileSync(join(dataDir, 'config.json'), JSON.stringify({ campaignApi }));
+    const result = issueCampaignToken('sample-wiki', { governanceRoot: GOVERNANCE, dataDir, rotate: vault.read('aiworks-campaign-api:sample-wiki') !== undefined });
+    assert.deepEqual(result.dropped, dropped);
+    assert.deepEqual(JSON.parse(readFileSync(join(dataDir, 'config.json'), 'utf8')).campaignApi,
+      { enabled: true, tokenRef: 'aiworks-campaign-api:sample-wiki', credentialStore: command }, JSON.stringify(campaignApi));
+  }
+});
+
 test('applyCampaignApiConfig keeps the rest of config.json and names only tokenRef (and a non-default store)', () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-campaign-token-cfg-'));
   try {

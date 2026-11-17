@@ -1458,15 +1458,19 @@ standard reference `aiworks-campaign-api:<projectId>` -- never a name the caller
 already says which project a token belongs to. It then adds that reference to `config.json` `campaignApi`, keeping
 every other setting and every other project's reference: the first token is written as `{ enabled: true, tokenRef:
 "aiworks-campaign-api:<projectId>" }`, and once there are several they are listed as `tokenRefs`. The token goes into
-the store `campaignApi` already names; a `config.json` that is not a JSON object refuses (`CONFIG_INVALID`) before
-anything is written. `create` refuses to overwrite a value already
+the store `campaignApi` already names; a `config.json` that is not a JSON object, or whose `campaignApi` is malformed,
+refuses (`CONFIG_INVALID`) before anything is written. `create` refuses to overwrite a value already
 stored there (`TOKEN_ALREADY_EXISTS`: run `rotate` instead); `rotate` refuses when nothing is there yet to replace
 (`TOKEN_NOT_FOUND`: run `create` first). Either command prints only the fact that a token now exists and the
 reference it lives under -- **never the token value itself**, in any form, on any stream: an operator reads the value
 back from the credential store (Windows Credential Manager, `cmdkey`, or a configured credential helper command)
 only at the moment an external caller needs to be given it. Several projects' tokens are active at once, one per
 project: issuing a token for another project never switches an existing one off, and `rotate` replaces only that
-project's value. There is no revoke command; to switch one project's token off, remove its reference from
+project's value. Two exceptions narrow access: a configured reference not tied to a project (it reaches every
+repository) is dropped when a project's token is issued, and the command says so; and while `campaignApi` is switched
+off (`enabled` not `true`), its old references are not carried over, so the API comes back with the issued project's
+token alone. A bearer value held under more than one configured reference matches none of them. There is no revoke
+command; to switch one project's token off, remove its reference from
 `campaignApi` by hand. A runtime older than `tokenRefs` support reads a `tokenRefs` setting as off, so deploy this
 version before issuing a second project's token. Critical-behaviour tests: `tests/supervisor/campaign-token.test.mjs`
 and `tests/dashboard/campaign-api.test.mjs`.

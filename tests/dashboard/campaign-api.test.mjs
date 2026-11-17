@@ -334,6 +334,9 @@ test('a token store that cannot tell, or holds no value, refuses like a wrong to
   assert.equal(campaignApiAuthorized(settings, 'Bearer synthetic-value', { store: { get: () => { throw new Error('locked'); } } }), null);
   assert.equal(campaignApiAuthorized(settings, 'Bearer ', { store: holding('') }), null);
   assert.equal(campaignApiAuthorized(settings, 'Bearer x', { store: holding(null) }), null);
+  const shared = campaignApiSettings({ campaignApi: { enabled: true, tokenRef: 'aiworks-campaign-api', tokenRefs: ['aiworks-campaign-api:sample-wiki'] } });
+  assert.equal(campaignApiAuthorized(shared, 'Bearer synthetic-value', { store: holding('synthetic-value') }), null,
+    'one value under two references is ambiguous, never the first listed');
   for (const config of [{}, { campaignApi: { enabled: 'true', tokenRef: 'aiworks-campaign-api:sample-wiki' } },
     { campaignApi: { enabled: true, tokenRef: 'aiworks-campaign-api:sample-wiki', extra: 1 } },
     { campaignApi: { enabled: true, tokenRef: 'aiworks-campaign-api:Not Valid' } },

@@ -419,6 +419,7 @@ try {
       console.log(`campaign-api token ${result.rotated ? 'rotated' : 'created'} for ${result.projectId}: stored under credential reference ${result.ref}`);
       console.log('the value itself is not printed; read it from the credential store (Windows Credential Manager, or your configured command helper) when you need it');
       console.log(`config.json campaignApi now names it: ${JSON.stringify(result.config)}`);
+      for (const ref of result.dropped) console.log(`switched off ${ref}: a token not tied to one project reaches every repository and is not kept beside project tokens`);
     }
   }
   else { console.error(USAGE); process.exitCode = 2; }

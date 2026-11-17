@@ -62,7 +62,8 @@ const digest = (value) => createHash('sha256').update(value, 'utf8').digest();
  * it is `Bearer <token>` for one configured reference's current value, else null. Every reference is resolved fresh
  * from the store on every call, only when a bearer token was supplied, and each is compared as fixed-length digests in
  * constant time; no value is returned, logged or cached. A reference the store cannot tell about, an unresolved
- * reference or an empty value matches nothing, exactly like a wrong token: this never opens access.
+ * reference or an empty value matches nothing, exactly like a wrong token, and so does a value held under more than
+ * one reference: this never opens access.
  */
 export function campaignApiAuthorized(settings, authorization, { store = null } = {}) {
   if (!settings?.enabled || !Array.isArray(settings.tokens)) return null;
@@ -71,13 +72,15 @@ export function campaignApiAuthorized(settings, authorization, { store = null } 
   const supplied = digest(match[1]);
   let source = store;
   try { source ??= tokenStoreFrom(settings.credentialStore); } catch { return null; }
-  let caller = null;
+  // Every reference is checked, with no early exit. Two references holding the same value cannot say which project the
+  // caller is, so that matches nothing rather than whichever is listed first.
+  const callers = [];
   for (const { tokenRef, projectId } of settings.tokens) {
     let expected = null;
     try { expected = readToken(source, tokenRef); } catch { expected = null; }
-    if (expected && timingSafeEqual(supplied, digest(expected)) && caller === null) caller = { tokenRef, projectId };
+    if (expected && timingSafeEqual(supplied, digest(expected))) callers.push({ tokenRef, projectId });
   }
-  return caller;
+  return callers.length === 1 ? callers[0] : null;
 }
 
 const remoteFail = (status, code, message) => Object.assign(new Error(message), { status, code });

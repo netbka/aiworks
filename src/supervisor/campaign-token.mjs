@@ -86,20 +86,39 @@ export function configuredTokenRefs(raw) {
 
 const sameStore = (a, b) => JSON.stringify(a ?? { kind: 'windows' }) === JSON.stringify(b ?? { kind: 'windows' });
 
+const projectRef = (ref) => ref.startsWith(`${CAMPAIGN_TOKEN_PREFIX}:`) && PROJECT_ID.test(ref.slice(CAMPAIGN_TOKEN_PREFIX.length + 1));
+
 /**
- * Add `ref` to `config.json` `campaignApi`, keeping every other project's reference already there, so issuing one
- * project's token never switches another's off. One reference is written as `{ enabled: true, tokenRef: ref }`, the
- * shape every installation understands; several as `{ enabled: true, tokenRefs: [...] }`. `credentialStore` is the
- * caller's, else the one already configured; the API listener port is preserved. Nothing about the project id is
- * stored here; config.json never holds a secret value (AGENTS.md: "configuration holds executable paths and repository
- * paths, never secret values").
+ * The existing `campaignApi` (`{}` when absent) and which of its references `ref` joins: `kept`, the other projects'
+ * references, carried over only while the API is enabled; `dropped`, its enabled references not tied to a project,
+ * which reach every repository and so are never kept beside a project's token. A `campaignApi` that is not an object,
+ * or names a malformed reference, refuses (CONFIG_INVALID) rather than being rewritten around.
+ */
+function currentCampaignApi(config, ref) {
+  const current = config.campaignApi;
+  if (current === undefined) return { current: {}, kept: [], dropped: [] };
+  const invalid = () => new CampaignError('CONFIG_INVALID', 'config.json campaignApi is malformed; fix it before creating a campaign API token');
+  if (!current || typeof current !== 'object' || Array.isArray(current)) throw invalid();
+  const known = current.tokenRef === undefined && current.tokenRefs === undefined ? [] : configuredTokenRefs(current);
+  if (known === null) throw invalid();
+  const active = current.enabled === true ? known.filter((existing) => existing !== ref) : [];
+  return { current, kept: active.filter(projectRef), dropped: active.filter((existing) => !projectRef(existing)) };
+}
+
+/**
+ * Add `ref` to `config.json` `campaignApi`, keeping every other project's reference already there while the API is
+ * enabled, so issuing one project's token never switches another's off; a reference not tied to a project is dropped
+ * (it would reach every repository), and a switched-off API comes back with `ref` alone. One reference is written as
+ * `{ enabled: true, tokenRef: ref }`, the shape every installation understands; several as `{ enabled: true, tokenRefs:
+ * [...] }`. `credentialStore` is the caller's, else the one already configured; the API listener port is preserved.
+ * Nothing about the project id is stored here; config.json never holds a secret value (AGENTS.md: "configuration holds
+ * executable paths and repository paths, never secret values").
  */
 export function applyCampaignApiConfig(dataDir, ref, { credentialStoreSpec } = {}) {
   const configFile = join(dataDir, 'config.json');
   const config = readConfig(dataDir);
-  const current = config.campaignApi && typeof config.campaignApi === 'object' && !Array.isArray(config.campaignApi) ? config.campaignApi : {};
-  const known = configuredTokenRefs(current) ?? [];
-  const refs = known.includes(ref) ? known : [...known, ref];
+  const { current, kept } = currentCampaignApi(config, ref);
+  const refs = [...kept, ref];
   const store = credentialStoreSpec ?? current.credentialStore;
   config.campaignApi = { enabled: true, ...(refs.length === 1 ? { tokenRef: ref } : { tokenRefs: refs }), ...(store ? { credentialStore: store } : {}),
     ...(current.port === undefined ? {} : { port: current.port }) };
@@ -113,9 +132,9 @@ export function applyCampaignApiConfig(dataDir, ref, { credentialStoreSpec } = {
  * is there yet to rotate (TOKEN_NOT_FOUND: use create first). Either way the fresh random value replaces or creates
  * the store entry and its reference is added to `config.json` `campaignApi` beside the other projects' references
  * (rotate replaces only this project's value), unless `applyConfig: false` -- for a caller that
- * would rather print the exact patch than touch config.json itself. Returns `{ projectId, ref, rotated, config }`,
- * `config` being the resulting `campaignApi` setting (or null when `applyConfig: false`); the token value is never
- * part of the return.
+ * would rather print the exact patch than touch config.json itself. Returns `{ projectId, ref, rotated, config,
+ * dropped }`, `config` being the resulting `campaignApi` setting (or null when `applyConfig: false`) and `dropped` the
+ * references not tied to a project that it switched off; the token value is never part of the return.
  */
 export function issueCampaignToken(projectId, { governanceRoot, dataDir, rotate = false, credentialStoreSpec, applyConfig = true, randomToken = () => randomBytes(32).toString('base64url') } = {}) {
   assertRegisteredProjectId(projectId, governanceRoot);
@@ -123,15 +142,14 @@ export function issueCampaignToken(projectId, { governanceRoot, dataDir, rotate 
   // config.json is checked before the store is written, so a refusal leaves both untouched. Every configured reference
   // resolves from the one configured store, so a token is written there unless the caller names a store, and naming a
   // different one while other projects' tokens are configured would cut them off.
-  let storeSpec = credentialStoreSpec;
+  let storeSpec = credentialStoreSpec, dropped = [];
   if (applyConfig) {
-    const current = readConfig(dataDir).campaignApi;
-    const others = (configuredTokenRefs(current) ?? []).filter((existing) => existing !== ref);
-    const configured = current && typeof current === 'object' && !Array.isArray(current) ? current.credentialStore : undefined;
-    if (credentialStoreSpec && others.length && !sameStore(credentialStoreSpec, configured)) {
+    const { current, kept, dropped: unscoped } = currentCampaignApi(readConfig(dataDir), ref);
+    if (credentialStoreSpec && kept.length && !sameStore(credentialStoreSpec, current.credentialStore)) {
       throw new CampaignError('CREDENTIAL_STORE_MISMATCH', `config.json campaignApi already names other tokens in a different credential store; issue ${ref} into that store`);
     }
-    storeSpec = credentialStoreSpec ?? configured;
+    storeSpec = credentialStoreSpec ?? current.credentialStore;
+    dropped = unscoped;
   }
   const store = tokenStoreFrom(storeSpec);
   let existed;
@@ -141,5 +159,5 @@ export function issueCampaignToken(projectId, { governanceRoot, dataDir, rotate 
   if (!existed && rotate) throw new CampaignError('TOKEN_NOT_FOUND', `${ref} does not exist yet; run campaign-token create ${projectId} first`);
   store.set(ref, randomToken());
   const config = applyConfig ? applyCampaignApiConfig(dataDir, ref, { credentialStoreSpec: storeSpec }) : null;
-  return { projectId, ref, rotated: existed, config };
+  return { projectId, ref, rotated: existed, config, dropped };
 }
