@@ -35,12 +35,13 @@ function rawRequest(origin, path, { method = 'GET', headers = {}, body } = {}) {
   });
 }
 
-/** A synthetic credential helper command (token-store.mjs commandTokenStore's contract) holding one value. */
-function tokenHelper(t, { ref = 'aiworks-campaign-api', value = `synthetic-campaign-token-${randomUUID()}` } = {}) {
+/** A synthetic credential helper command (token-store.mjs commandTokenStore's contract) holding one value, plus any
+ * `more` references. */
+function tokenHelper(t, { ref = 'aiworks-campaign-api', value = `synthetic-campaign-token-${randomUUID()}`, more = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'aiworks-campaign-token-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const vault = join(dir, 'vault.json');
-  writeFileSync(vault, JSON.stringify({ [ref]: value }));
+  writeFileSync(vault, JSON.stringify({ ...more, [ref]: value }));
   writeFileSync(join(dir, 'helper.mjs'), `import { readFileSync } from 'node:fs';
 const [vault, op, name] = process.argv.slice(2);
 const value = JSON.parse(readFileSync(vault, 'utf8'))[name];
@@ -276,6 +277,36 @@ test('a token under the standard reference of a project reaches only the campaig
   });
 });
 
+test('with two project tokens active at once, each reaches only its own project\'s campaigns', async (t) => {
+  const wikiValue = `synthetic-campaign-token-${randomUUID()}`;
+  const app = tokenHelper(t, { ref: 'aiworks-campaign-api:sampleapp', more: { 'aiworks-campaign-api:sample-wiki': wikiValue } });
+  const dataDir = fixture(t, { campaignApi: { enabled: true, tokenRefs: ['aiworks-campaign-api:sample-wiki', app.ref],
+    credentialStore: { kind: 'command', command: app.command } } });
+  const runtime = runtimeCheckout();
+  t.after(() => runtime.cleanup());
+  const { post, get } = await serve(t, dataDir, { provenanceRoot: runtime.root });
+  const wikiAuth = { authorization: `Bearer ${wikiValue}` }, appAuth = { authorization: `Bearer ${app.value}` };
+  const base = declaration({ campaignId: `wiki-${randomUUID()}` });
+  const wiki = { ...base, target: { ...base.target, repository: 'example-org/sample-wiki', projectId: 'sample-wiki' } };
+  const appCampaign = declaration({ campaignId: `app-${randomUUID()}` }); // example-org/sampleapp
+  assert.equal((await post('/api/campaigns', wiki, wikiAuth)).status, 201);
+  assert.equal((await post('/api/campaigns', appCampaign, appAuth)).status, 201);
+  for (const [auth, own, foreign] of [[wikiAuth, wiki, appCampaign], [appAuth, appCampaign, wiki]]) {
+    assert.equal((await get(`/api/campaigns/${own.campaignId}/status`, auth)).status, 200);
+    assert.equal((await get(`/api/campaigns/${own.campaignId}/report`, auth)).status, 200);
+    const refused = await post('/api/campaigns', foreign, auth);
+    assert.equal(refused.status, 403, 'nor may it amend or register another project\'s campaign');
+    assert.equal((await refused.json()).code, 'TOKEN_OUT_OF_SCOPE');
+    assert.equal((await get(`/api/campaigns/${foreign.campaignId}/status`, auth)).status, 404);
+    assert.equal((await get(`/api/campaigns/${foreign.campaignId}/report`, auth)).status, 404);
+  }
+  const store = new Store(join(dataDir, 'supervisor.db'), { readOnly: true });
+  try {
+    assert.deepEqual(store.campaign(wiki.campaignId).declaration, wiki);
+    assert.deepEqual(store.campaign(appCampaign.campaignId).declaration, appCampaign);
+  } finally { store.close(); }
+});
+
 test('the bearer token is accepted only in the Authorization header, never as the session secret or a query parameter', async (t) => {
   const token = tokenHelper(t);
   const dataDir = fixture(t, { campaignApi: { enabled: true, tokenRef: token.ref, credentialStore: { kind: 'command', command: token.command } } });
@@ -298,13 +329,16 @@ test('the bearer token is accepted only in the Authorization header, never as th
 test('a token store that cannot tell, or holds no value, refuses like a wrong token; off refuses a matching token', () => {
   const settings = campaignApiSettings({ campaignApi: { enabled: true, tokenRef: 'aiworks-campaign-api:sample-wiki' } });
   const holding = (value) => ({ get: () => value });
-  assert.equal(campaignApiAuthorized(settings, 'Bearer synthetic-value', { store: holding('synthetic-value') }), true);
-  assert.equal(campaignApiAuthorized(settings, 'Bearer synthetic-value', { store: { get: () => { throw new Error('locked'); } } }), false);
-  assert.equal(campaignApiAuthorized(settings, 'Bearer ', { store: holding('') }), false);
-  assert.equal(campaignApiAuthorized(settings, 'Bearer x', { store: holding(null) }), false);
+  assert.deepEqual(campaignApiAuthorized(settings, 'Bearer synthetic-value', { store: holding('synthetic-value') }),
+    { tokenRef: 'aiworks-campaign-api:sample-wiki', projectId: 'sample-wiki' });
+  assert.equal(campaignApiAuthorized(settings, 'Bearer synthetic-value', { store: { get: () => { throw new Error('locked'); } } }), null);
+  assert.equal(campaignApiAuthorized(settings, 'Bearer ', { store: holding('') }), null);
+  assert.equal(campaignApiAuthorized(settings, 'Bearer x', { store: holding(null) }), null);
   for (const config of [{}, { campaignApi: { enabled: 'true', tokenRef: 'aiworks-campaign-api:sample-wiki' } },
     { campaignApi: { enabled: true, tokenRef: 'aiworks-campaign-api:sample-wiki', extra: 1 } },
-    { campaignApi: { enabled: true, tokenRef: 'aiworks-campaign-api:Not Valid' } }]) {
-    assert.equal(campaignApiAuthorized(campaignApiSettings(config), 'Bearer synthetic-value', { store: holding('synthetic-value') }), false, JSON.stringify(config));
+    { campaignApi: { enabled: true, tokenRef: 'aiworks-campaign-api:Not Valid' } },
+    { campaignApi: { enabled: true, tokenRefs: ['aiworks-campaign-api:sample-wiki', 'aiworks-campaign-api:Not Valid'] } },
+    { campaignApi: { enabled: true, tokenRefs: [] } }]) {
+    assert.equal(campaignApiAuthorized(campaignApiSettings(config), 'Bearer synthetic-value', { store: holding('synthetic-value') }), null, JSON.stringify(config));
   }
 });

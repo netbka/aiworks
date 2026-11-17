@@ -114,11 +114,13 @@ const USAGE = `Usage: node src/supervisor/cli.mjs <command> [--data <dir>] [--go
                                         (registry/projects/<projectId>.json must exist in the governance checkout).
                                         A fresh random value is written to the operator's credential store under the
                                         standard reference aiworks-campaign-api:<projectId> (token-store.mjs:
-                                        the Windows Credential Manager by default); config.json campaignApi is then
-                                        pointed at it. The value is never printed: only the reference it was stored
+                                        the Windows Credential Manager by default); its reference is then added to
+                                        config.json campaignApi beside other projects' tokens, which stay active.
+                                        The value is never printed: only the reference it was stored
                                         under. Refused (TOKEN_ALREADY_EXISTS) if one already exists; use rotate instead
     --rotate                            same as campaign-token rotate: replace an existing token instead of refusing
-  campaign-token rotate <projectId>     replace an existing token the same way (TOKEN_NOT_FOUND if none exists yet)
+  campaign-token rotate <projectId>     replace that project's existing token the same way; other projects' tokens are
+                                        untouched (TOKEN_NOT_FOUND if none exists yet)
 The data directory defaults to AIWORKS_DATA and holds config.json, supervisor.db, runs/ and supervisor.log.
 The governance checkout (an operator-configured read-only directory) is --governance, else config.json "governanceRoot".`;
 
@@ -416,7 +418,7 @@ try {
       // executable paths and repository paths, never secret values"): only the reference it now lives under.
       console.log(`campaign-api token ${result.rotated ? 'rotated' : 'created'} for ${result.projectId}: stored under credential reference ${result.ref}`);
       console.log('the value itself is not printed; read it from the credential store (Windows Credential Manager, or your configured command helper) when you need it');
-      console.log(`config.json campaignApi now points at it: ${JSON.stringify(result.config)}`);
+      console.log(`config.json campaignApi now names it: ${JSON.stringify(result.config)}`);
     }
   }
   else { console.error(USAGE); process.exitCode = 2; }
