@@ -125,11 +125,11 @@ Do not change anything in the project itself. Tell me where I confirm the rules.
 Show me the AIWorks plugins from docs/plugins/README.md: what each one does, which
 are already on, and what each one needs. Let me choose.
 Turn on the ones I choose. For secrets, write only the reference names and tell me which
-values I must put into the secret store myself. Do not ask me for the values.
+lines I must type into .env myself. Do not ask me for the values.
 Then check each plugin that is on and show me the result.
 ```
 
-**You will be asked to:** choose which plugins you want, and enter the secrets. You enter the secrets yourself, and the assistant never sees them.
+**You will be asked to:** choose which plugins you want, and enter the secrets. You type the secrets into the `.env` file yourself, and the assistant never sees them. Windows Credential Manager, Infisical and other stores are [optional](docs/setup/README.md#where-secrets-live).
 **You get:** a list of "turned on and checked".
 
 ### 4. First task
@@ -189,6 +189,7 @@ A plugin is a capability that connects AIWorks to something outside it. Each one
 | [Tasks through the API](docs/plugins/README.md#tasks-through-the-api) | Your tracker or service submits tasks and picks up reports itself | Built, off |
 | [Telegram alerts](docs/plugins/README.md#telegram-alerts) | A message when something is blocked | Built, not tested with a live bot |
 | [Website checks in a browser](docs/plugins/README.md#website-checks-in-a-browser) | An agent opens the page and checks it with its own eyes | Built, not tested on a real project |
+| [Sign-in to web systems](docs/plugins/README.md#sign-in-to-web-systems) | An agent works in the web interface of your CRM or admin panel under a separate account | Built, off |
 | [Parallel work](docs/plugins/README.md#parallel-work) | Several tasks at once, with care for the computer's load | Built, off |
 
 ---
@@ -222,6 +223,17 @@ Day to day, you do not type commands. You look at the dashboard on your computer
 | Write to your assistant in words | The main way |
 | The **Start work** button in the dashboard | When the assistant is not open |
 | An outside system through the [API](docs/plugins/README.md#tasks-through-the-api) | When tasks are born in a tracker, not in a person's head |
+
+### When a task needs a sign-in to another system
+
+Sometimes the work has to be done in the web interface of another system: fixing records in a CRM, checking screens in an admin panel. The password is never handed to the agent.
+
+1. 🙋 You create a separate account for AIWorks with the fewest rights it needs, and type its username and password into `.env`.
+2. The assistant describes in the settings what the sign-in looks like in that system: the page, the fields, the button.
+3. 🙋 If the agent must change things, not only look, you allow the system's address for the project.
+4. Before each run, AIWorks signs in itself in a separate browser and hands the agent a browser that is already signed in. The agent sees neither the password nor the sign-in form.
+
+Details are in the [Sign-in to web systems plugin](docs/plugins/README.md#sign-in-to-web-systems).
 
 ## Honest limits
 

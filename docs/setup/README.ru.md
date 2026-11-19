@@ -96,6 +96,7 @@ Copy-Item "$Root/docs/guides/examples/config.example.json" "$Data/config.json"
 ```json
 {
   "governanceRoot": "C:/Work/aiworks/.local/governance",
+  "envFile": "C:/Work/aiworks/.local/supervisor/.env",
   "repositories": {},
   "commands": {
     "claude": ["C:/Tools/Claude/claude.exe"],
@@ -105,7 +106,7 @@ Copy-Item "$Root/docs/guides/examples/config.example.json" "$Data/config.json"
 }
 ```
 
-В `config.json` только пути и переключатели. Секретов там не бывает никогда.
+В `config.json` только пути и переключатели. Секретов там не бывает никогда: они лежат в `.env` рядом, о нём — [на слое 5](#где-хранятся-секреты).
 
 **Первый запуск** — сначала вручную, чтобы увидеть ошибки, в двух окнах из рабочей копии:
 
@@ -212,22 +213,48 @@ node src/supervisor/cli.mjs messages --data C:/Work/aiworks/.local/supervisor
 
 ### Где хранятся секреты
 
-Токены, ключи ботов и пароли сервисов не пишутся в `config.json`. Там только **имя-ссылка**, а значение лежит в хранилище секретов. AIWorks достаёт его в момент запроса и никуда не передаёт: агенты-исполнители его не видят.
+Токены, ключи ботов, логины и пароли сервисов не пишутся в `config.json`. Там только **имя-ссылка**, а значение лежит в хранилище секретов. AIWorks читает одно значение в тот момент, когда оно нужно, и никуда его не передаёт. Агенты-исполнители его не видят.
 
-| Хранилище | Когда подходит |
-| --- | --- |
-| Диспетчер учётных данных Windows | По умолчанию. Ничего дополнительно ставить не нужно |
-| [Infisical](https://infisical.com) через `scripts/infisical-credential-helper.mjs` | Если секреты уже живут там или нужны на нескольких компьютерах |
-
-🙋 **Что делаете вы:** кладёте значение секрета в хранилище сами. Ассистент только говорит, под каким именем.
+**По умолчанию это обычный файл `.env`** в папке данных: `.local/supervisor/.env`. В Git он не попадает, а в окружение AIWorks не загружается целиком — значения читаются по одному.
 
 ```powershell
-# Пример: токен Telegram-бота в Диспетчере учётных данных Windows.
-# Значение команда спросит сама, в истории оно не останется.
-cmdkey /generic:aiworks-alerts/bot /user:aiworks /pass
+Copy-Item C:/Work/aiworks/docs/guides/examples/secrets.env.example C:/Work/aiworks/.local/supervisor/.env
+notepad C:/Work/aiworks/.local/supervisor/.env
 ```
 
-> В планах — файл `.env` как ещё один вариант хранилища, с той же защитой: агенты значения не видят.
+Имя строки в `.env` — это ссылка из `config.json` большими буквами, где всё, кроме букв и цифр, заменено на `_`:
+
+```dotenv
+# ссылка aiworks-alerts/bot
+AIWORKS_ALERTS_BOT=123456:ABC-пример
+# ссылка example-crm-password
+EXAMPLE_CRM_PASSWORD="пароль с пробелами в кавычках"
+```
+
+В `config.json` путь к файлу указывается один раз сверху (`"envFile"`), а в блоках плагинов — как хранилище:
+
+```json
+"envFile": "C:/Work/aiworks/.local/supervisor/.env",
+"campaignApi": {
+  "enabled": true,
+  "tokenRefs": ["aiworks-campaign-api:your-project"],
+  "credentialStore": { "kind": "env-file", "path": "C:/Work/aiworks/.local/supervisor/.env" }
+}
+```
+
+🙋 **Что делаете вы:** вписываете значения в `.env` сами. Ассистент только говорит, какие строки нужны. Значения в чат не отправляйте.
+
+#### Другие хранилища — по желанию
+
+Если секреты у вас уже живут в другом месте, AIWorks может брать их оттуда. Это не обязательно: `.env` достаточно.
+
+| Хранилище | Настройка блока | Когда удобно |
+| --- | --- | --- |
+| Диспетчер учётных данных Windows | `{ "kind": "windows" }`; значение: `cmdkey /generic:<ссылка> /user:aiworks /pass` | Секреты привязаны к учётной записи Windows и не лежат файлом на диске |
+| [Infisical](https://infisical.com) | `{ "kind": "command", "command": ["node", "scripts/infisical-credential-helper.mjs", "--project", "<id>", "--environment", "prod"] }` | Секреты общие для нескольких компьютеров или команды; имена ключей те же, что в `.env` |
+| Любой другой сервис (1Password, Bitwarden, Vault…) | `{ "kind": "command", "command": [<ваша команда>] }` | Нужна небольшая команда-помощник: `get <ссылка>` печатает значение, `has` и `set` — по [описанию протокола](../SUPERVISOR.md#16-external-campaign-api-off-by-default) |
+
+Блок без `credentialStore` по-прежнему читает Диспетчер Windows — так работают установки, сделанные до появления `.env`. Для уведомлений в Telegram хранилище выбирается приставкой ссылки: `env:`, `windows:` или `helper:`.
 
 ---
 
@@ -266,6 +293,10 @@ node src/supervisor/cli.mjs stop @D                                  # оста�
 ```
 
 План — это ваш личный файл в `.local/campaigns/`, он не попадает в Git. Формат описан в `src/supervisor/campaign.mjs`, примеры — в `tests/fixtures/campaigns/`. Все команды — в [справочнике](../guides/CLI_REFERENCE.md).
+
+#### Задача в веб-интерфейсе другой системы
+
+Если работу нужно сделать в чужой системе через браузер — CRM, админке, учётной системе, — пароль агенту не передаётся. Вы вписываете логин и пароль отдельной учётной записи в `.env`, ассистент описывает вход в настройках, и перед каждым запуском AIWorks сам входит в систему и отдаёт агенту уже вошедший браузер. Для изменений, а не только просмотра, нужно ваше разрешение на адрес системы. Всё по шагам — в [плагине «Вход в системы через браузер»](../plugins/README.ru.md#вход-в-системы-через-браузер).
 
 **Обновление AIWorks** — одной командой из чистой копии исходников на проверенной версии:
 

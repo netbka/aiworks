@@ -89,7 +89,7 @@ The principle: **the system works for the owner, not the owner for the system.**
 | Rules and the list of allowed projects | `.local/governance` | No |
 | Your plans | `.local/campaigns` | No |
 | Project copies for agents | `.local/worktrees` | No |
-| Secrets | The secret store | Never |
+| Secrets | `.local/supervisor/.env`, or another store of your choice | Never |
 
 Everything of yours stays on your computer. No plans, settings or logs reach the public repository. A separate check verifies this on every commit.
 

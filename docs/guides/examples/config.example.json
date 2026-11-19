@@ -1,5 +1,6 @@
 {
   "governanceRoot": "C:/Work/aiworks/.local/governance",
+  "envFile": "C:/Work/aiworks/.local/supervisor/.env",
   "repositories": {
     "example/project": {
       "path": "C:/Work/project",
@@ -7,13 +8,21 @@
     }
   },
   "commands": {
-    "claude": ["C:/Tools/Claude/claude.exe"],
-    "git": ["C:/Program Files/Git/cmd/git.exe"],
-    "gh": ["C:/Program Files/GitHub CLI/gh.exe"]
+    "claude": [
+      "C:/Tools/Claude/claude.exe"
+    ],
+    "git": [
+      "C:/Program Files/Git/cmd/git.exe"
+    ],
+    "gh": [
+      "C:/Program Files/GitHub CLI/gh.exe"
+    ]
   },
   "coordinator": {
     "enabled": false,
-    "repositories": ["example/project"],
+    "repositories": [
+      "example/project"
+    ],
     "reportTo": "example/project#1",
     "model": "opus",
     "permissionMode": "dontAsk",

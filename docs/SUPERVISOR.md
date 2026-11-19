@@ -1113,7 +1113,7 @@ A task that declares `web` is a web acceptance task: a browser worker opens the 
 - **Browser pre-login.** A failure before the form is submitted (Chrome connection, login page, credential store) is tried once more after a random pause of 5 to 15 s; a submitted login is never repeated. The reason is in the run's Claude MCP log, `mcp-logs-browser`. `config.json` may supply `browserLogin: { credentialStore, profiles: [...] }`. A profile
   names an exact `origin`, a same-origin `loginUrl`, `usernameRef`, `passwordRef`, and CSS selectors
   `usernameSelector`, `passwordSelector`, `submitSelector`, `successSelector`. The credential store has the same
-  Windows/command contract as the campaign API; the Infisical helper in section 16 can serve it. For example, a
+  env-file/Windows/command contract as the campaign API; the Infisical helper in section 16 can serve it. For example, a
   profile for `https://dev.example.invalid` can use references `sampleapp-dev-user` and `sampleapp-dev-password`,
   login URL `https://dev.example.invalid/login`, and selectors `input[name=user]`, `input[type=password]`,
   `button[type=submit]`, and `#signed-in`. Keep each production origin in its own profile and use its own references.
@@ -1356,7 +1356,7 @@ browser session. The exemption exists only while the API is enabled, for exactly
 no CORS answer; every other dashboard route retains its Host, Origin, CSRF and caller checks.
 
 - **The switch.** `config.json` `"campaignApi": { "enabled": true, "tokenRef"?: "<name>", "tokenRefs"?: ["<name>",
-  ...], "credentialStore"?: { "kind": "windows" } | { "kind": "command", "command": [...] }, "port"?: <number> }`, naming
+  ...], "credentialStore"?: { "kind": "env-file", "path": "<absolute .env path>" } | { "kind": "windows" } | { "kind": "command", "command": [...] }, "port"?: <number> }`, naming
   at least one reference: a single `tokenRef` (the shape older installations use, still accepted unchanged), a
   `tokenRefs` list of several tokens active at once (one per project), or both. Absent, malformed, `enabled` not
   exactly `true`, or any invalid reference, store or port leaves it off. All references resolve from the one

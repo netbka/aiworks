@@ -52,7 +52,8 @@ const RESERVED_HEADERS = new Set(['authorization', 'host', 'content-type', 'cont
 const CREDENTIAL_VALUE = /^[\x21\x23-\x5b\x5d-\x7e](?:[\x20\x21\x23-\x5b\x5d-\x7e]{0,4094}[\x21\x23-\x5b\x5d-\x7e])?$/;
 const validStoreSpec = (store) => store === undefined || (store && typeof store === 'object' && !Array.isArray(store) &&
   (store.kind === 'windows' || (store.kind === 'command' && Array.isArray(store.command) && store.command.length > 0 &&
-    store.command.every((part) => typeof part === 'string' && part))));
+    store.command.every((part) => typeof part === 'string' && part)) ||
+    (store.kind === 'env-file' && typeof store.path === 'string' && store.path.length > 0 && isAbsolute(store.path))));
 /**
  * `sources: true` sends a bundle of the commits origin lacks, only for a commit origin does not have; `sources: "full"`
  * always sends a self-contained bundle of the commit (every object it reaches), for a service whose copy of the
@@ -104,7 +105,7 @@ function authProblem(auth) {
   if (!validTokenRef(auth.tokenRef) || !auth.tokenRef.startsWith(`${CHECK_SERVICE_TOKEN_PREFIX}:`) || auth.tokenRef.length <= CHECK_SERVICE_TOKEN_PREFIX.length + 1) {
     return `needs auth.tokenRef, a credential reference ${CHECK_SERVICE_TOKEN_PREFIX}:<name>`;
   }
-  if (!validStoreSpec(auth.credentialStore)) return 'has auth.credentialStore that is neither { "kind": "windows" } nor { "kind": "command", "command": [...] }';
+  if (!validStoreSpec(auth.credentialStore)) return 'has auth.credentialStore that is not { "kind": "windows" }, { "kind": "command", "command": [...] } or { "kind": "env-file", "path": "<absolute path>" }';
   return null;
 }
 

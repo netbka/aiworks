@@ -96,6 +96,7 @@ The assistant replaces every example in `config.json` with real paths. A minimal
 ```json
 {
   "governanceRoot": "C:/Work/aiworks/.local/governance",
+  "envFile": "C:/Work/aiworks/.local/supervisor/.env",
   "repositories": {},
   "commands": {
     "claude": ["C:/Tools/Claude/claude.exe"],
@@ -105,7 +106,7 @@ The assistant replaces every example in `config.json` with real paths. A minimal
 }
 ```
 
-`config.json` holds only paths and switches. It never holds secrets.
+`config.json` holds only paths and switches. It never holds secrets: they live next to it in `.env`, see [layer 5](#where-secrets-live).
 
 **First start.** Do it by hand first, so you can see any errors. Use two windows, from the working copy:
 
@@ -212,22 +213,48 @@ Project settings can only add protection and limits. They cannot widen the agent
 
 ### Where secrets live
 
-Tokens, bot keys and service passwords are never written to `config.json`. It holds only a **reference name**, and the value lives in the secret store. AIWorks fetches it at the moment of the request and passes it nowhere else. The builder agents never see it.
+Tokens, bot keys, logins and service passwords are never written to `config.json`. It holds only a **reference name**, and the value lives in the secret store. AIWorks reads one value at the moment it needs it and passes it nowhere else. The builder agents never see it.
 
-| Store | When it fits |
-| --- | --- |
-| Windows Credential Manager | The default. Nothing extra to install |
-| [Infisical](https://infisical.com) through `scripts/infisical-credential-helper.mjs` | If your secrets already live there, or you need them on several computers |
-
-🙋 **What you do:** you put the secret's value into the store yourself. The assistant only tells you under which name.
+**By default this is a plain `.env` file** in the data folder: `.local/supervisor/.env`. It never goes into Git, and AIWorks never loads it into its environment as a whole: values are read one at a time.
 
 ```powershell
-# Example: a Telegram bot token in Windows Credential Manager.
-# The command asks for the value itself, so it stays out of your history.
-cmdkey /generic:aiworks-alerts/bot /user:aiworks /pass
+Copy-Item C:/Work/aiworks/docs/guides/examples/secrets.env.example C:/Work/aiworks/.local/supervisor/.env
+notepad C:/Work/aiworks/.local/supervisor/.env
 ```
 
-> Planned: a `.env` file as one more kind of store, with the same protection: agents do not see the values.
+The name of a line in `.env` is the reference from `config.json` in capital letters, with everything except letters and digits turned into `_`:
+
+```dotenv
+# reference aiworks-alerts/bot
+AIWORKS_ALERTS_BOT=123456:ABC-example
+# reference example-crm-password
+EXAMPLE_CRM_PASSWORD="a password with spaces, in quotes"
+```
+
+In `config.json` the file's path is given once at the top (`"envFile"`), and in plugin blocks as their store:
+
+```json
+"envFile": "C:/Work/aiworks/.local/supervisor/.env",
+"campaignApi": {
+  "enabled": true,
+  "tokenRefs": ["aiworks-campaign-api:your-project"],
+  "credentialStore": { "kind": "env-file", "path": "C:/Work/aiworks/.local/supervisor/.env" }
+}
+```
+
+🙋 **What you do:** you type the values into `.env` yourself. The assistant only tells you which lines are needed. Do not send the values in chat.
+
+#### Other stores, if you want them
+
+If your secrets already live somewhere else, AIWorks can take them from there. This is optional: `.env` is enough.
+
+| Store | Block setting | When it fits |
+| --- | --- | --- |
+| Windows Credential Manager | `{ "kind": "windows" }`; value: `cmdkey /generic:<reference> /user:aiworks /pass` | Secrets tied to your Windows account, not lying in a file on disk |
+| [Infisical](https://infisical.com) | `{ "kind": "command", "command": ["node", "scripts/infisical-credential-helper.mjs", "--project", "<id>", "--environment", "prod"] }` | Secrets shared by several computers or a team; key names are the same as in `.env` |
+| Any other service (1Password, Bitwarden, Vault…) | `{ "kind": "command", "command": [<your command>] }` | Needs a small helper command: `get <reference>` prints the value; `has` and `set` follow [the protocol](../SUPERVISOR.md#16-external-campaign-api-off-by-default) |
+
+A block without `credentialStore` still reads Windows Credential Manager: that is how installations made before `.env` work. For Telegram alerts the store is chosen by the reference's prefix: `env:`, `windows:` or `helper:`.
 
 ---
 
@@ -266,6 +293,10 @@ node src/supervisor/cli.mjs stop @D                                  # stop AIWo
 ```
 
 A plan is your own private file in `.local/campaigns/`. It never goes into Git. The format is described in `src/supervisor/campaign.mjs`, and examples are in `tests/fixtures/campaigns/`. All commands are in the [reference](../guides/CLI_REFERENCE.md).
+
+#### A task in another system's web interface
+
+If the work has to be done in another system through a browser (a CRM, an admin panel, an accounting system), the password never reaches the agent. You type the username and password of a separate account into `.env`, the assistant describes the sign-in in the settings, and before each run AIWorks signs in itself and hands the agent a browser that is already signed in. Making changes, not only looking, needs your permission for the system's address. Step by step in the [Sign-in to web systems plugin](../plugins/README.md#sign-in-to-web-systems).
 
 **Updating AIWorks** takes one command, run from a clean copy of the source at a verified version:
 

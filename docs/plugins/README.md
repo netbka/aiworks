@@ -17,9 +17,10 @@ Every plugin below has the same passport: **why** it exists, **when** to turn it
 | [Tasks through the API](#tasks-through-the-api) | Your tracker, CRM or own service | Built, off |
 | [Telegram alerts](#telegram-alerts) | Your Telegram | Built, not tested with a live bot |
 | [Website checks in a browser](#website-checks-in-a-browser) | Chrome or AGY | Built, not tested on a real project |
+| [Sign-in to web systems](#sign-in-to-web-systems) | The web interface of your CRM, admin panel or accounting system | Built, off |
 | [Parallel work](#parallel-work) | Your computer's resources | Built, off |
 
-**Secrets** (tokens, keys, service passwords) are never written to `config.json`. It holds only a reference name, and the value lives in the secret store: by default, Windows Credential Manager. You put the value there yourself, and the assistant never sees it. More in the [setup by layers](../setup/README.md#where-secrets-live).
+**Secrets** (tokens, keys, service passwords) are never written to `config.json`. It holds only a reference name, and the value lives in the secret store: by default, the file `.local/supervisor/.env`. You type the value in yourself, and the assistant never sees it. Windows Credential Manager, Infisical and other services are optional. More in the [setup by layers](../setup/README.md#where-secrets-live).
 
 **After any edit to `config.json`** the supervisor must be restarted. If work is running, use the [update](../setup/README.md#layer-6-work) (`npm run rebuild`), which pauses the work first.
 
@@ -252,13 +253,17 @@ to put it into the secret store. Restart the supervisor.
 
 Authorization is the header `Authorization: Bearer <token>`.
 
-**config.json.** The token-issuing command adds the block itself:
+**config.json.** Write `credentialStore` first; the token-issuing command adds the rest itself:
 
 ```json
-"campaignApi": { "enabled": true, "tokenRefs": ["aiworks-campaign-api:your-project"] }
+"campaignApi": {
+  "enabled": true,
+  "tokenRefs": ["aiworks-campaign-api:your-project"],
+  "credentialStore": { "kind": "env-file", "path": "C:/Work/aiworks/.local/supervisor/.env" }
+}
 ```
 
-**Secrets.** The token is created by a command and goes straight into the secret store. It is never shown on screen. You take it from there for your system.
+**Secrets.** The token is created by a command and written straight into `.env` as the line `AIWORKS_CAMPAIGN_API_<PROJECT>`. It is never shown on screen. You take it from there for your system.
 
 ```powershell
 node src/supervisor/cli.mjs campaign-token create <projectId> --data <data>   # issue
@@ -269,7 +274,7 @@ node src/supervisor/cli.mjs campaign-token rotate <projectId> --data <data>   # 
 
 ```text
 Turn on tasks through the API in AIWorks for the project <name>. Issue a token with the
-campaign-token create command, check the campaignApi block in config.json and restart the supervisor.
+campaign-token create command with the env-file store in campaignApi, check the campaignApi block in config.json and restart the supervisor.
 Tell me where the token is kept and which address to give my system. Do not write the token itself in the chat.
 ```
 
@@ -294,25 +299,26 @@ Tell me where the token is kept and which address to give my system. Do not writ
 "alerts": {
   "transport": {
     "kind": "telegram",
-    "secretRef": "windows:aiworks-alerts/bot",
-    "recipientRef": "windows:aiworks-alerts/chat"
+    "secretRef": "env:aiworks-alerts/bot",
+    "recipientRef": "env:aiworks-alerts/chat"
   }
 }
 ```
 
-**Secrets.** The bot token and the chat number go in the secret store, under the names in `secretRef` and `recipientRef`.
+**Secrets.** The bot token and the chat number are two lines in `.env` (its path is `envFile` at the top of `config.json`):
 
-```powershell
-cmdkey /generic:aiworks-alerts/bot /user:aiworks /pass
-cmdkey /generic:aiworks-alerts/chat /user:aiworks /pass
+```dotenv
+AIWORKS_ALERTS_BOT=
+AIWORKS_ALERTS_CHAT=
 ```
+
+To keep them in Windows Credential Manager or Infisical, use the prefix `windows:` or `helper:` instead of `env:`.
 
 **Turn on:**
 
 ```text
 Turn on Telegram alerts in AIWorks. Write the ownerIntervention and alerts blocks
-with references to the secrets, and tell me which two values to put into Windows Credential
-Manager and under which names. After I say "done", restart the supervisor
+with references to the secrets in .env, and tell me which two lines to type there. After I say "done", restart the supervisor
 and check in Settings › Alerts that sending is ready.
 ```
 
@@ -350,6 +356,107 @@ write it into previews. If not, tell me which one is needed. Restart the supervi
 ```
 
 **Turn off:** remove `chrome` and the project's entry from `previews`.
+
+---
+
+## Sign-in to web systems
+
+**Why.** A task where an agent works in the web interface of another system (a CRM, an admin panel, an accounting system): it checks screens or makes changes the way a person would. For that, the system needs a sign-in with an account.
+
+**How the sign-in is passed.** The password never reaches the agent: not in the task, not in chat, not in the browser. You type the username and password into `.env`. `config.json` holds a **sign-in profile** for the system's address: the sign-in page and the form fields. AIWorks does the rest:
+
+```mermaid
+sequenceDiagram
+    participant A as AIWorks
+    participant B as Run browser
+    participant S as Your system
+    participant W as Agent
+    A->>B: a new empty browser for this task only
+    A->>S: opens the sign-in page
+    A->>A: takes username and password from .env
+    A->>S: types them in and checks the sign-in worked
+    A->>B: closes the sign-in page
+    A->>W: hands over the signed-in browser
+    W->>S: works on the task, only on allowed addresses
+```
+
+The agent gets a browser that is already signed in. It sees neither the password, nor the sign-in form, nor the sign-in requests. The checker later signs in again, in its own separate browser.
+
+**Two kinds of such tasks**
+
+| Mode | What the agent does | What it needs besides the sign-in profile |
+| --- | --- | --- |
+| **Check** | Opens pages and compares them with the criteria. Changes nothing | The page addresses in the task |
+| **Changes** | Changes data through the system's interface and reports what it was, what it is now and where to see it | 🙋 Your permission: the system's address in the project's `web.buildOrigins` list in the governance folder |
+
+**Good to know**
+
+- The agent goes only to the addresses in the task. A new address means a new task.
+- HTTPS only. HTTP only for systems on this same computer.
+- Create a **separate account for AIWorks with the fewest rights it needs**. The agent can do anything that account can.
+- Each system gets its own profile and its own lines in `.env`. A production address gets a separate profile.
+- The signed-in browser lives only for this run. Cookies and passwords are not saved anywhere and never appear in reports.
+- If the sign-in fails, the task does not start and the reason is recorded. The sign-in form is never sent twice, so the account does not get locked.
+- Only Claude makes changes through an interface.
+
+**config.json:**
+
+```json
+"commands": { "chrome": ["C:/Program Files/Google/Chrome/Application/chrome.exe"] },
+"browserLogin": {
+  "credentialStore": { "kind": "env-file", "path": "C:/Work/aiworks/.local/supervisor/.env" },
+  "profiles": [
+    {
+      "origin": "https://crm.example.invalid",
+      "loginUrl": "https://crm.example.invalid/login",
+      "usernameRef": "example-crm-user",
+      "passwordRef": "example-crm-password",
+      "usernameSelector": "input[name=user]",
+      "passwordSelector": "input[type=password]",
+      "submitSelector": "button[type=submit]",
+      "successSelector": "#signed-in"
+    }
+  ]
+}
+```
+
+`successSelector` is an element that is on the page only after a successful sign-in: the user name, a "Sign out" button.
+
+**Secrets:** two lines in `.env`:
+
+```dotenv
+EXAMPLE_CRM_USER=aiworks-bot
+EXAMPLE_CRM_PASSWORD=
+```
+
+**Permission to make changes:** in the governance folder, in the project's record `registry/projects/<id>.json`:
+
+```json
+"web": { "buildOrigins": ["https://crm.example.invalid"] }
+```
+
+**Turn on:**
+
+```text
+I want AIWorks to work in the web system <address> for project <name>.
+Open the sign-in page and find the username field, the password field, the sign-in
+button and an element that is visible only after signing in. Write a browserLogin
+profile with the .env store, and tell me which two lines to type into .env.
+Do not ask me for the password. If the agent must change things there, not only look,
+prepare the web.buildOrigins record for the project and ask me whether I allow it.
+```
+
+**Give a task:**
+
+```text
+Use AIWorks for project <name>: in the system <address> I need <what to do>.
+This is browser work in <check | changes> mode, pages: <addresses>.
+Write a plan with criteria the checker can use to confirm it is done.
+```
+
+**Turn off:** remove the profile from `browserLogin.profiles` and its lines from `.env`. To forbid changes, remove the address from `web.buildOrigins`.
+
+**How to check.** Give a small task in check mode: "open the home page after signing in and describe what you see". The report should show the page of a signed-in user.
 
 ---
 

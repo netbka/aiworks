@@ -6,9 +6,14 @@
 // A store is { has(ref) -> boolean, get(ref) -> string | null, set(ref, value) -> void }; a throw means "cannot tell",
 // never "absent". A value reaches a child process over stdin only, never argv or script text, and leaves this module
 // only as `get`'s return value: never logged, journalled or written to disk by it.
-// Stores: the Windows Credential Manager (the default), or a credential helper command the operator configures.
+// Stores: the Windows Credential Manager (the default), a credential helper command the operator configures, or a plain
+// `.env` file ({ kind: 'env-file', path }) whose keys are envKey(reference). The file is read here only;
+// its values never enter process.env.
 // Tests use a synthetic helper with a synthetic value; no test reads the real store.
 import { execFile, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import { promises as fsp } from 'node:fs';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { POWERSHELL } from './proc.mjs';
 
 /** A reference: segments of letters, digits, dot, dash and underscore joined by `/` or `:`
@@ -141,10 +146,118 @@ export function commandTokenStore(command, { exec = spawnSync } = {}) {
   };
 }
 
-/** The store config names: { kind: 'windows' } (the default) or { kind: 'command', command: [...] }. */
+const checkedEnvPath = (path) => {
+  if (typeof path !== 'string' || !path.length || !isAbsolute(path)) throw new TypeError('an env-file store needs an absolute path');
+  return path;
+};
+
+/** The env-file key of a reference: uppercased, every other character an underscore (`aiworks-alerts/bot` -> `AIWORKS_ALERTS_BOT`). */
+export const envKey = (ref) => checkedRef(ref).toUpperCase().replace(/[^A-Z0-9]/g, '_');
+
+const AMBIGUOUS = Symbol('ambiguous');
+
+/**
+ * Parse env-file text into Map(reference -> value | AMBIGUOUS). Blank lines, `#` comments and lines whose key is not a
+ * valid reference are ignored; `export ` is allowed; one pair of matching quotes around the value is stripped, with no
+ * escapes and no interpolation; a key defined twice is AMBIGUOUS.
+ */
+function parseEnv(text) {
+  const entries = new Map();
+  for (const raw of text.split('\n')) {
+    const entry = envLine(raw);
+    if (!entry) continue;
+    entries.set(entry.key, entries.has(entry.key) ? AMBIGUOUS : entry.value);
+  }
+  return entries;
+}
+
+function envLine(raw) {
+  const line = raw.replace(/\r$/, '').trim();
+  if (!line || line.startsWith('#')) return null;
+  const body = line.replace(/^export\s+/, '');
+  const at = body.indexOf('=');
+  if (at < 1) return null;
+  const key = body.slice(0, at).trim();
+  if (!/^[A-Z0-9_]+$/.test(key)) return null;
+  let value = body.slice(at + 1).trim();
+  if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value.at(-1) === value[0]) value = value.slice(1, -1);
+  return { key, value };
+}
+
+function envLookup(entries, ref) {
+  const value = entries.get(envKey(ref));
+  if (value === AMBIGUOUS) throw new Error('the env file defines this reference more than once');
+  return value === undefined ? null : value;
+}
+
+function envText(read, path) {
+  try { return read(path); } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw new Error(`the env file could not be read (${error?.code ?? 'error'})`);
+  }
+}
+
+function envWritten(value) {
+  checkedValue(value);
+  if (/[\r\n]/.test(value)) throw new TypeError('a token value must not contain a line break');
+  if (!/[#"']/.test(value) && value === value.trim()) return value;
+  if (!value.includes('"')) return `"${value}"`;
+  if (!value.includes("'")) return `'${value}'`;
+  throw new TypeError('a token value with both quote kinds cannot be stored in an env file');
+}
+
+/**
+ * A plain env file: `KEY=VALUE` lines whose KEY is envKey(reference). A missing file is absent; any other
+ * read error, or a key defined twice, is "cannot tell" (throws). `set` replaces or appends one line, keeps every other
+ * line as it was, and writes through a temporary file in the same directory. Values are never put in process.env, logged
+ * or placed in an error message. `fs` is injectable for tests.
+ */
+export function envFileTokenStore(path, { fs: fsImpl = fs } = {}) {
+  checkedEnvPath(path);
+  const read = () => envText((p) => fsImpl.readFileSync(p, 'utf8'), path);
+  const value = (ref) => { const text = read(); return text === null ? null : envLookup(parseEnv(text), ref); };
+  return {
+    has: (ref) => { const v = value(ref); return v !== null; },
+    get: (ref) => value(ref),
+    set(ref, secret) {
+      const key = envKey(ref);
+      const written = envWritten(secret);
+      const text = read() ?? '';
+      const lines = text.length ? text.split('\n') : [];
+      const hits = [];
+      lines.forEach((raw, index) => { if (envLine(raw)?.key === key) hits.push(index); });
+      if (hits.length > 1) throw new Error('the env file defines this reference more than once');
+      if (hits.length === 1) {
+        const crlf = lines[hits[0]].endsWith('\r') ? '\r' : '';
+        lines[hits[0]] = `${key}=${written}${crlf}`;
+      } else {
+        if (lines.length && lines.at(-1) === '') lines.pop();
+        const crlf = lines.length && lines.at(-1).endsWith('\r') ? '\r' : '';
+        lines.push(`${key}=${written}${crlf}`);
+      }
+      const next = `${lines.join('\n')}\n`;
+      const temp = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
+      let mode = 0o600;
+      try { mode = fsImpl.statSync(path).mode & 0o777; } catch { /* a new file */ }
+      try {
+        fsImpl.writeFileSync(temp, next, { encoding: 'utf8', mode });
+        fsImpl.renameSync(temp, path);
+      } catch (error) {
+        try { fsImpl.unlinkSync(temp); } catch { /* nothing to remove */ }
+        throw new Error(`the env file could not be written (${error?.code ?? 'error'})`);
+      }
+    },
+  };
+}
+
+/**
+ * The store config names: { kind: 'windows' } (the default), { kind: 'command', command: [...] } or
+ * { kind: 'env-file', path: '<absolute path>' }.
+ */
 export function tokenStoreFrom(spec = { kind: 'windows' }) {
   if (spec?.kind === 'windows') return windowsTokenStore();
   if (spec?.kind === 'command') return commandTokenStore(spec.command);
+  if (spec?.kind === 'env-file') return envFileTokenStore(spec.path);
   throw new TypeError(`unknown token store ${JSON.stringify(spec?.kind ?? null)}`);
 }
 
@@ -183,6 +296,18 @@ export function asyncTokenReader(spec = { kind: 'windows' }, { run = execFile } 
     return { get: async (ref) => {
       const value = await call(command[0], [...command.slice(1), 'get', checkedRef(ref)], 1);
       return value === null ? null : value.replace(/\r?\n$/, '');
+    } };
+  }
+  if (spec?.kind === 'env-file') {
+    const path = checkedEnvPath(spec.path);
+    return { get: async (ref) => {
+      envKey(ref);
+      let text;
+      try { text = await fsp.readFile(path, 'utf8'); } catch (error) {
+        if (error?.code === 'ENOENT') return null;
+        throw new Error(`the env file could not be read (${error?.code ?? 'error'})`);
+      }
+      return envLookup(parseEnv(text), ref);
     } };
   }
   throw new TypeError(`unknown token store ${JSON.stringify(spec?.kind ?? null)}`);
