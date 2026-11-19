@@ -348,8 +348,9 @@ export function classify({ role, run, stdoutText, stderrText, expect, now, logBy
     steps.set(key, [...(steps.get(key) ?? []), update]);
   }
   // finish is agy's own tool for submitting the structured result; a step without a tool must not be a tool step.
-  // Code mode (no web): agy's own file and command tools, never an MCP call, and no file write on a write-less run.
-  const code = !expect.web;
+  // Code mode (an explicit `web: false`): agy's own file and command tools, never an MCP call, and no file write on a
+  // write-less run. Any other value keeps the stricter browser audit, so a caller that omits `web` never loosens it.
+  const code = expect.web === false;
   const writeless = role === 'verification' || expect.deliverable === 'report' || expect.publicationRewrite === true;
   const permitted = (update, parameters) => update.tool_name === undefined ? update.step_type !== 'tool'
     : code ? CODE_TOOLS.includes(update.tool_name) && !(writeless && CODE_WRITE_TOOLS.includes(update.tool_name))
