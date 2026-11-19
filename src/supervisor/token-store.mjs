@@ -11,6 +11,7 @@
 // its values never enter process.env.
 // Tests use a synthetic helper with a synthetic value; no test reads the real store.
 import { execFile, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
@@ -180,7 +181,15 @@ function envLine(raw) {
   const key = body.slice(0, at).trim();
   if (!/^[A-Z0-9_]+$/.test(key)) return null;
   let value = body.slice(at + 1).trim();
-  if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value.at(-1) === value[0]) value = value.slice(1, -1);
+  const quote = value[0];
+  if (quote === '"' || quote === "'") {
+    // A quoted value ends at its closing quote; only a comment may follow it.
+    const close = value.indexOf(quote, 1);
+    if (close > 0 && /^\s*(#.*)?$/.test(value.slice(close + 1))) value = value.slice(1, close);
+  } else {
+    // An unquoted value ends before a comment that follows whitespace (set() quotes any value containing `#`).
+    value = value.replace(/\s+#.*$/, '');
+  }
   return { key, value };
 }
 
@@ -224,6 +233,7 @@ export function envFileTokenStore(path, { fs: fsImpl = fs } = {}) {
       const written = envWritten(secret);
       const text = read() ?? '';
       const lines = text.length ? text.split('\n') : [];
+      if (lines.length && lines.at(-1) === '') lines.pop();
       const hits = [];
       lines.forEach((raw, index) => { if (envLine(raw)?.key === key) hits.push(index); });
       if (hits.length > 1) throw new Error('the env file defines this reference more than once');
@@ -231,16 +241,15 @@ export function envFileTokenStore(path, { fs: fsImpl = fs } = {}) {
         const crlf = lines[hits[0]].endsWith('\r') ? '\r' : '';
         lines[hits[0]] = `${key}=${written}${crlf}`;
       } else {
-        if (lines.length && lines.at(-1) === '') lines.pop();
         const crlf = lines.length && lines.at(-1).endsWith('\r') ? '\r' : '';
         lines.push(`${key}=${written}${crlf}`);
       }
       const next = `${lines.join('\n')}\n`;
-      const temp = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
+      const temp = join(dirname(path), `.${basename(path)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
       let mode = 0o600;
       try { mode = fsImpl.statSync(path).mode & 0o777; } catch { /* a new file */ }
       try {
-        fsImpl.writeFileSync(temp, next, { encoding: 'utf8', mode });
+        fsImpl.writeFileSync(temp, next, { encoding: 'utf8', mode, flag: 'wx' });
         fsImpl.renameSync(temp, path);
       } catch (error) {
         try { fsImpl.unlinkSync(temp); } catch { /* nothing to remove */ }
