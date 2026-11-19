@@ -32,7 +32,7 @@ Every plugin below has the same passport: **why** it exists, **when** to turn it
 
 **When to turn it on.** If you have a Codex subscription and often hit Claude's limits.
 
-**Good to know.** Work moves to another agent only because of a provider problem: a limit, a sign-in or unavailability. Denied access or a failed check is never "worked around" with another agent. On Windows, Codex can check a result but cannot change code. Cursor as a builder is not yet supported on Windows.
+**Good to know.** Work moves to another agent only because of a provider problem: a limit, a sign-in or unavailability. Denied access or a failed check is never "worked around" with another agent. On Windows, Codex can check a result but cannot change code. Cursor as a builder is not yet supported on Windows. Which agent suits which role is in the [agent comparison](../AGENTS_COMPARISON.md).
 
 **config.json** holds the path to the program:
 

@@ -1,5 +1,7 @@
 # Provider benchmark and model choices
 
+A plain-language summary with recommendations is in [Which agent for what](AGENTS_COMPARISON.md).
+
 Observed on a Windows workstation on 16 November 2026 with `scripts/provider-benchmark.mjs`. It ran five small tasks in disposable folders for every provider, model and effort below: plan a feature from a brief that contains a contradiction, fix a failing function, merge a branch with a conflict, review a diff with a planted off-by-one error, and review the same diff with the error removed. Scoring is objective: tests pass, a merge commit with two parents exists, the verdict matches. Permissions stayed scoped (edits plus git, npm and node for Claude, `workspace-write` for Codex, accept-edits for AGY); nothing bypassed a sandbox.
 
 The tasks were easy. Every Claude configuration passed all five, so the run shows cost and speed, not a ceiling of quality. Treat the results as a floor, not as a ranking for hard work.

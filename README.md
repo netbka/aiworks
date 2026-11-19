@@ -251,6 +251,7 @@ Details are in the [Sign-in to web systems plugin](docs/plugins/README.md#sign-i
 | [Setup by layers](docs/setup/README.md) | Each layer: why it exists, what you decide, commands, how to check |
 | [Plugins](docs/plugins/README.md) | A passport for each plugin: settings, secrets, "turn on" and "turn off" prompts |
 | [How it works](docs/HOW_IT_WORKS.md) | The life of one step, safety rules, where things are kept |
+| [Which agent for what](docs/AGENTS_COMPARISON.md) | Claude, Codex, AGY and Cursor compared on the same tasks, and which to use for each role |
 | [Claude and AIWorks](docs/guides/USING_CLAUDE.md) | Claude's three roles and what to say to it |
 | [Command reference](docs/guides/CLI_REFERENCE.md) | All commands |
 | [When something stops](docs/guides/TROUBLESHOOTING.md) | Common stops and what to do |
