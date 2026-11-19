@@ -18,6 +18,8 @@ import { canonicalJson } from './campaign.mjs';
 import { redact } from './owner-intervention.mjs';
 import { containsKnownSecretValue } from '../shared/credential-metadata.mjs';
 import { telegramTransport } from './alert-telegram.mjs';
+import { isAbsolute } from 'node:path';
+import { envFileTokenStore } from './token-store.mjs';
 import { commandCredentialStore, validCredentialRef, windowsCredentialStore } from './release/credential.mjs';
 
 export class AlertRulesError extends Error {
@@ -134,14 +136,16 @@ const helperCommand = (config) => {
   const command = config?.commands?.credentialHelper;
   return Array.isArray(command) && command.length && command.every((part) => typeof part === 'string' && part) ? command : null;
 };
+const envFilePath = (config) => typeof config?.envFile === 'string' && config.envFile.length > 0 && isAbsolute(config.envFile) ? config.envFile : null;
 /**
- * Secret stores a Telegram reference may name: `windows:<name>` (a generic credential in the Windows Credential Manager)
+ * Secret stores a Telegram reference may name: `windows:<name>` (a generic credential in the Windows Credential Manager),
+ * `env:<name>` (the .env file at config.json `envFile`, an absolute path; the key is the upper-cased name, see envKey)
  * or `helper:<name>` (the operator's credential helper command, config.json `commands.credentialHelper`, asked
  * `get <name>`). The name is a short path-like name. Whether a store can be read is not checked here: that is a send.
  */
 const readableReference = (value, config) => {
   const [store, name] = splitReference(value);
-  return validCredentialRef(name) && (store === 'windows' || store === 'helper' && helperCommand(config) !== null);
+  return validCredentialRef(name) && (store === 'windows' || store === 'env' && envFilePath(config) !== null || store === 'helper' && helperCommand(config) !== null);
 };
 
 /**
@@ -175,11 +179,11 @@ export function transportSetup(config) {
  * Resolve one secret store reference to its value, for the one send that needs it. Never called outside a send; the
  * value goes to the caller only. Absent is null; a store that cannot tell throws.
  */
-export function referenceResolver(config, { windows = windowsCredentialStore, command = commandCredentialStore } = {}) {
+export function referenceResolver(config, { windows = windowsCredentialStore, command = commandCredentialStore, env = envFileTokenStore } = {}) {
   return (reference) => {
     if (!safeReference(reference) || !readableReference(reference, config)) throw new Error('not a readable secret store reference');
     const [store, name] = splitReference(reference);
-    const value = (store === 'windows' ? windows() : command(helperCommand(config))).get(name);
+    const value = (store === 'windows' ? windows() : store === 'env' ? env(envFilePath(config)) : command(helperCommand(config))).get(name);
     return typeof value === 'string' && value.length ? value : null;
   };
 }

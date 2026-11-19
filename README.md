@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="docs/assets/readme/banner.svg" alt="AIWorks: your AI coding agents keep working, you step in only for decisions" width="100%">
+  <img src="docs/assets/readme/banner.svg" alt="AIWorks: your AI agents keep working, you step in only for decisions" width="100%">
+</p>
+
+<p align="center">
+  <b>English</b> · <a href="README.ru.md">Русский</a>
 </p>
 
 <p align="center">
@@ -10,312 +14,264 @@
 </p>
 
 <p align="center">
-  <a href="#the-problem">The problem</a> ·
-  <a href="#what-aiworks-does">What it does</a> ·
-  <a href="#what-it-delivered-in-one-day">Results</a> ·
-  <a href="#how-you-use-it">How you use it</a> ·
-  <a href="#in-production-and-on-the-roadmap">Production &amp; roadmap</a> ·
-  <a href="#technical-details">Technical details</a>
+  <a href="#what-it-is">What it is</a> ·
+  <a href="#set-up-in-four-messages">Setup</a> ·
+  <a href="#your-decisions">Decisions</a> ·
+  <a href="#plugins">Plugins</a> ·
+  <a href="#what-it-looks-like">What it looks like</a> ·
+  <a href="#more">More</a>
 </p>
 
 ---
 
-**AIWorks is a manager for AI coding agents that runs on your own computer.** You agree on a plan once. AIWorks gives each step to an AI agent (Claude, Codex or Cursor), has a second, separate AI check the result, and delivers the finished work to GitHub as a pull request. It keeps going through crashes, restarts and usage limits, and asks you only when a real decision is needed.
+## What it is
 
-## The problem
-
-AI agents write good code. Keeping them working is a job of its own.
-
-- **They stop.** An agent finishes one step and waits for someone to type "continue".
-- **"Done" is not proof.** You still have to find out what changed and whether it actually works.
-- **Limits waste hours.** An agent hits its usage limit late at night, and nothing moves until you notice in the morning.
-- **Projects blur together.** With several products going, you lose track of what is finished, what is stuck and what is waiting for you.
-
-You end up as a full-time project manager for your AI helpers instead of working on your product.
-
-## What AIWorks does
-
-| What you get | How it works |
-| --- | --- |
-| 🔁 **Keeps work moving** | Starts the next step as soon as the last one is done. Restarts itself after a crash or a reboot and carries on where it stopped. When an AI service hits its usage limit, AIWorks waits for the reset and continues, without bothering you. |
-| 🔍 **Gets a second opinion on every change** | A fresh AI session that did not write the code checks each result. It runs the tests again on that exact version and looks for problems. Work that fails goes back for another round, with the findings attached. |
-| 📬 **Delivers to GitHub, where you already work** | Each finished step arrives as a pull request with the builder's report and the checker's verdict inside. Reports and research arrive as comments on the step's issue. |
-| 🙋 **Decides and finishes without you** | AIWorks answers the decisions its AI workers raise, with their suggestion, and finishes a step that stopped: it delivers it with its known problems listed, or ends it as not done and adds a follow-up. **Needs you** only tells you about your own sign-in, credentials or payment, and the results you chose to accept yourself. |
-| 🛡️ **Stays inside the lines you draw** | Runs only plans you approved. Merges a checked pull request only if you switch that on for the project. Deploys only under a standing project release grant. Runs on your PC, and its settings hold no passwords or keys. |
+**AIWorks is a workplace for your AI agents, on your own computer.** Agents use it, not people. You set it up once through your AI assistant. After that you set goals, approve plans and accept results.
 
 ```mermaid
 flowchart LR
-    goal([You describe the goal]) --> plan[You approve<br/>the plan once]
-    plan --> build[An AI builder<br/>does the next step]
-    build --> check{A fresh AI<br/>checks the result}
-    check -- needs work --> build
-    check -- passes --> pr[Pull request<br/>with both reports]
-    pr --> merge([You merge it, or let<br/>AIWorks merge it once checked])
-    pr -. next step .-> build
+    you([You]) -- "ready-made prompts" --> assistant[Your AI assistant<br/>Claude Code, Codex, Cursor]
+    assistant -- "installs and configures" --> aiworks[[AIWorks]]
+    you -. "you approve the plan" .-> aiworks
+    aiworks -- "plan steps" --> agents[AIWorks agents<br/>build and check]
+    agents -- "result" --> out[(Your project:<br/>pull request, report, files)]
+    out -. "you accept" .-> you
 ```
 
-## What it delivered in one day
+You touch the system in three places: you give prompts to your assistant, you approve a plan, and you accept the result. The agents do everything else: starting steps, checking, fixing, waiting out limits and restarting after crashes.
 
-On 12–13 October 2026, AIWorks spent a day building the next version of itself. The figures below are counted from this repository's pull request and code history.
+### What you get
 
-| Result | What happened |
+| | |
 | --- | --- |
-| **63** | finished changes delivered as pull requests in 24½ hours. Every one was checked by a second AI before it reached the owner. |
-| **18** | of those changes were merged between midnight and 7 a.m., while the owner slept. |
-| **4** | separate pieces of work were moving at the same time at the peak. |
-| **~45 min** | was the typical time to build and check one step. |
-| **385 → 760** | automated tests: the project's safety net grew along with the code. |
-| **53%** | of AIWorks' own code, about 25,000 lines, was written this way, by AIWorks. |
+| 🔁 **Work does not stall** | The next step starts as soon as the last one is done. After a crash or a reboot, AIWorks carries on where it stopped. If it hits a usage limit, it waits for the reset and continues. |
+| 🔍 **Every result is checked** | A separate agent that did not do the step checks each one. If it fails the check, it goes back for another round with the findings. |
+| 🙋 **You are not pestered** | **Needs you** shows only what only you can do: signing in to an account, access, payment, and the results you chose to accept yourself. |
+| 🛡️ **Nothing extra** | Only approved plans run. Merge and release happen only if you turned them on for the project. Passwords and keys are never kept in the settings. |
 
-The owner set the goal and approved the plan once. An AI assistant session wrote the step-by-step plans and merged the checked pull requests on his behalf. He stepped in only a handful of times, for example to update the running copy of AIWorks, and two progress notes posted during the night read "nothing needs you".
+### One AIWorks, many kinds of projects
 
-### Model usage
+AIWorks is not tied to one kind of work. It can be code, texts, research: any work you can describe as "done when...". Each project has its own rules: where tasks come from, how the result is checked and where it goes.
 
-Open **Settings › Usage** to compare tokens by model, tier, reasoning effort and role. Project Overview breaks usage down by goal and step. A run can report input, output, cache reads, cache writes and reasoning tokens. Partial sums show their coverage. A CLI that supplies no usage appears as unreported.
+| | Where tasks come from | How it is checked | Where the result goes |
+| --- | --- | --- | --- |
+| **Project 1**: an app on GitHub | You write to your assistant | A checker agent runs the tests again on that exact version | A pull request with two reports |
+| **Project 2**: texts in a folder on disk | The **Start work** button in the dashboard | A checker agent compares the result with the plan's criteria | Files in the project: apply or undo |
+| **Project 3**: tasks from your own system | Your tracker or service submits them through the API | Plus a separate computer for full tests | A report that your system picks up itself |
 
-### Where the savings come from
+Project 1 works by default. Projects without GitHub (2) and tasks through the API (3) already exist in the code and are switched on with separate [plugins](#plugins).
 
-- **Your attention.** A rough estimate: if keeping one change moving by hand takes 15 minutes of your time (prompting, re-checking, retrying after a limit, merging), the 63 changes above add up to about 16 hours of coordination that nobody had to do.
-- **Hours that used to be idle.** Nights, weekends and usage-limit resets become working time.
-- **Mistakes caught before you see them.** The checker sends weak work back with its findings. AIWorks also refuses a "passed" verdict when one of the checks actually failed.
-- **No more piecing the story together.** One screen answers "what needs me?" across all your projects, in plain words.
+### What it delivered in one day
 
-Projects with a standing release grant can also continue from an independently verified merge through their own deployment and health checks. The supervisor observes interrupted deployments before acting again and uses the project's rollback command when required. [Configure automatic project releases](docs/SUPERVISOR.md#12-automatic-project-releases).
+On 12–13 October 2026, AIWorks spent a day building the next version of itself. The figures are counted from this repository's history.
 
-## How you use it
-
-Day to day, you don't type commands. You work in the AIWorks dashboard on your computer and in GitHub. Setup is done once ([see below](#set-it-up-with-your-ai-assistant)).
-
-**New to using Claude with AIWorks?** [Using Claude with AIWorks](docs/guides/USING_CLAUDE.md) explains Claude's three jobs here (your assistant, the worker and the coordinator), what to say to it, and what it can and cannot do.
-
-> The screenshots show made-up example projects.
-
-### 1. See every project at a glance
-
-**Projects** lists everything this computer works on. Projects that need you come first, then those with work running. Each row tells you in one sentence where things stand.
-
-<p align="center"><img src="docs/assets/readme/projects.png" alt="The Projects screen: three projects, one needs you, two are running" width="100%"></p>
-
-### 2. Handle only what needs you
-
-**Needs you** counts only what needs your own sign-in, credentials or payment, and, if you chose to accept results yourself, the checked versions waiting for you ([AW-017](docs/DECISIONS.md#aw-017---aiworks-decides-and-finishes-without-the-owner)). Decisions, stopped steps and results to review are listed with what AIWorks does about them; you can still answer a decision first, accept a result or request changes. Something new to build is planned with *Plan different work* and starts only when you approve the plan. Usage limits, pauses, routine merge waits and AIWorks's own problems never count here; AIWorks lists what it is handling, so nothing stalls out of sight.
-
-<p align="center"><img src="docs/assets/readme/needs-me.png" alt="The Needs you screen: decisions and reviews grouped by project, each with what to do" width="100%"></p>
-
-### 3. Follow the work, if you want to
-
-Inside a project you can follow:
-
-- **Now:** where are we?
-- **Work:** what is running or waiting, and why? You see who is on each step (the builder or the checker), whether it is working normally or may be stuck, and what a waiting step is waiting for.
-- **Results:** what has been delivered? Pull requests waiting for your review, merged work and reports to read.
-- **Token usage:** which model ran each step and how many tokens did it report?
-
-<p align="center"><img src="docs/assets/readme/work.png" alt="The Work tab: one step being checked, one being built, one waiting for it" width="100%"></p>
-
-### 4. Steer when you need to
-
-Open any step to see its latest result and its history. From the dashboard you can:
-
-- **Pause** and **Resume** a piece of work;
-- **Check again** after you have fixed whatever blocked it;
-- **Cancel** work you no longer want;
-- **Send guidance** to the builder or the checker. It reaches them on their next run, without interrupting the current one.
-
-<p align="center"><img src="docs/assets/readme/step.png" alt="A step: being built by Claude, working normally, with a Send guidance button" width="100%"></p>
-
-### 5. Ask for the next thing
-
-**Start work** takes a plain description ("what should be true when this is finished?"), a GitHub issue or a pull request, and asks the planning assistant for a plan. The plan appears in the dashboard under **Messages**. Nothing is posted to GitHub, and nothing in your project changes at this stage.
-
-<p align="center"><img src="docs/assets/readme/start-work.png" alt="The Start work form: describe the result, choose where to start from, Plan only" width="100%"></p>
-
-By default, an approved plan is saved as a private file on your computer and registered there; your AI assistant can do this step for you. **Plan and do**, which starts exactly the plan you approve from the dashboard, is built and off by default (below).
-
-### Where the results land
-
-Everything ends up in GitHub, next to the rest of your project:
-
-- Each piece of work has a **tracking issue**, and each step has its own issue. AIWorks posts progress notes and blockers there.
-- Each code change is a **pull request** that contains the builder's report and the independent check.
-- Reports and research are posted as **comments** on the step's issue.
-- **AIWorks merges only if you switch it on.** By default you merge, or you hand merging of checked pull requests to an assistant you trust. You can instead let AIWorks merge them itself, one project at a time. It then merges a pull request only when the result on your main branch is exactly the version the checker approved. If main moved in the meantime, it brings the change up to date and has it checked again first. Deployment additionally requires the project's standing release grant.
-
-## In production and on the roadmap
-
-"In production" means built, switched on by default, and used every day to build AIWorks itself.
-
-### ✅ In production
-
-| Capability | What it means for you |
+| | |
 | --- | --- |
-| End-to-end delivery | Plan, build, independent check, then a pull request or a report, with no hand-holding. |
-| Three AI workers | Claude does most of the work. Codex and Cursor are fallbacks; on Windows they can do less (Codex can check but not change code, and Cursor is not supported yet). |
-| Waiting out usage limits | When an AI account hits its limit, every piece of work on that account pauses until the reset, then continues. No alert. |
-| Self-restart | After a crash, a sign-out or a reboot, AIWorks comes back by itself within minutes and picks up where it stopped. |
-| Only work you registered | AIWorks works only on plans you registered yourself, and a plan's scope cannot change without a new, higher authorization. It refuses a second plan for a fix that is already being worked on, and runs only its own reviewed (merged) code. |
-| Staying in its lane | A step that changes files outside its agreed area is stopped and ended as not done, with a follow-up. |
-| Dashboard | Home, Projects and Needs you; each project with its Overview, Plan, Review and Knowledge tabs (Releases where a release is configured); Step, Settings, Messages and Diagnostics screens. |
-| Controls | Pause, Resume, Check again, Cancel and Send guidance. |
-| Planning assistant | Answers your messages and proposes plans, right in the dashboard. It can read your projects but never changes them, and it posts nothing to GitHub. |
-| Token usage | Provider-reported tokens per project and step, grouped by model, tier, effort and role. |
-
-### 🔧 Built, off by default
-
-| Capability | Status |
-| --- | --- |
-| Merging checked pull requests | AIWorks merges a checked pull request itself, only in projects you list, and only when what lands on main is exactly what was checked. You can hold any pull request back. One setting turns it on. Merging is not deploying. |
-| Conflict repair | When another merge leaves a pull request in conflict, AIWorks fixes it and checks it again. One setting turns it on. |
-| Repairing an existing failed check | Optional read-only monitoring of existing GitHub check results can send a failure back for local repair. It never starts hosted checks; AIWorks never uses Actions. |
-| Several steps at once inside one piece of work | Built and tested. You turn it on and choose how much of the PC it may use. |
-| Website checks in a real browser | Built. Needs AGY or Chrome set up on the computer, and has not been proven on a real project yet. |
-| Alerts when something is blocked | Recording and grouping blockers is built and switched off, with your alert rules and quiet hours. A Telegram sender is built too: it sends only when you name your bot and chat as references into your own secret store and switch sending on, never answers or approves anything, and never sends again an alert that may already have arrived. It has been tested only against a made-up network, not a real bot. Stopped work always shows up in **Needs you**. |
-| Plan and do, Add project and projects without GitHub | Built and tested on synthetic projects. You add a GitHub checkout, a local Git repository or a plain folder, confirm its rules, edit and approve a plan, and work starts from that approval. A project without GitHub gets checked results you try, Apply and Undo apply in Review; it never gets a pull request. Two settings turn it on. |
-| Smarter choice of AI model per step | Every run records why its AI worker was chosen, and each step shows its models and tokens. A plan can opt in to automatic choice among the models it already allows. No saving is claimed until a measured comparison has run. |
-| Several AI accounts with automatic switching | Choosing a login per run and starting the worker inside that login's own home folder is built and switched off. Turning it on waits for the owner's pilot. |
-| Slowing down when the PC is busy or an account is throttled | The building blocks are written and the status reports them, but they do not yet hold back new work. |
-| Automatic release, opt-in per project | With the installation switch enabled and a valid standing grant, finished campaigns continue from the verified merge through the project's deploy, observe, check and rollback commands. Interrupted deployments are reconciled before another action. Other release kinds remain outside automatic continuation. |
-| External campaign API | Built and switched off: another system can register a campaign and read its status and verified reports over HTTP, the same contract as `cli.mjs start`/`status`, with its own bearer token instead of the dashboard's browser session, optionally on a port of its own that serves nothing else (for a tunnel) and with reports kept off GitHub. One setting turns it on, and `cli.mjs campaign-token create\|rotate <projectId>` creates or replaces that token for any AIWorks-registered project; see [docs/SUPERVISOR.md §16](docs/SUPERVISOR.md#16-external-campaign-api-off-by-default). |
-
-### 🗺️ On the roadmap
-
-- **Approve an outcome once**, and let AIWorks split it into steps and add steps as it learns.
-- **Phone notifications** you can act on: Telegram alerts are built (above); answering from the phone needs remote access, which is not designed yet.
-- **Automatic model choice by token usage and quality** for every plan, once a measured comparison supports it.
-- **An AI-assisted setup guide** for newcomers: a first version is in [docs/guides](docs/guides/AI_ASSISTED_START.md).
-- **Instant reaction to GitHub events**, instead of checking every minute.
-- **A public demo page**, once the dashboard passes its own usability review. Its static source is in [`site/`](site/README.md): a walk through the synthetic owner journey, not yet published anywhere.
-
-## Honest limits
-
-- **Early preview, one setup.** AIWorks is built and used on one Windows PC with GitHub and Claude Code. On other operating systems it refuses to start workers, on purpose.
-- **A checker can miss things.** A second AI makes it much less likely that a problem reaches you, not impossible. You remain the judge of what gets merged.
-- **Checks run on your PC.** If your project's online tests run on another operating system, a change can pass here and fail there. This happened during the run above and is being addressed.
-- **The dashboard is new.** It has just had its first usability review, and some screens still have rough edges.
+| **63** | finished changes in 24½ hours, each one checked by a second agent |
+| **18** | of them merged between midnight and 7 a.m., while the owner slept |
+| **~45 min** | typical time to build and check one step |
+| **385 → 760** | automated tests: the safety net grew along with the code |
 
 ---
 
-## Technical details
+## Set up in four messages
 
-Everything below is for setting up, running and changing AIWorks.
+You do not set up AIWorks by hand. You send your AI assistant four ready-made messages, one after another. It installs the programs, writes the settings, checks that everything works, and stops only where it needs you.
 
-### Requirements
+**Before you start:**
 
-- Windows 10 or 11. Workers run inside Windows process containment; other platforms fail closed.
-- Node.js 22.5 or newer, and Git (2.38 or newer for conflict repair).
-- GitHub CLI (`gh`), signed in.
-- At least one AI worker CLI, installed and signed in: Claude Code (main), Codex, or Cursor Agent.
-- A local governance folder: run `npm run setup:local` for the bundled starter, then register the owner's approved projects under ignored `.local/governance`. It supplies the project registry contract and policies (`registry/projects`, `policies/catalog.json` and the project-contract schema). AIWorks only reads it, and new work must target a project registered there ([Governance checkout](docs/SUPERVISOR.md#governance-checkout)).
-- Optional, for website checks: AGY or Claude with headless Chrome 149 or newer.
+- a Windows 10 or 11 computer that you can leave switched on;
+- an AI assistant that **runs commands on this computer**: Claude Code, Codex, Cursor or Gemini CLI. An ordinary chat in a browser will not do;
+- a GitHub account and a Claude subscription: Claude is AIWorks' main agent, even if you set up with a different assistant;
+- about an hour, of which about ten minutes is your time.
 
-### Set it up with your AI assistant
+```mermaid
+flowchart LR
+    s1["<b>1. Install</b><br/>you: sign in to GitHub and Claude"] --> s2["<b>2. Project</b><br/>you: confirm the rules"] --> s3["<b>3. Plugins</b><br/>you: choose and enter secrets"] --> s4["<b>4. First task</b><br/>you: Approve and start"]
+```
 
-Open Claude Code or Codex on the Windows PC, in a session that can run commands, and paste:
+### 1. Install
 
 ```text
-Set up AIWorks on this Windows computer from <https://github.com/netbka/aiworks>.
-Follow docs/guides/ASSISTANT_SETUP.md, the "Technical details"
-section of its README and docs/SUPERVISOR.md.
-Check what is already installed, create the data folder and config.json,
-register the two background tasks and open the dashboard.
-Ask me only for sign-ins or approvals you cannot do yourself.
-Do not change any of my project files.
+Install and set up AIWorks on this computer: https://github.com/netbka/aiworks
+Follow docs/setup/README.md, layers 1–3.
+Check what is already installed and install what is missing. Create the data folder,
+config.json and the governance folder, turn on the coordinator and plan approval
+by button (Plan and do), register the two background tasks
+and open the dashboard.
+Ask me only for sign-ins and approvals that you cannot do yourself.
+Do not touch my projects. At the end, briefly: what was done, what was checked, what failed.
 ```
 
-The assistant runs the commands below. You handle any sign-in it cannot do for you.
+**You will be asked to:** sign in to GitHub and Claude Code through their own sign-in windows.
+**You get:** a dashboard at `http://127.0.0.1:4318` that starts by itself when you sign in to Windows.
 
-[Using Claude with AIWorks](docs/guides/USING_CLAUDE.md) has more prompts for planning, status and stops. The [getting-started guides](docs/guides/README.md) explain the same setup step by step, then your first task, a manual installation, every command and what to do when something stops.
+### 2. Connect a project
 
-### How it works
+```text
+Connect my project to AIWorks: <GitHub link or folder on disk>.
+Follow docs/setup/README.md, layer 4.
+Suggest the project's rules: which folders the agents must not touch, how to check
+the result, and who accepts it: me or AIWorks itself.
+Do not change anything in the project itself. Tell me where I confirm the rules.
+```
 
-| Part | Job |
+**You will be asked to:** confirm the project's rules and choose who accepts the result.
+**You get:** the project in the **Projects** list, ready for tasks. Send the same message for each new project.
+
+### 3. Plugins (optional)
+
+```text
+Show me the AIWorks plugins from docs/plugins/README.md: what each one does, which
+are already on, and what each one needs. Let me choose.
+Turn on the ones I choose. For secrets, write only the reference names and tell me which
+lines I must type into .env myself. Do not ask me for the values.
+Then check each plugin that is on and show me the result.
+```
+
+**You will be asked to:** choose which plugins you want, and enter the secrets. You type the secrets into the `.env` file yourself, and the assistant never sees them. Windows Credential Manager, Infisical and other stores are [optional](docs/setup/README.md#where-secrets-live).
+**You get:** a list of "turned on and checked".
+
+### 4. First task
+
+```text
+Use AIWorks for the project <name>. I need: <what should be true when it is done>.
+Write a short plan: the result, how we will check it, what is included, what comes next.
+Do not touch the project. Tell me where I approve the plan.
+```
+
+**You will be asked to:** press **Approve and start** on the Review tab. No agent can press this button for you. If approval by button is not turned on, you tell the assistant "I approve", and it registers the plan itself.
+**You get:** within an hour or two, a pull request (or a report, or files) with the builder's report and the checker's verdict.
+
+<details>
+<summary><b>Or in one message</b></summary>
+
+```text
+Set up AIWorks completely, following docs/setup/README.md from https://github.com/netbka/aiworks:
+installation, the project <link or folder>, plugins <list, or "suggest some yourself">,
+and a plan for the first task: <what is needed>.
+Stop only for sign-ins, secrets and approvals in the dashboard.
+```
+
+</details>
+
+> **Commands exist too**, and your assistant uses them as well. If you prefer to work by hand, every step with its commands is described in the [setup by layers](docs/setup/README.md). It is a shortcut, not a required path.
+
+---
+
+## Your decisions
+
+Each layer of the system needs its own decisions. The assistant will suggest a default. Change it only if your situation is different.
+
+| Layer | What you decide | Default |
+| --- | --- | --- |
+| **1. Computer and accounts** | Which computer runs AIWorks; which AI subscriptions to connect | This computer; Claude as the main agent, Codex as a backup |
+| **2. Installation** | Where AIWorks keeps its data | A `.local` folder next to AIWorks |
+| **3. Coordinator** | Whether you want a helper that answers in the dashboard and writes plans; whether you approve a plan with a button or by telling the assistant | On, approval by button |
+| **4. Projects** | Which projects to connect; what agents must not touch; who accepts the result; whether AIWorks merges by itself | AIWorks accepts; you merge |
+| **5. Plugins** | Whether you need release, external checks, tasks from other systems, notifications | All off |
+| **6. Work** | Which tasks to set and how often to look | Look at **Needs you** when it suits you |
+
+Why it is set up this way, and what to choose in each case, is in the [setup by layers](docs/setup/README.md).
+
+## Plugins
+
+A plugin is a capability that connects AIWorks to something outside it. Each one is off until you turn it on, and you turn it on with one message to your assistant.
+
+| Plugin | What for | Status |
+| --- | --- | --- |
+| [Backup agents](docs/plugins/README.md#backup-agents) | Codex and Cursor take over when Claude hits a limit | Codex works as a checker, Cursor does not yet |
+| [Multiple accounts](docs/plugins/README.md#multiple-accounts) | Work switches to another account when one hits its limit | Built, off |
+| [Projects without GitHub](docs/plugins/README.md#projects-without-github) | A folder on disk or a local Git repository instead of GitHub | Built, off |
+| [Automatic merge](docs/plugins/README.md#automatic-merge) | AIWorks merges checked changes itself | Built, off |
+| [Release](docs/plugins/README.md#release) | After a merge, the project is released by its own instructions and checked | Built, off |
+| [External check service](docs/plugins/README.md#external-check-service) | Another computer also runs the full tests | Built, off |
+| [Tasks through the API](docs/plugins/README.md#tasks-through-the-api) | Your tracker or service submits tasks and picks up reports itself | Built, off |
+| [Telegram alerts](docs/plugins/README.md#telegram-alerts) | A message when something is blocked | Built, not tested with a live bot |
+| [Website checks in a browser](docs/plugins/README.md#website-checks-in-a-browser) | An agent opens the page and checks it with its own eyes | Built, not tested on a real project |
+| [Sign-in to web systems](docs/plugins/README.md#sign-in-to-web-systems) | An agent works in the web interface of your CRM or admin panel under a separate account | Built, off |
+| [Parallel work](docs/plugins/README.md#parallel-work) | Several tasks at once, with care for the computer's load | Built, off |
+
+---
+
+## What it looks like
+
+Day to day, you do not type commands. You look at the dashboard on your computer and at GitHub, when it suits you.
+
+> The screenshots show made-up projects.
+
+**Projects** shows all projects on one page. Those that need you come first, then those with work running.
+
+<p align="center"><img src="docs/assets/readme/projects.png" alt="The Projects screen: three projects, one needs you, two are running" width="100%"></p>
+
+**Needs you** shows only what only you can do. Usage limits, pauses and AIWorks's own problems never appear here: it deals with them itself.
+
+<p align="center"><img src="docs/assets/readme/needs-me.png" alt="The Needs you screen: decisions and results grouped by project" width="100%"></p>
+
+**Work** inside a project shows who is on each step now, the builder or the checker, and whether they are stuck. You can pause a step, cancel it or send the builder a hint.
+
+<p align="center"><img src="docs/assets/readme/work.png" alt="The Work tab: one step being checked, one being built, one waiting" width="100%"></p>
+
+**Start work** is a new task in words, from an issue or from a pull request. A plan appears first. Nothing in the project changes until you approve it.
+
+<p align="center"><img src="docs/assets/readme/start-work.png" alt="The Start work form" width="100%"></p>
+
+### How to set tasks
+
+| Way | When it fits |
 | --- | --- |
-| **Supervisor** | The always-on loop. It reads approved plans (campaigns), starts worker runs, records every step in a local SQLite store and publishes results through the GitHub REST API. Idle checks never call an AI model. |
-| **Workers** | Headless runs of Claude Code, Codex or Cursor in an isolated Git worktree, without personal settings, hooks, MCP servers or memory. The provider order is Claude, then Codex, then Cursor. Only a provider problem (a usage limit, a failed login, an unavailable tool) moves work to the next one. |
-| **Checker** | A fresh, read-only worker session on a separate checkout of the exact commit. It must echo that commit and the fingerprint of the builder's report. A failed check or a blocking finding starts a repair round. |
-| **Coordinator** | A read-only planning agent that answers owner messages in the dashboard. It never registers or starts work, and posts nothing to GitHub. |
-| **Dashboard** | A local web app at `http://127.0.0.1:4318`. It reads the local store and Git and makes no GitHub API calls. |
-| **Background tasks** | Two Windows scheduled tasks start the supervisor and the dashboard at sign-in, and again every 5 minutes if either has stopped. |
+| Write to your assistant in words | The main way |
+| The **Start work** button in the dashboard | When the assistant is not open |
+| An outside system through the [API](docs/plugins/README.md#tasks-through-the-api) | When tasks are born in a tracker, not in a person's head |
 
-**The life of one step:**
+### When a task needs a sign-in to another system
 
-1. **Prepare.** The supervisor creates an isolated worktree and a task packet: the goal, the acceptance criteria, the files the step may change and the target project's rules. It records the run before launching it.
-2. **Build.** The worker runs inside a Windows Job Object, with heartbeats and a time limit. For a code change, its result counts only if it is valid JSON naming a clean new commit.
-3. **Check.** A different fresh session checks that exact commit, read-only, and runs the project's tests again.
-4. **Repair.** A rejection sends the findings into the next packet. Repair rounds are limited only if the plan sets a limit.
-5. **Publish.** The supervisor pushes exactly the checked commit and opens one pull request, or posts one report. It looks for an existing pull request or comment first, so a retry never creates a duplicate.
-6. **Wait and recover.** A usage limit is recorded per AI account with its reset time (30 minutes if the reset is unknown). After a crash, the replacement supervisor adopts the running worker through its heartbeat instead of starting a second one.
+Sometimes the work has to be done in the web interface of another system: fixing records in a CRM, checking screens in an admin panel. The password is never handed to the agent.
 
-**Safety rules.** These are accepted decisions, recorded in [docs/DECISIONS.md](docs/DECISIONS.md):
+1. 🙋 You create a separate account for AIWorks with the fewest rights it needs, and type its username and password into `.env`.
+2. The assistant describes in the settings what the sign-in looks like in that system: the page, the fields, the button.
+3. 🙋 If the agent must change things, not only look, you allow the system's address for the project.
+4. Before each run, AIWorks signs in itself in a separate browser and hands the agent a browser that is already signed in. The agent sees neither the password nor the sign-in form.
 
-- External writes follow the authority the owner registered. Merging is off by default. The supervisor merges a pull request only under the merge gate, and only in a repository the owner lists in `config.json` (`merges.delegatedTo: "supervisor"`, decision AW-001, #138): the pull request is its own, its head is the checked commit, and what lands on the base branch is exactly the checked version. Project deployment requires an AW-010 grant and exact verification; the supervisor never deploys its own runtime or creates provider resources.
-- AIWorks runs only from its own merged code; a supervisor running unmerged code starts no new work. Plans are private files on your computer, registered explicitly, and their scope can only change with a higher authorization version.
-- The dashboard listens on `127.0.0.1` only and needs the same origin plus a per-session token for every action. Text that looks like a secret is refused. The one exception is the optional external campaign API (below), off by default: a static bearer token instead, for a local system that is not a browser.
-- A plan can set worker-run, retry and repair limits. Token usage is observational.
-- A denied command, a sandbox refusal or a failed check is never routed around to another provider.
-- `config.json` holds executable and repository paths, never credentials.
+Details are in the [Sign-in to web systems plugin](docs/plugins/README.md#sign-in-to-web-systems).
 
-### Configuration
+## Honest limits
 
-Create `.local/supervisor/config.json` with absolute paths for your machine. The names and paths below are made-up examples:
+- **Windows only.** On other systems AIWorks deliberately does not start agents.
+- **Early preview.** Tested on one installation with GitHub and Claude Code.
+- **The checker lowers the risk but does not remove it.** Until you hand merging to AIWorks, the decision stays with you.
+- **Tests run on your computer.** If a project's online checks run on another system, a change can pass here and fail there. The [external check service](docs/plugins/README.md#external-check-service) exists for this.
 
-```json
-{
-  "governanceRoot": "C:/work/aiworks/.local/governance",
-  "repositories": {
-    "example-org/sampleapp": {
-      "path": "C:/work/sampleapp",
-      "worktreeRoot": "C:/work/aiworks/.local/worktrees/sampleapp"
-    }
-  },
-  "commands": {
-    "claude": ["C:/tools/claude.exe"],
-    "codex": ["C:/tools/codex.exe"],
-    "gh": ["C:/tools/gh.exe"]
-  }
-}
-```
+---
 
-- `governanceRoot`: the read-only governance checkout. Without it, anything that needs it fails closed.
-- `repositories`: each target repository, with its local checkout and a folder for worktrees.
-- `commands`: each tool as an absolute path to a native executable, in an array. `cursor`, `agy` and `chrome` are optional ([§8](docs/SUPERVISOR.md#8-ordered-cli-execution), [§11](docs/SUPERVISOR.md#11-web-acceptance-by-the-agy-browser-worker)).
-- `coordinator`: optional. Without it, owner messages are stored but nobody reads them ([§9](docs/SUPERVISOR.md#9-owner-messages-and-the-coordinator)).
-- Optional, off by default: `integrationRepair`, `ciRepair`, `scheduler` and `ownerIntervention`. See [docs/SUPERVISOR.md](docs/SUPERVISOR.md).
+## More
 
-### Commands
+| Document | What it covers |
+| --- | --- |
+| [Setup by layers](docs/setup/README.md) | Each layer: why it exists, what you decide, commands, how to check |
+| [Plugins](docs/plugins/README.md) | A passport for each plugin: settings, secrets, "turn on" and "turn off" prompts |
+| [How it works](docs/HOW_IT_WORKS.md) | The life of one step, safety rules, where things are kept |
+| [Claude and AIWorks](docs/guides/USING_CLAUDE.md) | Claude's three roles and what to say to it |
+| [Command reference](docs/guides/CLI_REFERENCE.md) | All commands |
+| [When something stops](docs/guides/TROUBLESHOOTING.md) | Common stops and what to do |
 
-Write your plan as a private JSON file under `.local/campaigns/`, following the contract in `src/supervisor/campaign.mjs`. The files in `tests/fixtures/campaigns/` are made-up examples to copy from. Plans are never committed.
+---
 
-```sh
-npm install
+## For contributors
 
-node src/supervisor/cli.mjs start .local/campaigns/work.json --data .local/supervisor   # register a plan
-node src/supervisor/cli.mjs keep --data .local/supervisor                               # run, and restart after any exit
-node src/supervisor/cli.mjs status <campaignId> --data .local/supervisor
-npm run dashboard -- --data .local/supervisor
-```
+### Start here
 
-`AIWORKS_DATA` can stand in for `--data`. The other commands (`pause`, `cancel`, `recheck`, `stop`, `message`, `messages`, `coordinator-clear`, `baseline`) are described in [docs/SUPERVISOR.md §5](docs/SUPERVISOR.md#5-commands).
+The reading list for contributors and AI agents.
 
-### Running in the background
-
-```powershell
-powershell -NoProfile -File scripts\supervisor\install-windows-task.ps1   -Checkout <runtime checkout> -DataDir <data dir>
-powershell -NoProfile -File scripts\supervisor\install-dashboard-task.ps1 -Checkout <runtime checkout> -DataDir <data dir>
-```
-
-These register the per-user tasks **AIWorks Supervisor** and **AIWorks Dashboard**. Both start at sign-in and every 5 minutes, and do nothing if they are already running. Add `-DefinitionOnly` to see the task definition without changing anything. `cli.mjs stop` keeps the supervisor stopped until its STOP file is removed. The live copy runs from a separate checkout of a reviewed commit and changes only through the [upgrade procedure](docs/SUPERVISOR.md#upgrade).
-
-To update it, run `npm run rebuild` from a clean checkout at the trusted commit (add `-- --root <installation root>` when the installation is elsewhere). It pauses running work, lets open runs finish and be recorded, stops and backs up, installs the trusted commit with `npm ci`, restarts, and resumes only the work it paused. Run it again after a failure and it continues where it stopped ([Rebuild](docs/SUPERVISOR.md#rebuild-the-upgrade-as-one-command)).
-
-### Try the dashboard with made-up data
-
-```sh
-npm install
-node tests/dashboard/fixtures/review-store.mjs --port 4319
-```
-
-This opens the dashboard at `http://127.0.0.1:4319` with three example projects covering every state. It refuses the live port 4318 and deletes its temporary data when you press Ctrl+C. The screenshots above come from it. The [static showcase](site/index.html) shows the [owner journey](docs/design/OWNER_JOURNEY_ACCEPTANCE.md) instead, captured from its synthetic runtime; open it straight from the checkout.
+1. [Product Constitution](docs/PRODUCT_CONSTITUTION.md): what AIWorks is, for whom, and how success is measured
+2. [Agent rules](AGENTS.md): what agents may and may not do here
+3. [Delivery Supervisor](docs/SUPERVISOR.md): the runbook — boundary, lifecycle, failures, commands, installation and upgrades
+4. [Operations Dashboard](docs/OPERATIONS_DASHBOARD.md): what the owner sees and the local access boundary
+5. [Decisions](docs/DECISIONS.md): accepted product boundaries
+6. [Worker Context Lifecycle](docs/WORKER_CONTEXT_LIFECYCLE.md): task packets, leases and fresh sessions
+7. [Development status](docs/STATUS.md), the [Project Workspace Plan](docs/PROJECT_WORKSPACE_PLAN.md) and the [designs](docs/design/): what the code does and where it is going
+8. [Publication preparation](docs/PUBLICATION.md): what stays private and how public commits are checked; [Publication guards](docs/PUBLIC_GUARD.md): setting up and checking the Git and Claude Code hooks on a computer
+9. [Glossary](docs/GLOSSARY.md): terms and IDs
 
 ### Repository layout
 
@@ -335,20 +291,6 @@ This opens the dashboard at `http://127.0.0.1:4319` with three example projects 
 ### Validation
 
 After changing code, schemas, fixtures or documentation, run `npm install` once and then `npm run check`. It checks that no private installation files are in the commit, validates the example plans and runs the test suite. `npm run test:affected` runs only the test files your changes can reach and `npm run test:quick` the unit and service tiers only, for a fast pass while you work; the gate is the full check.
-
-### Start here
-
-The reading list for contributors and AI agents.
-
-1. [Product Constitution](docs/PRODUCT_CONSTITUTION.md): what AIWorks is, for whom, and how success is measured
-2. [Agent rules](AGENTS.md): what agents may and may not do here
-3. [Delivery Supervisor](docs/SUPERVISOR.md): the runbook — boundary, lifecycle, failures, commands, installation and upgrades
-4. [Operations Dashboard](docs/OPERATIONS_DASHBOARD.md): what the owner sees and the local access boundary
-5. [Decisions](docs/DECISIONS.md): accepted product boundaries
-6. [Worker Context Lifecycle](docs/WORKER_CONTEXT_LIFECYCLE.md): task packets, leases and fresh sessions
-7. [Development status](docs/STATUS.md), the [Project Workspace Plan](docs/PROJECT_WORKSPACE_PLAN.md) and the [designs](docs/design/): what the code does and where it is going
-8. [Publication preparation](docs/PUBLICATION.md): what stays private and how public commits are checked; [Publication guards](docs/PUBLIC_GUARD.md): setting up and checking the Git and Claude Code hooks on a computer
-9. [Glossary](docs/GLOSSARY.md): terms and IDs
 
 ### Contributing and license
 

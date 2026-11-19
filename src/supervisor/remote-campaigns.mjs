@@ -17,7 +17,7 @@
 // accepted here: the browser surface and this surface share no secret.
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { CampaignError, campaignStatus } from './api.mjs';
 import { specsOf } from './plan.mjs';
 import { passedCheck } from './result-review.mjs';
@@ -30,7 +30,8 @@ import { readToken, tokenStoreFrom } from './token-store.mjs';
 
 const validStoreSpec = (store) => store === undefined || (store && typeof store === 'object' && !Array.isArray(store) &&
   (store.kind === 'windows' || (store.kind === 'command' && Array.isArray(store.command) && store.command.length > 0 &&
-    store.command.every((part) => typeof part === 'string' && part))));
+    store.command.every((part) => typeof part === 'string' && part)) ||
+    (store.kind === 'env-file' && typeof store.path === 'string' && store.path.length > 0 && isAbsolute(store.path))));
 
 /**
  * config.json `campaignApi`: `{ enabled: true, tokenRef?: "<name>", tokenRefs?: ["<name>", ...], credentialStore?: {

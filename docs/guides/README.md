@@ -4,6 +4,8 @@ You do not need to learn a list of commands before trying AIWorks. Let your usua
 
 ## Start here
 
+**New: [set up AIWorks layer by layer](../setup/README.md)** explains each part of the setup, what you decide there and the commands behind it. The [plugin catalog](../plugins/README.md) and [how AIWorks works](../HOW_IT_WORKS.md) go deeper.
+
 **[Open your AI client and follow this guide](AI_ASSISTED_START.md).** It has a short setup message for Codex, Claude Code, Cursor Agent or Gemini CLI, followed by a message for your first task.
 
 Using Claude Code? [Using Claude with AIWorks](USING_CLAUDE.md) explains what to ask it, and how AIWorks runs Claude as its worker and coordinator.

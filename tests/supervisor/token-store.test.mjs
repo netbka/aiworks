@@ -2,7 +2,10 @@
 // process over stdin only, never argv or script text. Synthetic exec only; no test reads the real store.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { commandTokenStore, readToken, windowsTokenStore } from '../../src/supervisor/token-store.mjs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { asyncTokenReader, commandTokenStore, envFileTokenStore, envKey, readToken, tokenStoreFrom, windowsTokenStore } from '../../src/supervisor/token-store.mjs';
 
 const REF = 'aiworks-campaign-api:sample-wiki';
 
@@ -49,4 +52,31 @@ test('a configured command helper sets a reference over stdin only', () => {
   assert.equal(calls.at(-1).options.input, 'synthetic-value');
   assert.throws(() => commandTokenStore(['helper'], { exec: () => ({ status: 2 }) }).set(REF, 'v'), /could not set/);
   assert.throws(() => commandTokenStore(['helper'], { exec: () => ({ status: 2 }) }).has(REF), /could not answer/);
+});
+
+test('an env file resolves a secret by its reference, refuses a duplicated key, and set keeps every other line', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aiworks-env-'));
+  const path = join(dir, '.env');
+  const before = Object.keys(process.env).sort();
+  try {
+    assert.equal(envKey(REF), 'AIWORKS_CAMPAIGN_API_SAMPLE_WIKI');
+    assert.equal(envFileTokenStore(path).get(REF), null, 'a missing file is absent');
+    writeFileSync(path, `# comment\r\nOTHER=keep me\r\nexport ${envKey(REF)}="synthetic-value"\r\nDUP=a\nDUP=b\n`);
+    const store = envFileTokenStore(path);
+    assert.equal(readToken(store, REF), 'synthetic-value');
+    assert.equal(store.has(REF), true);
+    assert.equal(store.get('aiworks-campaign-api:absent'), null);
+    assert.equal(await asyncTokenReader({ kind: 'env-file', path }).get(REF), 'synthetic-value');
+    assert.throws(() => store.get('dup'), /more than once/, 'a duplicated key never resolves');
+    store.set(REF, 'new value#1');
+    store.set('other-ref', 'second');
+    const text = readFileSync(path, 'utf8');
+    assert.ok(text.startsWith('# comment\r\nOTHER=keep me\r\n'), 'other lines and comments are untouched');
+    assert.ok(text.includes('DUP=a\nDUP=b\n'));
+    assert.equal(store.get(REF), 'new value#1');
+    assert.equal(store.get('other-ref'), 'second');
+    assert.throws(() => store.set(REF, 'a\nb'), /line break/);
+    assert.throws(() => tokenStoreFrom({ kind: 'env-file', path: 'relative/.env' }), TypeError);
+    assert.deepEqual(Object.keys(process.env).sort(), before, 'no value reaches process.env');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
