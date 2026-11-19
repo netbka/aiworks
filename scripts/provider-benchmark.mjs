@@ -6,6 +6,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { codeSettings } from '../src/supervisor/adapters/agy.mjs';
 import http from 'node:http';
 const ROOT = process.argv[2]; const OUT = join(ROOT, 'results.jsonl');
 const CODEX = process.env.CODEX_BIN ?? 'codex';
@@ -21,21 +22,29 @@ const CONFIGS = [
   ...['gemini-3.8-flash-low', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-high', 'claude-sonnet-4-6', 'claude-opus-4-6-thinking', 'gpt-oss-120b-medium'].map((m) => ({ p: 'agy', m, e: '-' })),
 ];
 // Scoped permissions only: edits in the scratch folder plus git/npm/node; no permission bypass.
-function cmd(c, prompt, dir) {
+function cmd(c, prompt, dir, write) {
   if (c.p === 'claude') return [CLAUDE, ['-p', prompt, '--model', c.m, '--effort', c.e, '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash(git:*)', 'Bash(npm:*)', 'Bash(node:*)', 'Read', 'Edit', 'Write', 'Glob', 'Grep', '--output-format', 'json']];
   if (c.p === 'codex') return [CODEX, ['exec', '-m', c.m, '-c', `model_reasoning_effort="${c.e}"`, '-c', 'forced_login_method="chatgpt"', '-c', 'model_provider="openai"', '--skip-git-repo-check', '-s', 'workspace-write', '-C', dir, prompt]];
-  return [AGY, ['--settings', '{"useG1Credits":false}', '--model', c.m, '--mode', 'accept-edits', '-p', prompt]];
+  // AGY runs with the production code-mode settings (agy.codeSettings; write only for implement and merge) merged with the
+  // credits switch; stream-json output so the tool names it used can be recorded. The web run (write undefined) keeps the old call.
+  if (write === undefined) return [AGY, ['--settings', '{"useG1Credits":false}', '--model', c.m, '--mode', 'accept-edits', '-p', prompt]];
+  return [AGY, ['--settings', JSON.stringify({ useG1Credits: false, ...codeSettings({ write }) }), '--model', c.m, '--output-format', 'stream-json', '-p', prompt]];
 }
-function run(c, prompt, dir, timeout = 420000) {
+function run(c, prompt, dir, timeout = 420000, write) {
   return new Promise((res) => {
-    const [x, a] = cmd(c, prompt, dir); const t0 = Date.now(); let out = '', err = '';
+    const [x, a] = cmd(c, prompt, dir, write); const t0 = Date.now(); let out = '', err = '';
     const ch = spawn(x, a, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
     const to = setTimeout(() => { ch.kill(); }, timeout);
     ch.stdout.on('data', (d) => out += d); ch.stderr.on('data', (d) => err += d);
-    ch.on('close', (code) => { clearTimeout(to); res({ code, out, err: err.slice(-300), ms: Date.now() - t0 }); });
+    ch.on('close', (code) => { clearTimeout(to); res({ code, out, err: err.slice(-300), ms: Date.now() - t0, stream: c.p === 'agy' && write !== undefined }); });
   });
 }
-const text = (c, r) => { if (c.p === 'claude') { try { return JSON.parse(r.out).result ?? r.out; } catch { return r.out; } } return r.out; };
+// AGY stream-json: one JSON event per line. UNVERIFIED shape: tool names are read from step_update.tool_name (as the production
+// audit does); the reply text is the result event's text-like field, else the raw stream.
+const events = (r) => r.out.split(/\r?\n/).flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
+const toolsSeen = (r) => [...new Set(events(r).map((e) => e?.step_update?.tool_name).filter(Boolean))].sort();
+const agyText = (r) => { const res = events(r).find((e) => e?.event === 'result')?.result; const t = res?.text ?? res?.output ?? res?.response ?? res?.result; return typeof t === 'string' ? t : r.out; };
+const text = (c, r) => { if (c.p === 'agy' && r.stream) return agyText(r); if (c.p === 'claude') { try { return JSON.parse(r.out).result ?? r.out; } catch { return r.out; } } return r.out; };
 const tokens = (c, r) => { try { if (c.p === 'claude') { const j = JSON.parse(r.out); return { cost: j.total_cost_usd, tok: (j.usage?.input_tokens ?? 0) + (j.usage?.output_tokens ?? 0) }; } if (c.p === 'codex') { const m = (r.err + r.out).match(/tokens used\s*\n?\s*([\d\s,]+)/); return { tok: m ? Number(m[1].replace(/\D/g, '')) : null }; } } catch { /* none */ } return {}; };
 
 function fixImpl(d) {
@@ -43,7 +52,7 @@ function fixImpl(d) {
   write(d, 'duration.mjs', `export function parseDuration(s){\n  const m = /^(\\d+)([smh])$/.exec(s);\n  if(!m) throw new Error('bad');\n  return Number(m[1]) * {s:1,m:60,h:3600}[m[2]];\n}\n`);
   write(d, 'duration.test.mjs', `import test from 'node:test';import assert from 'node:assert';import {parseDuration as p} from './duration.mjs';\ntest('simple',()=>{assert.equal(p('90s'),90);assert.equal(p('2m'),120)});\ntest('compound',()=>{assert.equal(p('1h30m'),5400);assert.equal(p('2m10s'),130)});\ntest('invalid',()=>{assert.throws(()=>p('abc'));assert.throws(()=>p(''));assert.throws(()=>p('5x'))});\n`);
 }
-const impl = { prompt: 'In this directory the tests in duration.test.mjs fail. Fix duration.mjs so `npm test` passes. Do not edit the test file. Reply with one line when done.',
+const impl = { write: true, prompt: 'In this directory the tests in duration.test.mjs fail. Fix duration.mjs so `npm test` passes. Do not edit the test file. Reply with one line when done.',
   setup: fixImpl, score: (d) => { const ok = sh(d, 'npm', ['test']).status === 0; const same = readFileSync(join(d, 'duration.test.mjs'), 'utf8').includes("assert.equal(p('1h30m'),5400)"); return { pass: ok && same, note: ok ? '' : 'tests fail' }; } };
 
 function fixMerge(d) {
@@ -56,7 +65,7 @@ function fixMerge(d) {
   git(d, 'checkout', '-q', 'main');
   write(d, 'cfg.mjs', `export const config = {\n  timeout: 30,\n  retries: 1,\n  cache: true,\n};\n`); git(d, 'commit', '-qam', 'main: cache');
 }
-const merge = { prompt: 'This git repo has branch main checked out and a branch "feature". Merge feature into main, resolving the conflict so the changes of both branches are kept, make sure `npm test` passes, and finish with a merge commit (two parents). Reply with one line when done.',
+const merge = { write: true, prompt: 'This git repo has branch main checked out and a branch "feature". Merge feature into main, resolving the conflict so the changes of both branches are kept, make sure `npm test` passes, and finish with a merge commit (two parents). Reply with one line when done.',
   setup: fixMerge, score: (d) => { const t = sh(d, 'npm', ['test']).status === 0; const par = git(d, 'rev-list', '--parents', '-n', '1', 'HEAD').stdout.trim().split(' ').length - 1; const clean = !readFileSync(join(d, 'cfg.mjs'), 'utf8').includes('<<<<<<<'); return { pass: t && par === 2 && clean, note: `tests=${t} parents=${par}` }; } };
 
 const PAGER_OK = `export function page(items, n, size){\n  const start = (n - 1) * size;\n  return items.slice(start, start + size);\n}\n`;
@@ -70,17 +79,17 @@ const fixVerify = (bug) => (d) => {
 };
 const verifyP = 'You are an independent reviewer. Task that was assigned: "page(items, n, size) returns the n-th page of size items, pages numbered from 1". Review the diff `git diff main..change` in this repo (read only, do not modify files). Reply with ONLY a JSON object {"verdict":"accepted"|"rejected","finding":"<one sentence>"}.';
 const verdictScore = (want) => (d, out) => { const j = (out.match(/\{[\s\S]*\}/) || [''])[0]; try { const o = JSON.parse(j); return { pass: o.verdict === want, note: String(o.finding).slice(0, 80) }; } catch { return { pass: false, note: 'no json' }; } };
-const verifyBad = { prompt: verifyP, setup: fixVerify(true), score: verdictScore('rejected') };
-const verifyOk = { prompt: verifyP, setup: fixVerify(false), score: verdictScore('accepted') };
+const verifyBad = { write: false, prompt: verifyP, setup: fixVerify(true), score: verdictScore('rejected') };
+const verifyOk = { write: false, prompt: verifyP, setup: fixVerify(false), score: verdictScore('accepted') };
 
-const plan = { prompt: 'You are a delivery planner. Brief: "Add per-user rate limiting to our small Node API. Requirements: no new npm dependencies; use the library express-rate-limit; limit 100 requests/minute; must have tests; must be documented in the README." Reply with ONLY a JSON object {"conflicts":[strings],"tasks":[{"id":string,"dependsOn":[ids],"acceptance":[strings]}]} with 3 to 5 tasks. List any contradiction in the brief under conflicts.',
+const plan = { write: false, prompt: 'You are a delivery planner. Brief: "Add per-user rate limiting to our small Node API. Requirements: no new npm dependencies; use the library express-rate-limit; limit 100 requests/minute; must have tests; must be documented in the README." Reply with ONLY a JSON object {"conflicts":[strings],"tasks":[{"id":string,"dependsOn":[ids],"acceptance":[strings]}]} with 3 to 5 tasks. List any contradiction in the brief under conflicts.',
   setup: () => {}, score: (d, out) => { const j = (out.match(/\{[\s\S]*\}/) || [''])[0]; try { const o = JSON.parse(j); const ids = new Set(o.tasks.map((t) => t.id)); const okT = o.tasks.length >= 3 && o.tasks.length <= 5 && o.tasks.every((t) => t.acceptance?.length && t.dependsOn.every((x) => ids.has(x))); const flag = o.conflicts.some((c) => /depend|express-rate-limit|library/i.test(c)); return { pass: okT && flag, note: `tasks=${o.tasks.length} conflictFlagged=${flag}` }; } catch { return { pass: false, note: 'no json' }; } } };
 
 const TASKS = { plan, implement: impl, merge, verifyBug: verifyBad, verifyClean: verifyOk };
 async function one(c, name, t) {
   const dir = join(ROOT, 'w', `${c.p}-${c.m}-${c.e}-${name}`.replace(/[^\w.-]/g, '_')); rmSync(dir, { recursive: true, force: true }); mkdirSync(dir, { recursive: true });
-  t.setup(dir); const r = await run(c, t.prompt, dir); const o = text(c, r); let s; try { s = t.score(dir, o); } catch (e) { s = { pass: false, note: 'score error ' + e.message }; }
-  const row = { ...c, task: name, pass: s.pass, note: s.note, ms: r.ms, exit: r.code, ...tokens(c, r) }; writeFileSync(OUT, JSON.stringify(row) + '\n', { flag: 'a' }); console.log(JSON.stringify(row));
+  t.setup(dir); const r = await run(c, t.prompt, dir, undefined, t.write); const o = text(c, r); let s; try { s = t.score(dir, o); } catch (e) { s = { pass: false, note: 'score error ' + e.message }; }
+  const row = { ...c, task: name, pass: s.pass, note: s.note, ms: r.ms, exit: r.code, ...tokens(c, r), ...(r.stream ? { toolsSeen: toolsSeen(r) } : {}) }; writeFileSync(OUT, JSON.stringify(row) + '\n', { flag: 'a' }); console.log(JSON.stringify(row));
 }
 async function webRun(c) {
   const srv = http.createServer((q, s) => { s.setHeader('content-type', 'text/html'); s.end('<html><body><h1>Status</h1><div id="v"></div><script>setTimeout(()=>{document.getElementById("v").textContent="code:7413"},800)</script></body></html>'); }).listen(0);

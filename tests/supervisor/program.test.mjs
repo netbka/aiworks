@@ -65,7 +65,6 @@ test('a program record has one shape; an unknown or missing field is refused wit
     ['a claude-cli provider without a permission mode', record({ executor: { kind: 'claude-cli', model: 'opus', implementerTimeoutMinutes: 5, verifierTimeoutMinutes: 5 } })],
     ['bypassPermissions', record({ executor: { kind: 'claude-cli', model: 'opus', permissionMode: 'bypassPermissions', implementerTimeoutMinutes: 5, verifierTimeoutMinutes: 5 } })],
     ['a duplicate provider (declaration rule)', record({ executor: { ...record().executor, providers: [{ kind: 'codex-cli' }, { kind: 'codex-cli' }] } })],
-    ['only the web worker (declaration rule)', record({ executor: { kind: 'agy-cli', model: 'gemini', implementerTimeoutMinutes: 5, verifierTimeoutMinutes: 5 } })],
     ['too many constraints', record({ constraints: Array.from({ length: 13 }, (_, i) => `constraint ${i}`) })],
     ['a blank constraint', record({ constraints: ['   '] })],
     ['not an object', ['PRIVATE-FIELD']],

@@ -238,9 +238,8 @@ export function validateDeclaration(declaration) {
       !providers.some((provider) => provider?.kind === 'claude-cli' && !provider.researchOnly)) {
     bad('a task with web.mode build needs claude-cli without researchOnly: agy-cli never runs a build task');
   }
-  if (Array.isArray(tasks) && tasks.some((task) => task && task.web === undefined) && providers.every((provider) => provider?.kind === 'agy-cli')) {
-    bad('a task without web needs an executor other than agy-cli, which runs only web acceptance tasks');
-  }
+  // A task without web on an all-agy declaration registers: whether agy may run it is the runtime switch config.json
+  // agy.codeRoles, which registration cannot see. With it off the task waits as unavailable (executors.roleUnavailableReason).
   if (errors.length) throw new TypeError(`invalid campaign declaration: ${errors.join('; ')}`);
   return d;
 }
