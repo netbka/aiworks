@@ -251,6 +251,7 @@ flowchart LR
 | [Настройка по слоям](docs/setup/README.ru.md) | Каждый слой: зачем он, что решаете вы, команды, как проверить |
 | [Плагины](docs/plugins/README.ru.md) | Паспорт каждого плагина: настройки, секреты, промпты «включи» и «выключи» |
 | [Как это устроено](docs/HOW_IT_WORKS.ru.md) | Жизнь одного шага, правила безопасности, где что хранится |
+| [Какой агент для чего](docs/AGENTS_COMPARISON.ru.md) | Сравнение Claude, Codex, AGY и Cursor на одинаковых задачах и что ставить на какую роль |
 | [Claude и AIWorks](docs/guides/USING_CLAUDE.md) | Три роли Claude и что ему говорить (англ.) |
 | [Справочник команд](docs/guides/CLI_REFERENCE.md) | Все команды (англ.) |
 | [Если что-то встало](docs/guides/TROUBLESHOOTING.md) | Частые остановки и что делать (англ.) |
