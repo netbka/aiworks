@@ -240,8 +240,10 @@ function cursorGate(executor, command, includedOnly) {
 // call (includedOnlyProblem). Without them a Cursor worker is unavailable.
 export function unavailableReason(executor, workspace, ghCommand, { probe = null, chromeCommand = null, web = false, profileHome = null, workList = null,
   command = null, includedOnly = null } = {}) {
-  // agy runs from a run-local profile home with no project or user extensions; it, and Claude on a web task, need only a browser.
-  if (executor.kind === 'agy-cli' || web) return agy.unavailableReason(chromeCommand);
+  // agy runs from a run-local profile home with no user extensions; on a web task it, and Claude, need only a browser. Its
+  // code mode needs no browser, only a checkout without project AGY extensions (agy.PROJECT_EXTENSIONS).
+  if (web) return agy.unavailableReason(chromeCommand);
+  if (executor.kind === 'agy-cli') return agy.codeUnavailableReason(workspace);
   if (executor.kind === 'claude-cli') {
     if (!executor.researchOnly) return null;
     // Safe mode deliberately preserves mandatory managed hooks. Do not bypass
@@ -294,15 +296,17 @@ export function unavailableReason(executor, workspace, ghCommand, { probe = null
   return executor.kind === 'cursor-cli' ? cursorGate(executor, command, includedOnly) : null;
 }
 
-/** config.json agy.codeRoles: only the exact value true lets AGY take the ordinary (non-web) worker roles. */
+/** config.json agy.codeRoles: only the exact value true lets AGY take report tasks outside the browser. */
 export const agyCodeRoles = (config) => config?.agy?.codeRoles === true;
 
 export function roleUnavailableReason(executor, role, deliverable, platform = process.platform, web = false, { agyCodeRoles: agyCode = false } = {}) {
   // A web acceptance task (task.web) needs a browser: only agy has one. A build task (web "build") changes pages, and agy's
   // own browser cannot be audited for that, so it never runs one, in either role. A task without web goes to agy only when
-  // the owner switched agy.codeRoles on (agyCode); agy's code mode then takes every role and deliverable (agy.mjs).
+  // the owner switched agy.codeRoles on (agyCode), and then only a report task, in either role: a commit needs to leave
+  // agy's sandbox, and outside it no agy rule can deny a family of commands (agy.mjs, code mode).
   if (executor.kind === 'agy-cli') return web === 'build' ? 'AGY never runs a web build task: only Claude with the isolated browser does'
-    : web || agyCode ? null : 'AGY runs only web acceptance tasks';
+    : web ? null : !agyCode ? 'AGY runs only web acceptance tasks'
+      : deliverable === 'commit' ? 'AGY runs only report tasks outside the browser: a commit needs to leave its sandbox, where no rule contains it' : null;
   if (web) return executor.kind === 'claude-cli' && !executor.researchOnly ? null
     : 'Web acceptance tasks run only on a browser worker: AGY, or Claude with the isolated browser';
   // Windows Cursor runs only tool-free through the WSL transport (cursorGate): an ordinary Cursor worker with tools has no
@@ -334,11 +338,10 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
   // Resolved first, so a bad home or a kind CAAM does not rotate fails before any run file is written.
   const profile = profileEnv(executor.kind, profileHome);
   if (executor.kind === 'agy-cli') {
-    // No web: code mode (reachable only after roleUnavailableReason allowed it, i.e. agy.codeRoles is on).
-    if (!web) {
-      if (deliverable !== 'commit' && deliverable !== 'report') throw new Error('The AGY code worker requires a commit or report deliverable');
-      return agy.prepareCode({ command, executor, role, deliverable, publicationRewrite, sessionId, digest, runDir, workspace, prompt, timeoutMs });
-    }
+    // No web: code mode, a report task only (reachable only after roleUnavailableReason allowed it, i.e. agy.codeRoles is
+    // on). With an adaptive-planning stage the run's terminal schema is the stage's, as for every other worker.
+    if (!web) return agy.prepareCode({ command, executor, role, deliverable, sessionId, digest, runDir, workspace, prompt, timeoutMs,
+      resultSchema: STAGES.includes(stage) ? stageSchema(role, stage) : null });
     if (deliverable !== 'report' || agy.webMode(web) !== 'acceptance') throw new Error('The AGY browser worker requires a web acceptance task with a report deliverable');
     return agy.prepare({ command, executor, role, sessionId, digest, runDir, prompt, web, chromeCommand, browserLogin, timeoutMs });
   }
@@ -478,11 +481,12 @@ export function classify({ routed = false, ...args }) {
 /**
  * With a stage (WORK_ENVELOPE slice E5), the stage's optional fields are taken out of the structured result and validated
  * here; the adapter classifies the rest exactly as before, and a valid result gets the stage fields back. A stage field
- * that is not valid makes the result invalid. Without a stage, or for the browser worker, this is classifyRun unchanged.
+ * that is not valid makes the result invalid. Without a stage, or for the browser worker, this is classifyRun unchanged;
+ * agy's code mode (an explicit web false) is staged like any other worker.
  */
 function classifyStaged({ stage = null, ...args }) {
   const kind = nativeKind(args.executorKind);
-  if (!STAGES.includes(stage) || kind === 'agy-cli') return classifyRun(args);
+  if (!STAGES.includes(stage) || (kind === 'agy-cli' && args.expect?.web !== false)) return classifyRun(args);
   let extra = {}, invalid = null;
   const strip = (result) => {
     const split = splitStage(args.role, stage, result);
@@ -497,7 +501,9 @@ function classifyStaged({ stage = null, ...args }) {
       if (out?.structured_output && typeof out.structured_output === 'object') stdoutText = JSON.stringify({ ...out, structured_output: strip(out.structured_output) });
     } catch { /* unreadable output is classified by the adapter, as before */ }
   }
-  const outcome = classifyRun({ ...args, stdoutText, strip: kind === 'claude-cli' ? null : (result) => strip(cleanNulls(result, stageSchema(args.role, stage))) });
+  // agy's schema is not strict (an optional field is left out, never null), so its result is split as it is.
+  const outcome = classifyRun({ ...args, stdoutText, strip: kind === 'claude-cli' ? null : kind === 'agy-cli' ? strip
+    : (result) => strip(cleanNulls(result, stageSchema(args.role, stage))) });
   if (invalid && outcome.class === 'result') return { ...outcome, class: 'invalid-result', detail: invalid, value: undefined };
   return outcome.class === 'result' ? { ...outcome, value: { ...outcome.value, ...extra } } : outcome;
 }
@@ -527,7 +533,7 @@ function classifyRun({ executorKind, strip = null, ...args }) {
     executorKind: kind, receipt: {}, exitCode: args.run.exitCode ?? null, class: 'error', detail: 'executor launch permission denied',
   };
   if (kind === 'claude-cli') return { ...claude.classify(args), executorKind: kind };
-  if (kind === 'agy-cli') return { ...agy.classify(args), executorKind: kind };
+  if (kind === 'agy-cli') return { ...agy.classify({ ...args, strip }), executorKind: kind };
   const { run, stdoutText, stderrText, expect, now, role } = args;
   let nativeSessionId = null, value = null, tokens = { usage: null }, failure = '', completed = false, malformed = false, toolDenied = false, researchToolUsed = false, setupFailure = null;
   try {

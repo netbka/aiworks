@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { BROWSER_SERVER, BUILD_RETRY_NOTE, CODE_TOOLS, CODE_WRITE_TOOLS, DENY, TOOLS, webScope } from '../../src/supervisor/adapters/agy.mjs';
+import { BROWSER_SERVER, BUILD_RETRY_NOTE, CODE_PERMISSION_MODE, DENY, TOOLS, webScope } from '../../src/supervisor/adapters/agy.mjs';
 import { validResult } from '../../src/supervisor/adapters/claude.mjs';
 import { passedCheck } from '../../src/supervisor/result-review.mjs';
 import { agyCodeRoles, buildPrompt, classify, prepare, roleUnavailableReason, unavailableReason, webFlag } from '../../src/supervisor/adapters/executors.mjs';
@@ -89,12 +89,12 @@ test('only the browser workers run web tasks, and agy runs nothing else', (t) =>
     assert.match(roleUnavailableReason({ ...claudeProvider, researchOnly: true }, role, 'report', 'win32', true), /browser worker/);
     for (const kind of ['codex-cli', 'cursor-cli']) assert.match(roleUnavailableReason({ kind }, role, 'report', 'win32', true), /browser worker/);
   }
-  assert.match(unavailableReason(agy, '.', null, {}), /commands.chrome/);
-  assert.match(unavailableReason(agy, '.', null, { chromeCommand: ['chrome.exe'] }), /absolute/);
-  assert.match(unavailableReason(agy, '.', null, { chromeCommand: [join(tmpdir(), 'no-such-chrome.exe')] }), /does not exist/);
-  assert.match(unavailableReason(agy, '.', null, { chromeCommand: fakeChrome(t, null) }), /Chrome 149 or newer .*found no version/);
-  assert.match(unavailableReason(agy, '.', null, { chromeCommand: fakeChrome(t, '148.0.7000.10') }), /Chrome 149 or newer .*found 148/);
-  assert.equal(unavailableReason(agy, '.', null, { chromeCommand: fakeChrome(t, '155.0.8059.39') }), null);
+  assert.match(unavailableReason(agy, '.', null, { web: true }), /commands.chrome/);
+  assert.match(unavailableReason(agy, '.', null, { chromeCommand: ['chrome.exe'], web: true }), /absolute/);
+  assert.match(unavailableReason(agy, '.', null, { chromeCommand: [join(tmpdir(), 'no-such-chrome.exe')], web: true }), /does not exist/);
+  assert.match(unavailableReason(agy, '.', null, { chromeCommand: fakeChrome(t, null), web: true }), /Chrome 149 or newer .*found no version/);
+  assert.match(unavailableReason(agy, '.', null, { chromeCommand: fakeChrome(t, '148.0.7000.10'), web: true }), /Chrome 149 or newer .*found 148/);
+  assert.equal(unavailableReason(agy, '.', null, { chromeCommand: fakeChrome(t, '155.0.8059.39'), web: true }), null);
 });
 
 test('each agy run gets its own profile home, explicit denies and a browser locked to the declared origins', (t) => {
@@ -420,51 +420,82 @@ test('an origin removed from the registry stops new build runs', { skip: skipWit
   assert.equal(store.all('SELECT id FROM operations WHERE campaign_id = ?', d.campaignId).length, 0, 'no worker was dispatched');
 });
 
-test('agy takes ordinary code roles only when agy.codeRoles is exactly true, and the router follows the same switch', () => {
-  for (const role of ['implementer', 'verification']) for (const deliverable of ['commit', 'report']) {
-    assert.match(roleUnavailableReason(agy, role, deliverable, 'linux', false), /only web acceptance/, 'off by default');
-    assert.match(roleUnavailableReason(agy, role, deliverable, 'linux', false, { agyCodeRoles: false }), /only web acceptance/);
-    assert.equal(roleUnavailableReason(agy, role, deliverable, 'linux', false, { agyCodeRoles: true }), null);
+test('agy code mode takes only report tasks, only under agy.codeRoles, in a sandbox it cannot leave', (t) => {
+  for (const role of ['implementer', 'verification']) {
+    for (const deliverable of ['commit', 'report']) {
+      assert.ok(roleUnavailableReason(agy, role, deliverable, 'win32', false), 'off by default');
+      assert.ok(roleUnavailableReason(agy, role, deliverable, 'win32', false, { agyCodeRoles: false }));
+    }
+    assert.equal(roleUnavailableReason(agy, role, 'report', 'win32', false, { agyCodeRoles: true }), null);
+    assert.ok(roleUnavailableReason(agy, role, 'commit', 'win32', false, { agyCodeRoles: true }), 'a commit would have to leave the sandbox');
   }
-  assert.match(roleUnavailableReason(agy, 'implementer', 'report', 'linux', 'build', { agyCodeRoles: true }), /never runs a web build/, 'a build task stays Claude-only');
+  assert.ok(roleUnavailableReason(agy, 'implementer', 'report', 'win32', 'build', { agyCodeRoles: true }), 'a build task stays Claude-only');
   assert.deepEqual([{ agy: { codeRoles: true } }, { agy: { codeRoles: 'true' } }, { agy: {} }, {}, null].map(agyCodeRoles), [true, false, false, false, false]);
-  const inputs = (extra = {}) => ({ stage: 'implement', chain: true, task: { deliverable: 'commit', web: false }, platform: 'linux',
+  const inputs = (deliverable, extra = {}) => ({ stage: 'implement', chain: true, task: { deliverable, web: false }, platform: 'win32',
     candidates: [{ kind: 'agy-cli', model: agy.model }, { kind: 'claude-cli', model: 'opus' }],
     hostFacts: ['agy-cli', 'claude-cli'].map((kind) => ({ kind, cliConfigured: true, hostUnavailable: false, wait: null })),
     escalation: { priorAttempts: [] }, ...extra });
-  const settingsOf = (role, deliverable) => {
-    const runDir = mkdtempSync(join(tmpdir(), 'aiworks-agy-code-'));
-    try {
-      const invocation = prepare({ executor: agy, command: ['agy'], role, deliverable, sessionId: 'bound-run', digest, runDir, workspace: '/work/tree', prompt: 'p', timeoutMs: 60_000 });
-      assert.equal(invocation.cwd, '/work/tree');
-      assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'agy-home', '.gemini', 'config', 'mcp_config.json'), 'utf8')), { mcpServers: {} });
-      return JSON.parse(readFileSync(join(runDir, 'agy-home', '.gemini', 'antigravity-cli', 'settings.json'), 'utf8')).permissions;
-    } finally { rmSync(runDir, { recursive: true, force: true }); }
-  };
-  assert.ok(settingsOf('implementer', 'commit').allow.includes('write_file(*)'));
-  for (const [role, deliverable] of [['verification', 'commit'], ['implementer', 'report']]) {
-    const permissions = settingsOf(role, deliverable);
-    assert.ok(!permissions.allow.includes('write_file(*)') && permissions.deny.includes('write_file(*)'), `${role} ${deliverable} cannot write`);
-    assert.ok(permissions.deny.includes('mcp(*)'));
-  }
-  assert.equal(route(inputs()).chosen.kind, 'claude-cli');
-  assert.equal(route(inputs({ agyCodeRoles: 'yes' })).chosen.kind, 'claude-cli', 'only the exact true counts');
-  assert.equal(route(inputs({ agyCodeRoles: true })).chosen.kind, 'agy-cli');
-  assert.equal(route(inputs({ candidates: [{ kind: 'agy-cli', model: agy.model }], hostFacts: [{ kind: 'agy-cli', cliConfigured: true, hostUnavailable: false, wait: null }] })).chosen, null);
+  assert.equal(route(inputs('report')).chosen.kind, 'claude-cli');
+  assert.equal(route(inputs('report', { agyCodeRoles: 'yes' })).chosen.kind, 'claude-cli', 'only the exact true counts');
+  assert.equal(route(inputs('report', { agyCodeRoles: true })).chosen.kind, 'agy-cli');
+  assert.equal(route(inputs('commit', { agyCodeRoles: true })).chosen.kind, 'claude-cli');
+  const runDir = mkdtempSync(join(tmpdir(), 'aiworks-agy-code-'));
+  const workspace = mkdtempSync(join(tmpdir(), 'aiworks-agy-tree-'));
+  t.after(() => { rmSync(runDir, { recursive: true, force: true }); rmSync(workspace, { recursive: true, force: true }); });
+  const launch = (deliverable) => prepare({ executor: agy, command: ['agy'], role: 'verification', deliverable, sessionId: 'bound-run', digest, runDir, workspace, prompt: 'p', timeoutMs: 60_000 });
+  assert.throws(() => launch('commit'));
+  const invocation = launch('report');
+  assert.equal(invocation.cwd, workspace);
+  assert.ok(invocation.argv.includes('--sandbox'));
+  assert.equal(invocation.env.AGY_CLI_DISABLE_AUTO_UPDATE, '1');
+  assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'agy-home', '.gemini', 'config', 'mcp_config.json'), 'utf8')), { mcpServers: {} });
+  const settings = JSON.parse(readFileSync(join(runDir, 'agy-home', '.gemini', 'antigravity-cli', 'settings.json'), 'utf8'));
+  assert.equal(settings.toolPermission, CODE_PERMISSION_MODE, 'a sandboxed command runs; leaving the sandbox needs an approval print mode refuses');
+  assert.ok(!settings.permissions.allow.some((rule) => rule.startsWith('command(')), 'a command allow rule would also approve leaving the sandbox');
+  for (const rule of ['write_file(*)', 'mcp(*)', 'read_url(*)']) assert.ok(settings.permissions.deny.includes(rule));
+  assert.equal(unavailableReason(agy, workspace, null, {}), null, 'code mode needs no browser');
+  mkdirSync(join(workspace, '.agents'));
+  writeFileSync(join(workspace, '.agents', 'hooks.json'), '{}');
+  assert.ok(unavailableReason(agy, workspace, null, {}), 'a project hook would run outside the audit');
 });
 
-test('the code-mode audit voids MCP calls, unknown built-ins and writes by a write-less run', () => {
+test('the code-mode audit voids denied commands, writes, MCP calls, unknown tools and a sandbox bypass', () => {
   const code = { ...expect, web: false };
-  const read = (tools, options = {}) => run(events({ result: { runId: 'bound-run', packetDigest: digest, result: options.result ?? terminal }, tools }), { expect: code, ...options.args });
-  const named = (...names) => names.map((tool_name) => ({ state: 'DONE', tool_name }));
-  assert.equal(read(named(...CODE_TOOLS.filter((name) => !CODE_WRITE_TOOLS.includes(name)))).class, 'result', 'every non-writing code tool is allowed');
-  const commit = { result: 'resolved', headSha: 'c'.repeat(40), summary: 'synthetic', report: 'synthetic report' };
-  assert.equal(read(named(...CODE_WRITE_TOOLS), { result: commit, args: { expect: { ...code, deliverable: 'commit' } } }).class, 'result', 'an implementing commit run may write');
-  assert.match(read([browserTool('DONE')]).detail, /unexpected tool \(browser\/navigate_page\)/, 'any MCP call voids a code run');
-  assert.match(read(named('search_web')).detail, /unexpected tool \(search_web\)/);
-  for (const args of [{ role: 'verification', expect: { ...code, deliverable: 'commit' } }, { expect: code }, { expect: { ...code, deliverable: 'commit', publicationRewrite: true } }]) {
-    const voided = read(named('write_to_file'), { args });
-    assert.equal(voided.violation, true);
-    assert.match(voided.detail, /unexpected tool \(write_to_file\)/);
-  }
+  const systemMessage = JSON.stringify({ event: 'step_update', step_update: { step_index: 0, step_type: 'system_message', state: 'DONE' } });
+  const read = (tools, { mode = CODE_PERMISSION_MODE, extra = {} } = {}) => {
+    const lines = events({ tools, mode, extra }).split('\n');
+    return run([lines[0], systemMessage, ...lines.slice(1)].join('\n'), { expect: code });
+  };
+  const shell = (CommandLine) => ({ state: 'DONE', tool_name: 'run_command', tool_info: { parameters: { CommandLine } } });
+  const allowed = [{ state: 'DONE', tool_name: 'read_file', tool_info: { parameters: { Path: 'app.js' } } }, shell('git status --short'),
+    shell('git log --grep=push --oneline'), shell('grep -rn "git push" docs'), { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'status' } } }];
+  assert.equal(read(allowed).class, 'result');
+  const voided = [
+    ...['git push origin HEAD', 'git -C . push', 'cmd /c "git push origin x"', 'git status; git commit -am x', '& "git" push', 'gh pr create --fill',
+      'gh workflow run ci', 'npm run deploy', 'ssh host', 'powershell -EncodedCommand ZQB='].map(shell),
+    { state: 'DONE', tool_name: 'run_command', tool_info: { parameters: {} } },
+    { state: 'DONE', tool_name: 'write_file' }, { state: 'DONE', tool_name: 'search_web' }, browserTool('DONE'),
+    { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'send_input' } } },
+  ];
+  for (const step of voided) assert.equal(read([step]).violation, true, JSON.stringify(step));
+  assert.equal(read(allowed, { mode: 'request-review' }).violation, true, 'only the sandboxed permission mode');
+  assert.equal(read(allowed, { extra: { denied_actions: [{ action: 'command' }] } }).violation, true, 'a refused bypass voids the run');
+});
+
+test('an adaptive-planning stage reaches agy code mode: PLAN keeps its amendment, ACCEPT its uncovered items', (t) => {
+  const runDir = mkdtempSync(join(tmpdir(), 'aiworks-agy-stage-'));
+  t.after(() => rmSync(runDir, { recursive: true, force: true }));
+  const schema = (stage) => {
+    prepare({ executor: agy, command: ['agy'], role: 'implementer', deliverable: 'report', sessionId: 'bound-run', digest, runDir, workspace: runDir, prompt: 'p', timeoutMs: 60_000, stage });
+    return JSON.parse(readFileSync(join(runDir, 'output-schema.json'), 'utf8')).properties.result.properties;
+  };
+  assert.ok(schema('plan').amendment && schema('accept').uncovered);
+  assert.ok(!schema(null).amendment);
+  const code = { ...expect, web: false };
+  const staged = (stage, extra) => classify({ executorKind: 'agy-cli', role: 'implementer', run: { exitCode: 0 }, stderrText: '', now: 1000, expect: code, stage,
+    stdoutText: events({ mode: CODE_PERMISSION_MODE, result: { runId: 'bound-run', packetDigest: digest, result: { ...terminal, ...extra } } }) });
+  const amendment = { basis: 'e'.repeat(64), ops: [{ op: 'cancel', taskId: 'T9', reason: 'synthetic' }] };
+  assert.deepEqual(staged('plan', { amendment }).value.amendment, amendment);
+  assert.deepEqual(staged('accept', { uncovered: ['A2'] }).value.uncovered, ['A2']);
+  assert.equal(staged('plan', { amendment: { ...amendment, basis: 'not-a-digest' } }).class, 'invalid-result');
 });

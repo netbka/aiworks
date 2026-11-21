@@ -2,9 +2,9 @@ import { providerTokens } from '../token-usage.mjs';
 // Antigravity CLI (agy) adapter. Two modes, both one fresh headless session per operation:
 // - browser mode (a task that declares `web`, acceptance only): the browser MCP server is the only tool, in an empty
 //   scratch workspace;
-// - code mode (a task without `web`, only when config.json agy.codeRoles is exactly true; executors.mjs
-//   roleUnavailableReason refuses it otherwise): the task worktree is the workspace, agy's own file and command tools are
-//   allowed (writes only for an implementing commit task), and no MCP server is loaded at all.
+// - code mode (a report task without `web`, only when config.json agy.codeRoles is exactly true; executors.mjs
+//   roleUnavailableReason refuses it otherwise, and every commit task): the task worktree is the workspace, agy's own
+//   file-reading tools and its sandboxed commands are allowed, nothing may write, and no MCP server is loaded at all.
 // Each operation is one fresh `agy` print-mode session with a stream-json prompt on stdin, a JSON-schema terminal result
 // and a per-step event log that the supervisor audits. Probed with agy 1.3.3 on workstation (2026-10-11):
 // - agy reads every setting from %USERPROFILE%\.gemini and takes its login from the OS keyring, so a run-local
@@ -16,7 +16,7 @@ import { providerTokens } from '../token-usage.mjs';
 // - MCP navigation is also gated by agy's execute_url(host) rule, a second lock behind Chrome's URL allowlist.
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as claude from './claude.mjs';
 
@@ -63,14 +63,68 @@ export const MIN_CHROME = 149;
 // The audit reads the whole event log up to this size (canary runs wrote 50-85 KB); a longer log cannot be audited.
 export const LOG_LIMIT = 64 * 1024 * 1024;
 
-// Code mode. Deny beats allow: agy's own URL reader, its unsandboxed escape and every MCP server are never needed.
-export const CODE_DENY = ['read_url(*)', 'unsandboxed(*)', 'mcp(*)'];
-// The agy built-in tools a code worker may use (tool_name of a step_update). UNVERIFIED: these names are a best guess for
-// agy 1.3.3 and must be confirmed on a real machine by the provider benchmark's `toolsSeen` before code mode is switched on.
-export const CODE_TOOLS = ['view_file', 'list_dir', 'find_by_name', 'grep_search', 'codebase_search', 'view_file_outline', 'write_to_file',
-  'replace_file_content', 'multi_replace_file_content', 'run_command', 'command_status', 'finish'];
-// The subset of CODE_TOOLS that changes files; a run that must not write (verification, report) is voided by any of them.
-export const CODE_WRITE_TOOLS = ['write_to_file', 'replace_file_content', 'multi_replace_file_content'];
+// Code mode (AW-024). Probed with agy 1.5.9 on a Windows 11 workstation (2026-11-21), in throwaway repositories with a
+// linked worktree and a local bare remote:
+// - print mode runs every command in agy's terminal sandbox: no network (a name did not resolve, and even 127.0.0.1 was
+//   refused), and .git read-only to commands (git add, git commit and a push to the local remote failed);
+// - a command may ask to leave the sandbox (run_command BypassSandbox, which the event log does not show). A command(*)
+//   allow rule granted that, and the command reached the network; unsandboxed(...) rules are ignored as invalid. Under
+//   toolPermission proceed-in-sandbox with no command allow rule, sandboxed commands run without approval and a bypass
+//   needs one, which print mode refuses: a permission error, and the result lists it in denied_actions;
+// - on Windows a command deny rule matches the whole command exactly: command(gh --version) denied only that command, and
+//   command(git push), command(git commit*), command(gh *) and command(regex:...) denied nothing longer. No rule can deny a
+//   family of commands, so nothing contains a command outside the sandbox, and a commit needs to leave it: code mode runs
+//   only report tasks (executors.roleUnavailableReason), and nothing in it may write;
+// - the audit (classify) is the second lock: an unknown tool, a write, or a command line naming a publication, merge,
+//   deploy, remote-shell or history-writing command (DENIED_COMMANDS) voids the run. It reads the command text only, so a
+//   command built at run time escapes it; the sandbox is the lock that holds then.
+export const CODE_PERMISSION_MODE = 'proceed-in-sandbox';
+// Deny beats allow: agy's own URL reader and browser navigation, every MCP server and every file write are never needed.
+// No command(...) rule at all: an allow rule would also approve leaving the sandbox.
+export const CODE_DENY = ['read_url(*)', 'execute_url(*)', 'mcp(*)', 'write_file(*)'];
+// The agy built-in tools a code worker may use (tool_name of a step_update). Seen in agy 1.5.9 streams: read_file (a
+// file read), run_command and manage_task (a backgrounded command's status); list_dir, find_by_name, grep_search and
+// view_file are agy 1.5.9's other read-only tools; finish submits the structured result. A write shows as write_file.
+export const CODE_TOOLS = ['read_file', 'view_file', 'list_dir', 'find_by_name', 'grep_search', 'run_command', 'manage_task', 'finish'];
+// manage_task may only look at or stop the run's own background commands.
+export const MANAGE_TASK_ACTIONS = ['status', 'list', 'kill'];
+// Step types of a code-mode stream: agy 1.5.9 adds system_message steps (a backgrounded command finished).
+const CODE_STEP_TYPES = ['user_input', 'agent_response', 'tool', 'finish', 'system_message'];
+// Project extensions agy loads from a workspace's .agents folder: hooks and plugins run programs, custom agents and
+// workflows carry their own tools. A run-local profile does not stop them, so a checkout with one is not given to agy.
+export const PROJECT_EXTENSIONS = ['.agents/hooks.json', '.agents/plugins.json', '.agents/plugins', '.agents/agents', '.agents/workflows',
+  '.agents/skills.json', '.agents/skills'];
+
+// What ALWAYS_DENIED and VERIFIER_DENIED deny a Claude worker (claude.mjs), as patterns over a whole command line: a
+// command name may follow a quote, a path separator, a shell operator or a wrapper such as `cmd /c` or `&`, and Git's
+// global options (-C dir, -c key=value, --git-dir=...) may stand before its subcommand. Every code run is write-less, so
+// commands that write Git history are denied too.
+// A quote opens a command only inside a wrapper (`cmd /c "git push"`); elsewhere `grep "git push" docs` is a search.
+const TOKEN_END = String.raw`(?=$|[\s;&|)"'\x60])`;
+const QUOTED = String.raw`(?:"[^"]*"|'[^']*'|[^\s;&|"']+)`;
+const WRAPPER = /(?:^|[\s;&|(])(?:cmd(?:\.exe)?\s+\/[ck]|(?:powershell|pwsh|bash|sh|wsl)(?:\.exe)?\s[^;&|]*?-(?:c|command)\s|iex\s|invoke-expression\s|start-process\s)/i;
+const nameAt = (name, wrapped) => String.raw`(?:(?:^|[\s;&|(\x60\\/=]${wrapped ? `|["']` : ''})${name}(?:\.exe|\.cmd)?["']?|["']${name}(?:\.exe|\.cmd)?["'])`;
+const gitAt = (wrapped) => String.raw`${nameAt('git', wrapped)}(?:\s+(?:-[Cc]\s+${QUOTED}|--?[\w-]+(?:[= ]${QUOTED})?))*\s+`;
+const RULES = [
+  ['git push', (w) => `${gitAt(w)}push${TOKEN_END}`],
+  ['git history write', (w) => `${gitAt(w)}(?:commit|merge|rebase|cherry-pick|revert|am|update-ref|filter-branch)${TOKEN_END}`],
+  ['git worktree', (w) => `${gitAt(w)}worktree\\s+(?:add|remove|move|prune)${TOKEN_END}`],
+  ['git remote change', (w) => `${gitAt(w)}remote\\s+(?:add|set-url|remove|rm|rename)${TOKEN_END}`],
+  ['git lfs transfer', (w) => `${gitAt(w)}lfs\\s+(?:push|fetch|pull)${TOKEN_END}`],
+  ['gh write', (w) => `${nameAt('gh', w)}\\s+(?:pr\\s+(?:create|merge|close|edit|comment|review|ready|reopen)|release|issue\\s+(?:create|comment|close|edit|delete|reopen)` +
+    `|workflow|run|actions|codespaces?|cs|repo\\s+(?:create|delete|edit|fork|rename|archive)|secret|variable|api)${TOKEN_END}`],
+  ['npm publish or deploy', (w) => `${nameAt('npm', w)}\\s+(?:publish|run(?:-script)?\\s+(?:update|deploy))${TOKEN_END}`],
+  ['remote shell', (w) => `${nameAt('(?:ssh|scp|sftp|rsync)', w)}${TOKEN_END}`],
+  // A command the audit cannot read.
+  ['encoded command', () => String.raw`(?:^|[\s;&|(\\/"'])(?:powershell|pwsh)(?:\.exe)?["']?\s(?:[^;&|]*\s)?-(?:e|ec|enc|encodedcommand)\s`],
+];
+export const DENIED_COMMANDS = RULES.map(([name, pattern]) => ({ name, plain: new RegExp(pattern(false), 'i'), wrapped: new RegExp(pattern(true), 'i') }));
+/** The name of the first denied command a command line contains, or null. */
+export function deniedCommand(line) {
+  const text = String(line);
+  const key = WRAPPER.test(text) ? 'wrapped' : 'plain';
+  return DENIED_COMMANDS.find((rule) => rule[key].test(text))?.name ?? null;
+}
 
 const origin = (url) => new URL(url).origin;
 /** Hosts the agent may navigate to (agy execute_url) and the origins Chrome may load anything from. */
@@ -91,21 +145,26 @@ export function settings(web) {
   };
 }
 
-/** Code-mode settings: files and commands inside the workspace; file writes only when `write` (an implementing commit task). */
-export function codeSettings({ write }) {
+/**
+ * Code-mode settings: file reads, and commands only inside agy's sandbox (proceed-in-sandbox runs them without approval;
+ * leaving the sandbox needs an approval that print mode refuses). agentMode "" keeps the Default agent mode, so no Auto
+ * mode reviewer can approve leaving the sandbox where agy offers Auto mode.
+ */
+export function codeSettings() {
   return {
-    toolPermission: 'request-review',
+    toolPermission: CODE_PERMISSION_MODE,
+    agentMode: '',
     allowNonWorkspaceAccess: false,
     enableTelemetry: false,
-    permissions: { allow: ['read_file(*)', 'command(*)', ...(write ? ['write_file(*)'] : [])],
-      deny: [...CODE_DENY, ...(write ? [] : ['write_file(*)'])] },
+    permissions: { allow: ['read_file(*)'], deny: CODE_DENY },
   };
 }
 
-export const envelopeSchema = (role, sessionId, digest) => ({
+// `result` (code mode with an adaptive-planning stage): the stage's terminal schema; today's role schema without one.
+export const envelopeSchema = (role, sessionId, digest, result = null) => ({
   type: 'object', additionalProperties: false, required: ['runId', 'packetDigest', 'result'], properties: {
     runId: { type: 'string', const: sessionId }, packetDigest: { type: 'string', const: digest },
-    result: role === 'verification' ? claude.VERIFIER_SCHEMA : claude.IMPLEMENTER_SCHEMA,
+    result: result ?? (role === 'verification' ? claude.VERIFIER_SCHEMA : claude.IMPLEMENTER_SCHEMA),
   },
 });
 
@@ -164,30 +223,41 @@ export function prepare({ command, executor, role, sessionId, digest, runDir, pr
   };
 }
 
-/** Whether a code-mode run may write files: an implementing commit task, never a verification, report or publication rewrite. */
-export const codeWrites = ({ role, deliverable, publicationRewrite = false }) => role !== 'verification' && deliverable === 'commit' && !publicationRewrite;
+// Told to every code-mode run, after the prompt: what the sandbox allows, so a worker does not try to leave it.
+export const CODE_SANDBOX_NOTE = 'This run reads and reports only. Your commands run in a sandbox with no network, where the checkout and its .git are read-only: GitHub and other servers cannot be reached, so take the task from the packet, and never commit, push or change files. Never ask to run a command outside the sandbox (BypassSandbox): that voids the run.';
+
+/** Why this host cannot run a code-mode worker in `workspace`, or null: a project extension agy would load (PROJECT_EXTENSIONS). */
+export function codeUnavailableReason(workspace) {
+  for (let root = resolve(workspace); ; root = dirname(root)) {
+    if (PROJECT_EXTENSIONS.some((path) => existsSync(join(root, path)))) return 'project AGY extensions (.agents) require a scoped adapter policy';
+    if (existsSync(join(root, '.git')) || dirname(root) === root) return null;
+  }
+}
 
 /**
- * The invocation of a code-mode run (a non-web task): as prepare(), but the working directory is the task worktree and the
- * run-local home loads no MCP server (an empty mcp_config.json), so agy has only its own built-in tools.
+ * The invocation of a code-mode run (a report task without web): as prepare(), but the working directory is the task
+ * worktree, the run-local home loads no MCP server (an empty mcp_config.json), commands run in agy's sandbox (--sandbox,
+ * proceed-in-sandbox), and auto-update is off so the audited CLI does not change under a campaign. A commit task never
+ * gets here (executors.roleUnavailableReason); this refuses one anyway. `resultSchema`: the adaptive-planning stage's
+ * terminal schema (executors.stageSchema), or null for the role's own.
  */
-export function prepareCode({ command, executor, role, deliverable, publicationRewrite = false, sessionId, digest, runDir, workspace, prompt, timeoutMs }) {
+export function prepareCode({ command, executor, role, deliverable, sessionId, digest, runDir, workspace, prompt, timeoutMs, resultSchema = null }) {
+  if (deliverable !== 'report') throw new Error('The AGY code worker runs only report tasks');
   const home = join(runDir, 'agy-home');
   const temp = join(runDir, 'agy-tmp');
   for (const dir of [temp, join(home, '.gemini', 'antigravity-cli'), join(home, '.gemini', 'config'),
     join(home, 'AppData', 'Local'), join(home, 'AppData', 'Roaming')]) mkdirSync(dir, { recursive: true });
-  writeFileSync(join(home, '.gemini', 'antigravity-cli', 'settings.json'),
-    JSON.stringify(codeSettings({ write: codeWrites({ role, deliverable, publicationRewrite }) }), null, 2));
+  writeFileSync(join(home, '.gemini', 'antigravity-cli', 'settings.json'), JSON.stringify(codeSettings(), null, 2));
   writeFileSync(join(home, '.gemini', 'config', 'mcp_config.json'), JSON.stringify({ mcpServers: {} }, null, 2));
   const schemaPath = join(runDir, 'output-schema.json');
-  writeFileSync(schemaPath, JSON.stringify(envelopeSchema(role, sessionId, digest)));
+  writeFileSync(schemaPath, JSON.stringify(envelopeSchema(role, sessionId, digest, resultSchema)));
   return {
     argv: [...command, '--input-format', 'stream-json', '--output-format', 'stream-json', '--json-schema', schemaPath,
-      '--model', executor.model, '--print-timeout', `${Math.max(60, Math.ceil(timeoutMs / 1000))}s`, '--disable-slash-commands', '-p='],
-    prompt: JSON.stringify({ event: 'user', message: { content: `${prompt}\nSubmit the terminal result with the finish tool as JSON with exactly three keys: runId "${sessionId}", packetDigest "${digest}", and result (the terminal result described above).\n` } }) + '\n',
+      '--model', executor.model, '--print-timeout', `${Math.max(60, Math.ceil(timeoutMs / 1000))}s`, '--disable-slash-commands', '--sandbox', '-p='],
+    prompt: JSON.stringify({ event: 'user', message: { content: `${prompt}\n${CODE_SANDBOX_NOTE}\nSubmit the terminal result with the finish tool as JSON with exactly three keys: runId "${sessionId}", packetDigest "${digest}", and result (the terminal result described above).\n` } }) + '\n',
     cwd: workspace,
     env: { USERPROFILE: home, HOME: home, APPDATA: join(home, 'AppData', 'Roaming'), LOCALAPPDATA: join(home, 'AppData', 'Local'),
-      TEMP: temp, TMP: temp, TMPDIR: temp },
+      TEMP: temp, TMP: temp, TMPDIR: temp, AGY_CLI_DISABLE_AUTO_UPDATE: '1' },
   };
 }
 
@@ -330,7 +400,7 @@ const OWN_ERROR_LINE = /^\s*(?:error|fatal|jetski):/i;
  * retrying it. A log that cannot be fully audited (an unreadable line, or more than LOG_LIMIT bytes, which the controller
  * cuts) is a violation too: whatever it hides might have been one.
  */
-export function classify({ role, run, stdoutText, stderrText, expect, now, logBytes = 0 }) {
+export function classify({ role, run, stdoutText, stderrText, expect, now, logBytes = 0, strip = null }) {
   const events = [];
   let malformed = false;
   for (const line of String(stdoutText ?? '').split(/\r?\n/)) {
@@ -348,12 +418,16 @@ export function classify({ role, run, stdoutText, stderrText, expect, now, logBy
     steps.set(key, [...(steps.get(key) ?? []), update]);
   }
   // finish is agy's own tool for submitting the structured result; a step without a tool must not be a tool step.
-  // Code mode (an explicit `web: false`): agy's own file and command tools, never an MCP call, and no file write on a
-  // write-less run. Any other value keeps the stricter browser audit, so a caller that omits `web` never loosens it.
+  // Code mode (an explicit `web: false`): agy's own file readers and commands, never a write or an MCP call, no command
+  // line that names a denied command, and manage_task only on the run's own background commands. Any other value keeps
+  // the stricter browser audit, so a caller that omits `web` never loosens it.
   const code = expect.web === false;
-  const writeless = role === 'verification' || expect.deliverable === 'report' || expect.publicationRewrite === true;
+  const stepTypes = code ? CODE_STEP_TYPES : STEP_TYPES;
+  const codePermitted = (name, parameters) => CODE_TOOLS.includes(name) &&
+    (name !== 'run_command' || (typeof parameters?.CommandLine === 'string' && !deniedCommand(parameters.CommandLine))) &&
+    (name !== 'manage_task' || MANAGE_TASK_ACTIONS.includes(parameters?.Action));
   const permitted = (update, parameters) => update.tool_name === undefined ? update.step_type !== 'tool'
-    : code ? CODE_TOOLS.includes(update.tool_name) && !(writeless && CODE_WRITE_TOOLS.includes(update.tool_name))
+    : code ? codePermitted(update.tool_name, parameters)
     : update.tool_name === 'finish' || (update.tool_name === 'call_mcp_tool' && parameters?.ServerName === BROWSER_SERVER &&
       TOOLS.includes(parameters?.ToolName));
   const unexpected = [];
@@ -361,25 +435,29 @@ export function classify({ role, run, stdoutText, stderrText, expect, now, logBy
     let parameters = null;
     const judged = updates.map((update) => {
       parameters = update.tool_info?.parameters ?? parameters;
-      return { update, parameters, ok: STEP_TYPES.includes(update.step_type) && permitted(update, parameters) };
+      return { update, parameters, ok: stepTypes.includes(update.step_type) && permitted(update, parameters) };
     });
     if (judged.every((item) => item.ok)) continue;
     const last = updates.at(-1);
-    const neverRan = judged.every((item) => STEP_TYPES.includes(item.update.step_type)) && !updates.some((update) => update.state === 'DONE') &&
+    const neverRan = judged.every((item) => stepTypes.includes(item.update.step_type)) && !updates.some((update) => update.state === 'DONE') &&
       last.state === 'ERROR' && NOT_RUN.test(String(last.tool_info?.error?.message ?? ''));
     if (!neverRan) unexpected.push(judged.find((item) => !item.ok));
   }
+  // A denied command is named by its rule, never by its text, which may hold anything.
   const named = ({ update, parameters }) => update.tool_name === 'call_mcp_tool' ? `${parameters?.ServerName}/${parameters?.ToolName}`
+    : code && update.tool_name === 'run_command' ? `run_command (${typeof parameters?.CommandLine === 'string' ? deniedCommand(parameters.CommandLine) : 'no command line'})`
+    : code && update.tool_name === 'manage_task' ? `manage_task (${String(parameters?.Action ?? 'no action').replace(/[^w-]/g, '').slice(0, 20)})`
     : update.tool_name ?? `step ${update.step_type}`;
   const tokens = providerTokens({ ...final, model: final?.model ?? init?.model }, 'agy-cli');
   const receipt = { executorKind: 'agy-cli', nativeSessionId: final?.conversation_id || null, sessionId: null,
     ...tokens, measured: Boolean(tokens.usage || tokens.models?.length) };
   const base = { receipt, exitCode: run.exitCode ?? null };
   const violation = (detail) => ({ ...base, class: 'error', violation: true, detail: `${detail}; held for the owner, no provider fallback` });
-  if (inits.length > 1 || (init && init.permission_mode !== 'request-review')) {
-    return violation(`agy did not run in request-review permission mode (${String(init?.permission_mode ?? 'several sessions').slice(0, 40)})`);
+  const mode = code ? CODE_PERMISSION_MODE : 'request-review';
+  if (inits.length > 1 || (init && init.permission_mode !== mode)) {
+    return violation(`agy did not run in ${mode} permission mode (${String(init?.permission_mode ?? 'several sessions').slice(0, 40)})`);
   }
-  if (unexpected.length) return violation(`browser worker used an unexpected tool (${[...new Set(unexpected.map(named))].join(', ').slice(0, 200)})`);
+  if (unexpected.length) return violation(`${code ? 'code' : 'browser'} worker used an unexpected tool (${[...new Set(unexpected.map(named))].join(', ').slice(0, 200)})`);
   if (Array.isArray(final?.denied_actions) && final.denied_actions.length) {
     return violation(`agy stopped on a tool that needs approval (${final.denied_actions.map((item) => item?.action).join(', ').slice(0, 200)})`);
   }
@@ -405,8 +483,10 @@ export function classify({ role, run, stdoutText, stderrText, expect, now, logBy
   }
   // agy never runs a build task (executors.mjs prepare refuses one); a build expectation keeps its full-pass rule anyway.
   // Code mode judges the result by the task's own (non-web) expectation.
-  const invalid = claude.validResult(role, envelope.result, code ? expect : { ...expect, web: expect.web === 'build' ? 'build' : true });
+  // strip (executors.classifyStaged, code mode only): takes an adaptive-planning stage's own fields out before validation.
+  const value = strip ? strip(envelope.result) : envelope.result;
+  const invalid = claude.validResult(role, value, code ? expect : { ...expect, web: expect.web === 'build' ? 'build' : true });
   if (invalid) return { ...base, class: 'invalid-result', detail: invalid };
   receipt.sessionId = envelope.runId;
-  return { ...base, class: 'result', value: envelope.result };
+  return { ...base, class: 'result', value };
 }

@@ -239,7 +239,8 @@ export function validateDeclaration(declaration) {
     bad('a task with web.mode build needs claude-cli without researchOnly: agy-cli never runs a build task');
   }
   // A task without web on an all-agy declaration registers: whether agy may run it is the runtime switch config.json
-  // agy.codeRoles, which registration cannot see. With it off the task waits as unavailable (executors.roleUnavailableReason).
+  // agy.codeRoles, which registration cannot see. With it off, or for a commit task, the task waits as unavailable
+  // (executors.roleUnavailableReason).
   if (errors.length) throw new TypeError(`invalid campaign declaration: ${errors.join('; ')}`);
   return d;
 }
