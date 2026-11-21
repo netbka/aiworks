@@ -903,6 +903,28 @@ export function autoAnswers(store, campaignId, taskRows) {
 }
 
 /**
+ * AW-017: the questions AI workers stopped a step for that AIWorks settled itself, by step, newest first (at most five
+ * each): answered with one of the recorded options (`answered`, with the reason when it was the worker's suggestion) or
+ * sent back to the worker to decide within the approved plan (`sent-back`). From the journal; every text through safeText.
+ */
+export function handledQuestions(store, campaignId) {
+  const out = new Map();
+  for (const row of store.all("SELECT seq, at, kind, detail FROM journal WHERE campaign_id = ? AND kind IN ('decision-answered', 'decision-sent-back') ORDER BY seq DESC LIMIT 200", campaignId)) {
+    const detail = row.detail ?? {};
+    if (typeof detail.task !== 'string') continue;
+    const answer = row.kind === 'decision-answered' && detail.auto === true ? autoAnswer(row) : null;
+    const entry = row.kind === 'decision-sent-back'
+      ? { at: row.at, handling: 'sent-back', question: typeof detail.question === 'string' && detail.question.trim() ? safeText(detail.question, 500) : null, chosen: null, reason: null }
+      : answer ? { at: row.at, handling: 'answered', question: answer.question, chosen: answer.chosen, reason: answer.reason } : null;
+    if (!entry) continue;
+    const list = out.get(detail.task) ?? [];
+    if (list.length < 5) list.push(entry);
+    out.set(detail.task, list);
+  }
+  return out;
+}
+
+/**
  * One journaled decision AIWorks answered itself with its suggestion, or the owner's later change of one, as the owner
  * reads it; null for any other answer.
  */

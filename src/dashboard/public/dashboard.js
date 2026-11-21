@@ -346,7 +346,7 @@ function providerStatus(c) {
 
 // What the worker actually returned. "result" only means a valid response arrived; the verdict inside decides.
 // A run verdict, not the result's outcome: the result passed only when every criterion did (checkPassed).
-const terminalLabels = { accepted: 'accepted by the checker', rejected: 'rejected', resolved: 'built, waiting for the independent check', 'evidence-unavailable': 'could not gather required evidence', 'blocked-owner-reserved': 'blocked on a decision reserved for you' };
+const terminalLabels = { accepted: 'accepted by the checker', rejected: 'rejected', resolved: 'built, waiting for the independent check', 'evidence-unavailable': 'could not gather required evidence', 'blocked-owner-reserved': 'stopped to ask a question; AIWorks answers it or sends it back by its rules' };
 const outcomeLabels = { unavailable: 'AI worker unavailable (run not counted)', quota: 'usage limit', auth: 'AI worker sign-in', timeout: 'timed out', lost: 'runner lost', 'invalid-result': 'invalid result', 'exit-without-result': 'exited without a result', 'spawn-failed': 'could not start', error: 'failed',
   'reply-withheld': 'reply withheld because it looked like it contained a credential (it was not posted)',
   'boundary-violation': 'the AI worker changed its checkout or the live runtime; nothing it produced was posted' };
@@ -511,7 +511,12 @@ function campaignCard(c, expanded = true) {
 }
 
 /** A step named by what it delivers, for receipts and notices: never its ID. */
-const stepName = (campaignId, taskId) => { const task = campaignById(campaignId)?.tasks.find((t) => t.id === taskId); return task ? `“${task.outcome ?? task.title}”` : 'this step'; };
+const stepName = (campaignId, taskId) => {
+  const task = campaignById(campaignId)?.tasks.find((t) => t.id === taskId), local = task ? null : localGoal(campaignId)?.steps.find((t) => t.id === taskId);
+  return task ? `“${task.outcome ?? task.title}”` : local ? `“${local.title}”` : 'this step';
+};
+/** Work in a project without GitHub, by its id, from the work view (state.work.local): its outcome and steps. */
+const localGoal = (id) => Object.values(state?.work?.local ?? {}).flat().find((c) => c.id === id) ?? null;
 
 function instructionReceipt(item, c) {
   const role = roleName(item.role), step = stepName(c.id, item.taskId);
@@ -1006,7 +1011,11 @@ function reviewScreen(project, id) {
   const busy = approving === plan.id;
   const approve = el('button', { class: 'button', type: 'button', disabled: !plan.startable || Boolean(approving) || sending || offline || !state.supervisor.available,
     'aria-busy': busy ? 'true' : null, onclick: () => void approvePlan(project, plan) }, busy ? 'Starting…' : 'Approve and start');
-  const limits = plan.limits && Object.keys(plan.limits).length ? `Limits: ${Object.entries(plan.limits).map(([key, value]) => `${key} ${value}`).join(', ')}.` : 'No limits. You can pause or cancel it at any time.';
+  // Unlimited runs are the usual setting (AW-002), said calmly; set limits in the owner's words.
+  const limitWords = limitsText(plan.limits);
+  const limits = limitWords ? `Limits: ${limitWords}. You can pause or cancel it at any time.`
+    : plan.limits && Object.keys(plan.limits).length ? `Limits: ${Object.entries(plan.limits).map(([key, value]) => `${key} ${value}`).join(', ')}.`
+      : 'Usual settings: it works until its steps are done, with no set number of AI worker runs. You can pause or cancel it at any time.';
   const address = formatRoute({ screen: 'review', project, plan: plan.id }), editing = drafts.get(address, 'edit');
   // While the owner edits, the form stays as typed (refreshReview) and nothing can be approved: Approve starts only a shown, saved version.
   if (editing) return [el('section', { class: 'panel review', 'data-focus-scope': `review/${plan.id}` }, el('div', { class: 'panel-body' },
@@ -1280,17 +1289,34 @@ function localWorkScreen(project, only = null) {
   if (!work.length) return [empty('Nothing is running or waiting in this project', 'A plan you approve appears here.')];
   return work.map((c) => el('section', { class: 'panel', 'data-focus-scope': `local-work/${c.id}` }, el('div', { class: 'panel-body' },
     el('h2', {}, c.outcome), el('p', { class: 'subtext' }, LOCAL_CONTROL[c.control] ?? ''),
-    el('ol', { class: 'local-steps' }, ...c.steps.map((step) => el('li', {}, el('span', {}, step.title), el('span', { class: 'subtext' }, ` · ${step.state}`)))))));
+    el('ol', { class: 'local-steps' }, ...c.steps.map((step) => el('li', {}, el('span', {}, step.title), el('span', { class: 'subtext' }, ` · ${step.state}`),
+      ...(step.questions ?? []).map((q) => el('p', { class: 'subtext' }, questionWords(q)))))))));
+}
+
+/**
+ * AW-017: a question an AI worker stopped a step for, and how AIWorks settled it without waiting for the owner. AIWorks
+ * answers only with an option the worker gave and never widens the plan; when no option was marked safe to take, it
+ * picks none and sends the question back to the worker to decide within the approved plan (decisions.mjs sendsBack).
+ */
+function questionWords(q) {
+  const asked = q.question ? `The AI worker asked: “${q.question}” ` : 'The AI worker stopped with a question. ';
+  return `${asked}${q.handling === 'answered' ? `AIWorks answered “${q.chosen}”${q.reason ? ', the option the AI worker suggested' : ''}, within the approved plan`
+    : 'No option was marked safe to take, so AIWorks picked none and sent it back to the AI worker to decide within the approved plan, publishing nothing new'} (${dateTime(q.at)}).`;
 }
 
 /** Now of a project without GitHub: checked results that wait for the owner first, then work in progress, then its connection. */
 function localNowScreen(row) {
-  const work = localWork(row.id), waiting = work.flatMap((c) => c.results).filter((item) => item.action === 'apply').length;
+  const work = localWork(row.id), results = work.flatMap((c) => c.results), waiting = results.filter((item) => item.waiting).length;
   const active = work.find((c) => !['finished', 'cancelled'].includes(c.control)), decision = localDecision(row.id);
   const doable = Boolean(state.work?.planAndDo && state.work.projects?.some((name) => sameProject(name, row.id)));
   const plan = doable && !offline && state.supervisor.available ? routeLink('Plan work', { screen: 'start', project: row.id }, waiting ? 'button secondary' : 'button') : null;
-  const ready = !waiting ? '' : decision || active ? ` ${waiting === 1 ? 'A checked result waits' : `${waiting} checked results wait`} under Review.`
-    : ` ${waiting === 1 ? 'A checked result is' : `${waiting} checked results are`} ready to apply. Nothing in your folder has changed yet.`;
+  // The same facts as each result's row under Review: what is applied, what is not, and "nothing changed" only when no
+  // result was ever written to the folder.
+  const applied = results.filter((item) => item.outcome === 'applied').length;
+  const untouched = results.every((item) => [null, 'refused'].includes(item.outcome) && !item.earlier);
+  const ready = !waiting ? '' : [applied && !decision && !active ? ` ${applied === 1 ? 'One checked result is' : `${applied} checked results are`} applied to your folder.` : '',
+    ` ${waiting === 1 ? 'A checked result is' : `${waiting} checked results are`} not applied; Review says why and what to press.`,
+    !decision && !active && untouched ? ' Nothing in your folder has changed yet.' : ''].join('');
   // A decision first, then running work, then results: "All steps are finished" only when no work is still running.
   const line = decision ? [el('strong', {}, `Needs your decision: ${decision.task.title}.`), ` ${sentenceOf(decision.c.outcome)} The step waits for your answer below; nothing in your folder changes.${ready}`]
     : active ? [el('strong', {}, `Working on: ${sentenceOf(active.outcome)}`), ` ${LOCAL_CONTROL[active.control] ?? ''}${ready}`]
@@ -1354,7 +1380,8 @@ function activityList(limit = 80, journal = state.supervisor.activity) {
     'blocker-raised': 'Stopped: needs a decision or action', 'blocker-cleared': 'Stop cleared; work continues', 'stall-released': 'Stopped step released to continue',
     'authorization-amended': 'Campaign authorization updated', 'message-received': 'Your message was received', 'message-read': 'The coordinator started reading your message',
     'message-answered': 'AIWorks answered', 'message-failed': 'Your message was not answered', 'instruction-attached': 'Your instruction reached a worker',
-    'liveness-defect': 'Supervisor liveness problem', 'operation-abandoned': 'Worker run abandoned', 'step-error': 'Supervisor step failed and will retry' });
+    'liveness-defect': 'Supervisor liveness problem', 'operation-abandoned': 'Worker run abandoned', 'step-error': 'Supervisor step failed and will retry',
+    'decision-answered': 'Question answered', 'decision-sent-back': 'AIWorks sent the question back to the AI worker to decide within the approved plan' });
   const items = journal.slice(0, limit);
   if (!items.length) return empty('No recorded activity', 'Supervisor events will appear here.');
   return el('div', { class: 'timeline' }, ...items.map((item) => el('div', { class: 'timeline-item' },
@@ -2045,6 +2072,13 @@ async function sendRules(c, action) {
   } finally { rulesBusy = null; await poll(); }
 }
 
+/** The governance contract's capability words in plain words; the box keeps the word itself as its value. */
+const CAPABILITY_WORDS = { ui: 'Screens people use', storybook: 'A gallery of screen parts (Storybook)', 'public-web': 'A public website',
+  api: 'An interface other programs call (API)', worker: 'Jobs that run in the background', database: 'A database', docker: 'Runs in containers (Docker)',
+  ai: 'Uses AI models', payments: 'Takes payments', auth: 'Sign-in or user accounts', seo: 'Found through search engines', email: 'Sends email',
+  mcp: 'Tools for AI assistants (MCP)', 'npm-package': 'A published code package (npm)', 'browser-extension': 'A browser extension',
+  'data-pipeline': 'Moves or transforms data' };
+
 /** The rules of a project without GitHub: their state in one sentence, and the review the owner confirms by typing the name. */
 function rulesPanel(c) {
   const rules = c.rules, review = rulesReviews.get(c.id), busy = Boolean(rulesBusy) || offline || !state.supervisor.available;
@@ -2059,12 +2093,12 @@ function rulesPanel(c) {
   const verb = now === 'none' || now === 'revoked' ? 'Confirm the rules' : 'Renew the rules';
   const chosen = new Set(review.chosen.capabilities);
   const capabilities = el('fieldset', {}, el('legend', {}, 'What this project has'),
-    el('p', { class: 'subtext' }, 'Each one you tick can add rules. AIWorks can only add or tighten rules here, never remove one.'),
+    el('p', { class: 'subtext' }, 'Tick only what this folder really has; a plain folder of files needs none. Each one you tick can add rules. AIWorks can only add or tighten rules here, never remove one.'),
     el('div', { class: 'rules-capabilities' }, ...review.capabilityWords.map((word) => el('label', { class: 'choice' },
-      el('input', { type: 'checkbox', value: word, 'data-rules-capability': c.id, checked: chosen.has(word) }), word))),
+      el('input', { type: 'checkbox', value: word, 'data-rules-capability': c.id, checked: chosen.has(word) }), CAPABILITY_WORDS[word] ?? word))),
     button('Show the rules for these', () => void openRules(c, rulesCapabilities(c)), 'secondary small', busy));
   const policies = review.policies.length
-    ? el('div', {}, el('p', {}, `AIWorks follows every rule your project rules apply to all projects. For "${review.project.name}" that is:`),
+    ? el('div', {}, el('p', {}, `AIWorks follows every rule your project rules apply to all projects. For "${review.project.name}" that is the rules below, each named by its code in your governance directory, where its text is kept:`),
       el('ul', { class: 'rules-policies' }, ...review.policies.map((id) => el('li', {}, id))))
     : el('p', { role: 'status' }, review.message ?? 'No rules could be read for this project.');
   return el('div', { class: 'rules start-form', 'data-focus-scope': `rules/${c.id}` }, el('h2', {}, 'Project rules'), head,
@@ -2469,12 +2503,12 @@ function modelInstructionsScreen() {
 const EVENT_WORDS = { 'goal-started': 'Work started', paused: 'Paused', resumed: 'Resumed', cancelled: 'Cancel requested',
   'result-ready': 'Result ready for your review', accepted: 'You accepted a checked result', merged: 'Merged', built: 'Builder finished a run', checked: 'Checked by the independent checker',
   'check-rejected': 'The independent checker asked for changes', 'run-failed': 'An AI worker run did not finish; AIWorks retries by itself',
-  'limit-wait': 'Waiting for an AI worker limit', 'wait-ended': 'An AI worker can take work again', 'needs-you': 'Needs you',
-  'decision-cleared': 'A question for you was cleared', 'aiworks-problem': 'AIWorks had a problem of its own' };
+  'limit-wait': 'Waiting for an AI worker limit', 'wait-ended': 'An AI worker can take work again', 'needs-you': 'A step stopped with a question or a problem',
+  'decision-cleared': 'The stopped step was settled', 'aiworks-problem': 'AIWorks had a problem of its own' };
 // The order of the one-line summary: what the owner acts on first.
 
 let scopedBusy = null;
-const goalName = (id) => { const c = campaignById(id); return c ? campaignTitle(c, { inProject: true }) : 'work no longer listed'; };
+const goalName = (id) => { const c = campaignById(id), local = c ? null : localGoal(id); return c ? campaignTitle(c, { inProject: true }) : local ? local.outcome : 'work no longer listed'; };
 
 /** Pause or resume all, a project or a goal: exactly the goals the view showed, at their versions (views.mjs pauseSummary). */
 async function scopedControl(action, scope, goals, extra = {}) {
@@ -2504,9 +2538,18 @@ function pauseControls(summary, scope, extra = {}, { label }) {
 }
 
 const eventProject = (event) => event.project ? projectName(event.project) : null;
+/** Where an event's work is shown: its step on GitHub, its goal (with each step) in a project without GitHub; null when gone. */
+function eventAddress(event) {
+  if (!event.campaignId || !event.project) return null;
+  if (localGoal(event.campaignId)) return { screen: 'goal', project: event.project, work: event.campaignId };
+  const c = campaignById(event.campaignId);
+  if (!c) return null;
+  return event.taskId && c.tasks.some((t) => t.id === event.taskId) ? { screen: 'step', project: c.repository, work: c.id, step: event.taskId }
+    : { screen: 'goal', project: event.project, work: c.id };
+}
 function eventList(events) {
   return el('ul', { class: 'event-list' }, ...events.map((event) => el('li', { 'data-type': event.type },
-    el('span', {}, EVENT_WORDS[event.type] ?? 'Recorded'),
+    eventAddress(event) ? routeLink(EVENT_WORDS[event.type] ?? 'Recorded', eventAddress(event)) : el('span', {}, EVENT_WORDS[event.type] ?? 'Recorded'),
     el('span', { class: 'subtext' }, [eventProject(event), event.campaignId ? goalName(event.campaignId) : null, event.taskId && event.campaignId ? stepName(event.campaignId, event.taskId) : null].filter(Boolean).join(' · ')),
     el('time', { class: 'timeline-time', datetime: new Date(event.at).toISOString(), title: dateTime(event.at) }, timeAgo(event.at)))));
 }
@@ -2722,7 +2765,15 @@ function homeScreen() {
     address: formatRoute({ screen: 'step', project: d.project, work: d.campaignId, step: d.taskId }) }));
   // A goal opens itself in its own project; the data names both.
   const goalAddress = (goal) => goal.link ? formatRoute({ screen: 'goal', project: goal.link.project, work: goal.link.goal }) : null;
-  const blocks = homeBlocks({ ...home, needCards, decided, checking: state.owner?.unknownResults ?? 0, goalAddress,
+  // Checked results not in their folder that are not counted (owner.mjs `local-result` items AIWorks lists apart), by project.
+  const notApplied = [];
+  for (const item of (state.owner?.items ?? []).filter((entry) => entry.kind === 'local-result' && entry.system)) {
+    const entry = notApplied.find((row) => row.project === item.project);
+    if (entry) entry.count += 1;
+    else notApplied.push({ project: item.project, name: item.projectName ?? projectName(item.project), count: 1,
+      address: formatRoute({ screen: 'project', project: item.project, tab: 'review' }) });
+  }
+  const blocks = homeBlocks({ ...home, needCards, decided, notApplied, checking: state.owner?.unknownResults ?? 0, goalAddress,
     ownProblems: { count: ownProblemCount(), address: formatRoute({ screen: 'settings', section: 'itself' }) }, address: projectAddress, showAll: landedAll,
     onShowAll: () => { landedAll = !landedAll; render(); } }, { el, timeAgo });
   // AIWorks's answer to the owner's last message, as one line with its link.
@@ -4059,7 +4110,8 @@ function knowledgeScreen(project) {
 const EVIDENCE_STATE = { registered: 'running', paused: 'paused', finished: 'finished', cancelled: 'cancelled', 'cancel-requested': 'cancelling' };
 function knowledgeEvidence(project, v) {
   const evidence = v.evidence ?? { requirements: [], decisions: [], references: [], withheldReferences: 0 };
-  const goalWords = (item) => `${item.goal ? `“${item.goal}”` : 'Recorded goal'}, approved version ${item.authorizationVersion}`;
+  // The plan version the owner approved when the goal came from a drafted plan; otherwise the goal's recorded version.
+  const goalWords = (item) => `${item.goal ? `“${item.goal}”` : 'Recorded goal'}, ${item.planVersion ? `approved plan version ${item.planVersion}` : `approved version ${item.authorizationVersion}`}`;
   const answer = (item) => item.option ? `you chose “${item.option}”` : item.ownWords ? 'you answered in your own words' : 'you answered';
   return [
     el('h3', {}, 'Requirements and decisions'),
@@ -4721,12 +4773,15 @@ function command(c, action, task, extra = {}, draftAddress = null) {
 
 // The header says one word about the work (Working, Idle, Paused, Stopped; Offline while this page cannot reach the
 // dashboard) and carries Pause all or Resume all, bound to the goals the Home data lists. Idle is Connections' "Idle":
-// no work needs AIWorks, so it never claims to be working.
+// no work needs AIWorks, so it never claims to be working. It is Idle too while nothing moves on Home: no goal that is not
+// paused and no AI worker run open, so the header never says Working beside Home's "Nothing is moving right now".
 const HEADER_TONES = { Working: 'online', Idle: 'online', Paused: 'stale', Stopped: 'offline', Offline: 'offline' };
 function showHeader() {
   const node = $('#connection'), summary = state?.home?.pause ?? null, button = $('#header-pause');
+  const moving = !state?.home?.available || (state.home.goals ?? []).some((goal) => goal.state !== 'Paused')
+    || [...(state.supervisor.campaigns ?? []), ...(state.supervisor.local ?? [])].some((c) => c.agents?.length);
   const word = offline ? 'Offline' : !state || !state.supervisor.available || state.supervisor.controller?.stopped ? 'Stopped'
-    : summary && !summary.running && (summary.stopped || summary.stopping) ? 'Paused' : state.supervisor.controller?.state === 'idle' ? 'Idle' : 'Working';
+    : summary && !summary.running && (summary.stopped || summary.stopping) ? 'Paused' : state.supervisor.controller?.state === 'idle' || !moving ? 'Idle' : 'Working';
   if (node.textContent !== word) node.textContent = word;
   node.className = `connection ${HEADER_TONES[word]}`;
   const action = summary?.pause?.length ? 'pause' : summary?.resume?.length ? 'resume' : null;

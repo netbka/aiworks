@@ -171,7 +171,7 @@ export function projectsView(supervisor, owner, { repositories = [], records = [
   // (work.mjs workView `local`): checked results that wait for the owner first, then work in progress.
   for (const record of records.filter((item) => item.source_kind !== 'github')) {
     const connection = connectionView(record, { path: false });
-    const work = localWork[record.id] ?? [], waiting = work.flatMap((c) => c.results).filter((row) => row.action === 'apply').length;
+    const work = localWork[record.id] ?? [], waiting = work.flatMap((c) => c.results).filter((row) => row.waiting).length;
     const active = work.find((c) => !['finished', 'cancelled'].includes(c.control));
     // Open decisions of its work first: they hold a step until the owner answers (work.mjs localWork).
     const decisions = work.filter((c) => ['registered', 'paused'].includes(c.control)).flatMap((c) => c.steps).filter((step) => step.decision && !step.decision.answered).length;
@@ -181,7 +181,9 @@ export function projectsView(supervisor, owner, { repositories = [], records = [
         : count && decisions ? { key: 'needs-you', text: decisions === 1 ? 'A step waits for your decision.' : `${decisions} steps wait for your decision.` }
         : count && waiting ? { key: 'needs-you', text: waiting === 1 ? 'A checked result waits for your review.' : `${waiting} checked results wait for your review.` }
           : active ? { key: 'running', text: `Working on: ${/[.!?…]$/.test(active.outcome) ? active.outcome : `${active.outcome}.`}` }
-            : connection.startWork.allowed ? { key: 'no-work', text: 'No work yet.' } : { key: 'cannot-start', text: connection.startWork.text },
+            // Not counted (AIWorks applies by itself), yet never hidden behind "No work yet": Review says what to press.
+            : waiting ? { key: 'finished', text: waiting === 1 ? 'A checked result is not applied to your folder.' : `${waiting} checked results are not applied to your folder.` }
+              : connection.startWork.allowed ? { key: 'no-work', text: 'No work yet.' } : { key: 'cannot-start', text: connection.startWork.text },
       action: { label: 'Open project', route: { screen: 'project', project: record.id, tab: 'overview' } }, lastActivityAt: record.updated_at ?? null,
       details: { owner: null, work: 0, configured: false, needsYou: count, merges: 'apply' }, connection });
   }

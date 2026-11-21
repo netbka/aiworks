@@ -30,7 +30,8 @@ import { CODE_ROOT, revisionNotMerged } from '../supervisor/provenance.mjs';
 import { baseReadRoot, readBaseContained } from '../supervisor/adapters/git.mjs';
 import { configuredGitCommand } from './merges.mjs';
 import { safeText } from './roadmap.mjs';
-import { decisionFeedback, decisionView, resultReview } from './supervisor.mjs';
+import { acceptanceMode, projectOf } from '../supervisor/project-settings.mjs';
+import { decisionFeedback, decisionView, handledQuestions, resultReview } from './supervisor.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DIGEST = /^[0-9a-f]{64}$/;
@@ -182,19 +183,83 @@ function planVersions(store, request) {
 const STEP_WORDS = Object.freeze({ pending: 'Not finished yet', implemented: 'Being checked by an independent checker', verified: 'Passed the check',
   done: 'Passed the check' });
 
-/** One local result as the page shows it, with the owner's next action on it: Apply, Undo apply or none. */
-function localResult(candidate, attempt, title, textChecks) {
+/** Why an apply wrote nothing, in the owner's words, by the adapter's refusal code (release/local-apply.mjs). */
+const REFUSED_WORDS = Object.freeze({
+  APPLY_FOLDER_CHANGED: 'files it changes were changed in your folder after this work started',
+  APPLY_BRANCH_CHANGED: 'your branch moved after this work started',
+  APPLY_TREE_DIRTY: 'your folder has changes that are not committed',
+  APPLY_PATH_REFUSED: 'AIWorks does not write some of the paths it changes',
+  APPLY_NOT_FAST_FORWARD: 'it does not build on the files in your folder',
+  APPLY_CANDIDATE_MISSING: 'the checked version is no longer in AIWorks’s copy',
+  APPLY_NOTHING: 'it changes no file in your folder',
+});
+const MOVED = new Set(['APPLY_FOLDER_CHANGED', 'APPLY_BRANCH_CHANGED']);
+const whoApplied = (by) => (by === 'owner' ? 'you applied' : 'AIWorks applied by itself');
+
+/**
+ * One local result as the page shows it, with the owner's next action on it: Apply, Undo apply or none. `facts` says
+ * who applied (`by`: owner or aiworks), why an apply was refused (`code`), the task's earlier version in the folder or
+ * undone there (`earlier`), whether changes were requested, and whether AIWorks still applies it by itself (`autoNext`).
+ * `waiting` marks a checked commit that is not in the folder and waits for the owner's press.
+ */
+function localResult(candidate, attempt, title, textChecks, facts = {}) {
+  const { by = null, code = null, earlier = null, changesRequested = false, autoNext = false, refusedAt = null } = facts;
   const sha7 = candidate.sha.slice(0, 7), outcome = attempt?.outcome ?? null;
   const files = (attempt?.files ?? []).slice(0, 32).map((file) => safeText(typeof file === 'string' ? file : file?.path ?? '', 300));
   const row = { campaignId: candidate.campaignId, taskId: candidate.taskId, seq: candidate.seq, title, deliverable: candidate.deliverable, sha7,
-    recordedAt: candidate.recordedAt, applyId: attempt?.applyId ?? null, outcome, files, action: null };
+    recordedAt: candidate.recordedAt, applyId: attempt?.applyId ?? null, outcome, files, action: null, by, waiting: false,
+    earlier: earlier ? { sha7: earlier.sha7, by: earlier.by, inFolder: earlier.inFolder } : null };
   if (candidate.deliverable !== 'commit') return { ...row, state: 'Report to read', text: textChecks?.read(candidate.report, 4000).text ?? safeText(candidate.report, 4000) };
-  if (outcome === 'applied') return { ...row, state: 'Applied to your folder', text: `Your folder now holds the result checked at ${sha7}. Undo apply puts back what was there before.`, action: 'undo' };
+  if (outcome === 'applied') {
+    // Requested changes leave this version in the folder: the new one, once checked, is applied after this one is undone.
+    const redo = changesRequested ? ' You asked for changes: this version stays in your folder until you undo it. When the new version passes its check, Review offers Undo apply for this one, then Apply for the new one.' : '';
+    return { ...row, state: 'Applied to your folder', text: `${by === 'aiworks' ? 'AIWorks applied it by itself. ' : ''}Your folder now holds the result checked at ${sha7}. Undo apply puts back what was there before.${redo}`, action: 'undo' };
+  }
   if (outcome === 'stopped') return { ...row, state: 'Stopped midway', text: 'Files changed while AIWorks wrote your folder, so it stopped and kept its backup. Check the files below before you press anything.' };
   if (outcome === 'unknown') return { ...row, state: 'Not known yet', text: 'AIWorks has not settled what happened to your folder yet. It reads the folder again before anything else is written.' };
+  // The task's earlier version is still in the folder: this one is written over the files as they were before it, so
+  // that version comes out first. Its Undo apply is offered here, where the owner meets the refusal.
+  if (earlier?.inFolder) {
+    return { ...row, state: 'Earlier version in your folder', applyId: earlier.applyId, action: 'undo', waiting: true,
+      text: `Not applied: your folder still holds the earlier version of this result, checked at ${earlier.sha7}, that ${whoApplied(earlier.by)}. Undo apply takes that version out; then Apply puts in this one, checked at ${sha7}.` };
+  }
+  if (outcome === null && autoNext) return { ...row, state: 'Ready for your review', text: `Checked at ${sha7}. Not applied yet: AIWorks applies checked results to your folder by itself, or press Apply.`, action: 'apply' };
+  // A refusal while the earlier version was still in the folder is about that version, now undone.
   const before = outcome === 'rolled-back' ? 'Undone: your folder is back as it was. '
-    : outcome === 'refused' ? `Not applied: ${safeText(attempt.reason ?? 'your folder changed', 300)}. ` : '';
-  return { ...row, state: 'Ready for your review', text: `${before}Checked at ${sha7}. The result is ready to apply.`, action: 'apply' };
+    : outcome !== 'refused' ? ''
+      : earlier && MOVED.has(code) && refusedAt !== null && earlier.undoneAt !== null && refusedAt <= earlier.undoneAt
+        ? `Not applied while your folder held the earlier version, checked at ${earlier.sha7}. That version is undone now. `
+        : `Not applied: ${REFUSED_WORDS[code] ?? 'AIWorks could not write your folder safely'}; nothing was written. `;
+  return { ...row, state: 'Ready for your review', text: `${before}Checked at ${sha7}. The result is ready to apply.`, action: 'apply', waiting: true };
+}
+
+/**
+ * What the outcome of a campaign's applies does not say: who applied (an owner receipt names the owner's press; without
+ * one it was AIWorks's own apply under AW-018), which were undone by the owner, the refusal code journaled for each
+ * attempt, and when each attempt was last settled. A store that never applied anything has no apply tables.
+ */
+function applyFacts(store, campaignId) {
+  const pressed = new Set(), undone = new Set(), codes = new Map(), settledAt = new Map();
+  try {
+    for (const row of store.all('SELECT apply_id, updated_at FROM local_applies WHERE campaign_id = ?', campaignId)) settledAt.set(row.apply_id, row.updated_at);
+    for (const row of store.all('SELECT r.apply_id, r.action FROM local_apply_receipts r JOIN local_applies a ON a.apply_id = r.apply_id WHERE a.campaign_id = ?', campaignId)) {
+      (row.action === 'apply' ? pressed : undone).add(row.apply_id);
+    }
+  } catch { /* nothing was ever applied */ }
+  for (const row of store.all("SELECT detail FROM journal WHERE campaign_id = ? AND kind IN ('auto-apply-finished', 'owner-apply-finished') ORDER BY seq", campaignId)) {
+    if (typeof row.detail?.applyId === 'string') codes.set(row.detail.applyId, typeof row.detail.code === 'string' ? row.detail.code : null);
+  }
+  return { by: (applyId) => (applyId ? pressed.has(applyId) ? 'owner' : 'aiworks' : null), undone, codes, settledAt };
+}
+
+/** The newest earlier version of a task that is still in the folder, else the newest one the owner undid; null without. */
+function earlierVersion(attempts, latestSeq, facts) {
+  const lasts = new Map();
+  for (const row of attempts) if (row.seq < latestSeq) lasts.set(row.seq, row);
+  const kept = [...lasts.values()].filter((row) => row.outcome === 'applied').at(-1);
+  const found = kept ?? [...lasts.values()].filter((row) => row.outcome === 'rolled-back' && facts.undone.has(row.applyId)).at(-1);
+  return found ? { applyId: found.applyId, sha7: String(found.sha ?? '').slice(0, 7), by: facts.by(found.applyId), inFolder: Boolean(kept),
+    undoneAt: kept ? null : facts.settledAt.get(found.applyId) ?? null } : null;
 }
 
 /**
@@ -208,23 +273,32 @@ function localWork(store, record, textChecks, config) {
   return store.all('SELECT id FROM campaigns ORDER BY created_at DESC, id').map(({ id }) => store.campaign(id))
     .filter((c) => isLocalTarget(c.declaration) && c.declaration.target.projectId === rulesId).slice(0, 10).map((c) => {
       const titles = new Map(c.declaration.tasks.map((task) => [task.id, safeText(task.outcome ?? task.title ?? task.id, 300)]));
-      const attempts = ownerApplies(store, c.id), found = candidates(store, c.id);
+      const attempts = ownerApplies(store, c.id), found = candidates(store, c.id), facts = applyFacts(store, c.id);
+      // AW-015: where the owner accepts results themselves, Apply is that acceptance and AIWorks never applies by itself.
+      const ownerAccepts = acceptanceMode(store, projectOf(c.declaration)) === 'owner';
       const results = [...new Set(found.map((row) => row.taskId))].map((taskId) => {
         const latest = found.filter((row) => row.taskId === taskId).at(-1), task = store.task(c.id, taskId);
         // Its criteria with their evidence and Request changes (OWNER_UI_V2 WP4), about this candidate's head only; Apply is its acceptance.
         // The config says whether its preview starts the version's own server (the operator's `previews.servers`).
         const review = task ? resultReview(store, c, task, c.declaration.tasks.find((item) => item.id === taskId), config) : null;
-        return { ...localResult(latest, attempts.filter((row) => row.taskId === taskId && row.seq === latest.seq).at(-1), titles.get(taskId) ?? safeText(taskId, 64), textChecks),
-          taskVersion: task?.version ?? null, review: review && (review.verifiedSha === latest.sha || review.state === 'changes-requested') ? review : null };
+        const mine = attempts.filter((row) => row.taskId === taskId), attempt = mine.filter((row) => row.seq === latest.seq).at(-1);
+        return { ...localResult(latest, attempt, titles.get(taskId) ?? safeText(taskId, 64), textChecks, {
+          by: facts.by(attempt?.applyId), code: attempt ? facts.codes.get(attempt.applyId) ?? null : null, refusedAt: attempt ? facts.settledAt.get(attempt.applyId) ?? null : null,
+          earlier: earlierVersion(mine, latest.seq, facts), changesRequested: review?.state === 'changes-requested',
+          // AIWorks's own apply (release/owner-apply.mjs autoApplyPass) takes a finished step of running or finished work.
+          autoNext: !ownerAccepts && ['registered', 'finished'].includes(c.control) && task?.state === 'done' }),
+        taskVersion: task?.version ?? null, review: review && (review.verifiedSha === latest.sha || review.state === 'changes-requested') ? review : null };
       });
       // A step's open decision (OWNER_UI_V2 WP2) is the same record a GitHub step serves: answered, snoozed or marked as not
       // needed through /api/v2/decisions, bound to this goal's and step's versions. A stop that is no decision says so.
-      const feedback = decisionFeedback(store, c.id), now = Date.now();
-      return { id: c.id, outcome: safeText(c.declaration.envelope?.outcome ?? c.id, 300), control: c.control,
+      const feedback = decisionFeedback(store, c.id), now = Date.now(), handled = handledQuestions(store, c.id);
+      return { id: c.id, outcome: safeText(c.declaration.envelope?.outcome ?? c.id, 300), control: c.control, ownerAccepts,
         version: c.version, authorizationVersion: c.authorization_version, scopeDigest: c.scope_digest,
         steps: store.tasks(c.id).map((task) => {
           const decision = ['registered', 'paused'].includes(c.control) ? decisionView(c.id, task, feedback, now) : null;
+          // AW-017: the questions its AI workers stopped it for that AIWorks settled itself, and how.
           return { id: safeText(task.task_id, 64), title: titles.get(task.task_id) ?? safeText(task.task_id, 64), version: task.version, decision,
+            questions: handled.get(task.task_id) ?? [],
             state: decision ? 'Stopped: needs your decision' : c.control === 'cancelled' && task.state !== 'done' ? 'Cancelled'
               : task.blocked ? 'Stopped; it will not retry by itself'
                 // Checked, yet not every criterion passed: never "Passed the check" (result-review.mjs passedCheck).
