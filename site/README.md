@@ -12,9 +12,15 @@ The `gh-pages` branch holds only a copy of `site/` plus an empty `.nojekyll`, wi
 
 ## What the page may say
 
+These rules cover `index.html`. The Russian section `cases/` is different: see below.
+
 - Only what the owner journey demonstrated, labelled *Shown in this demonstration*. Code that exists but is off by default, or was not exercised, says so. Owner-reserved configuration (alert recipients, release destinations, remote access) is named as such.
 - Nothing about an installed or running copy, and no deployment claim.
 - Fictional projects and names only. No account, host, project inventory, run metrics, credentials or worker output from a real run.
+
+## The `cases/` section
+
+`cases/` is a short Russian walk through how the owner uses AIWorks on three real projects (owner request, 21 November 2026). It names the owner's own products (ELMA Wiki, Growth Farm, ELMA MCP) and the public platforms they work with (ELMA 365, 1C, Redmine), each explained in a sentence or two. It never names a company, person, host, private repository, account or credential, and gives no run metrics beyond rounded examples. Plain HTML and `cases.css` on top of `showcase.css`, same content security policy, no build step. Publish it with the rest of `site/`.
 
 ## Capture the screenshots again
 

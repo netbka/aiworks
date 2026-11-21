@@ -1,0 +1,42 @@
+/* Раздел «Как мы работаем с AIWorks». Опирается на ../showcase.css; здесь только то, чего там нет.
+   Без внешних шрифтов, скриптов и запросов. */
+.crumbs{font-size:13px;color:var(--muted);margin:18px 0 0}
+.crumbs a{color:var(--muted)}
+.top nav a[aria-current="page"]{color:var(--ink);font-weight:600;text-decoration:none}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:16px 0 0}
+.card{display:block;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 18px 16px;color:inherit;text-decoration:none}
+.card:hover{border-color:#b9c7f2}
+.card h3{margin:0 0 6px;font-size:16px;color:var(--blue)}
+.card p{margin:0;font-size:14px;color:#33405a}
+.card .kind{display:inline-block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px}
+.facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:14px 0 0;padding:0;list-style:none}
+.facts li{border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:14px}
+.facts b{display:block;font-size:13px;color:var(--muted);font-weight:600;margin-bottom:2px}
+.steps{counter-reset:s;list-style:none;margin:12px 0 0;padding:0}
+.steps>li{counter-increment:s;position:relative;padding:0 0 14px 40px}
+.steps>li::before{content:counter(s);position:absolute;left:0;top:0;width:26px;height:26px;border-radius:50%;background:var(--blue-soft);color:#2a4ec4;font-weight:700;font-size:13px;display:grid;place-items:center}
+.steps>li b{display:block}
+.pair{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+.pair>div{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.pair h3{margin-bottom:4px}
+.pair p,.pair ul{margin:4px 0 0;font-size:14px}
+.pair ul{padding-left:18px}
+.diagram{margin:14px 0 4px;overflow-x:auto}
+.diagram svg{display:block;width:100%;height:auto;min-width:560px}
+.diagram .note{font-size:13px;color:var(--muted);margin-top:6px}
+svg .bx{fill:#ffffff;stroke:#c7d0de;stroke-width:1.25}
+svg .bx-acc{fill:#edf2ff;stroke:#335eea;stroke-width:2}
+svg .bx-band{fill:#f5f7fb;stroke:#c7d0de;stroke-width:1.25}
+svg .ln{fill:none;stroke:#8a96aa;stroke-width:1.4}
+svg .t1{font:600 14px Inter,"Segoe UI",Arial,sans-serif;fill:#202b40}
+svg .t2{font:12.5px Inter,"Segoe UI",Arial,sans-serif;fill:#59677d}
+svg .t3{font:600 12px Inter,"Segoe UI",Arial,sans-serif;fill:#59677d;letter-spacing:.04em}
+svg .ah{fill:#8a96aa}
+.pager{display:flex;justify-content:space-between;gap:16px;margin:28px 0 8px;font-size:14px}
+.pager a{display:block;border:1px solid var(--line);border-radius:10px;padding:12px 16px;background:var(--surface);text-decoration:none;max-width:48%}
+.pager span{display:block;font-size:12px;color:var(--muted)}
+.why{margin:10px 0 0;padding:0;list-style:none}
+.why li{padding:10px 0;border-top:1px solid var(--line);font-size:14px}
+.why li:first-child{border-top:0}
+.why b{color:var(--ink)}
+@media(max-width:860px){.grid3,.facts,.pair{grid-template-columns:minmax(0,1fr)}.pager a{max-width:none}.pager{flex-direction:column}}

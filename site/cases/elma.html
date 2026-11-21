@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Изменения ELMA 365 · Как мы работаем с AIWorks</title>
+<meta name="description" content="Как заявка на изменение ELMA 365 проходит через ИИ-аналитика и ИИ-разработчика под управлением AIWorks.">
+<link rel="stylesheet" href="../showcase.css">
+<link rel="stylesheet" href="cases.css">
+</head>
+<body>
+<a class="skip" href="#content">К содержанию</a>
+<header class="top">
+  <div class="top-inner">
+    <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">aw</span> Как мы работаем с AIWorks</a>
+    <nav aria-label="Разделы"><ul><li><a href='index.html'>Обзор</a></li><li><a href='cycle.html'>Как идёт задача</a></li><li><a href='elma.html' aria-current="page">ELMA 365</a></li><li><a href='uh.html'>1С:УХ</a></li><li><a href='growth.html'>Growth Farm</a></li><li><a href='lessons.html'>Чему научились</a></li></ul></nav>
+  </div>
+</header>
+<main id="content" tabindex="-1">
+  <p class="crumbs"><a href="../index.html">AIWorks</a> / <a href="index.html">Как мы работаем</a> / ELMA 365</p>
+  <h1>Изменения ELMA 365</h1>
+  <p class="lead">ELMA 365 — low-code платформа, на которой у компании работают процессы. Заявки на её изменение раньше шли через людей от начала до конца. Теперь разбор и разработку делают агенты, а люди решают и принимают.</p>
+
+  <section class="panel">
+    <h2>Из чего состоит</h2>
+    <ul class="facts">
+      <li><b>Где рождается задача</b>ELMA Wiki — наш трекер заявок. По сути это баг-трекер, как Jira, но со встроенными процессами для изменений ELMA 365. Заявки приходят в него из Redmine.</li>
+      <li><b>Чем работает агент</b>ELMA MCP — набор инструментов, через которые агент видит конфигурацию ELMA 365 и пишет в неё код.</li>
+      <li><b>Что на выходе</b>Изменение на сервере разработки, которое человек проверяет, а затем переносит на тестовый и рабочий сервер.</li>
+    </ul>
+  </section>
+
+  <section class="panel">
+    <h2>Как идёт заявка</h2>
+    <div class="diagram"><svg viewBox='0 0 760 276' role='img' aria-label='Путь заявки на изменение ELMA 365'><defs><marker id='ah' viewBox='0 0 10 10' refX='9' refY='5' markerWidth='7' markerHeight='7' orient='auto-start-reverse'><path class='ah' d='M0 0L10 5L0 10z'/></marker></defs><rect class='bx' x='24' y='24' width='212' height='92' rx='8'/><text class='t1' x='38' y='48'>Заявка в трекере</text><text class='t2' x='38' y='68'>пришла из Redmine,</text><text class='t2' x='38' y='85'>привязана к модулю</text><rect class='bx' x='274' y='24' width='212' height='92' rx='8'/><text class='t1' x='288' y='48'>ИИ-аналитик</text><text class='t2' x='288' y='68'>понятно — план шагов;</text><text class='t2' x='288' y='85'>непонятно — вопрос</text><rect class='bx-acc' x='524' y='24' width='212' height='92' rx='8'/><text class='t1' x='538' y='48'>Владелец продукта</text><text class='t2' x='538' y='68'>«в работу»: кнопка</text><text class='t2' x='538' y='85'>только у человека</text><rect class='bx' x='524' y='160' width='212' height='92' rx='8'/><text class='t1' x='538' y='184'>ИИ-разработчик</text><text class='t2' x='538' y='204'>через ELMA MCP — только</text><text class='t2' x='538' y='221'>на сервере разработки</text><rect class='bx' x='274' y='160' width='212' height='92' rx='8'/><text class='t1' x='288' y='184'>Проверяющий</text><text class='t2' x='288' y='204'>сверяет с требованиями</text><text class='t2' x='288' y='221'>и планом</text><rect class='bx-acc' x='24' y='160' width='212' height='92' rx='8'/><text class='t1' x='38' y='184'>Приёмка и выпуск</text><text class='t2' x='38' y='204'>человек принимает,</text><text class='t2' x='38' y='221'>выпуск по графику</text><g><path class='ln' d='M236 70.0H274' marker-end='url(#ah)'/><path class='ln' d='M486 70.0H524' marker-end='url(#ah)'/><path class='ln' d='M630.0 116V160' marker-end='url(#ah)'/><path class='ln' d='M524 206.0H486' marker-end='url(#ah)'/><path class='ln' d='M274 206.0H236' marker-end='url(#ah)'/></g></svg></div>
+    <ol class="steps">
+      <li><b>Подключение.</b> Трекер получил в AIWorks свой ключ. Правила проекта: на рабочей системе агент только читает, менять можно только сервер разработки.</li>
+      <li><b>Задача подхватывается сама.</b> Трекер собирает краткую выжимку заявки — текст, переписку, вложения — и ставит её в AIWorks. Потом сам забирает ответ.</li>
+      <li><b>Разбор.</b> ИИ-аналитик смотрит живую систему и отвечает: «понятно, вот план» или «нужно уточнение» с одним–тремя вопросами. У каждого вопроса есть ответ по умолчанию, его можно принять одним нажатием.</li>
+      <li><b>Решение человека.</b> Владелец продукта нажимает «в работу». Эту кнопку агент нажать не может.</li>
+      <li><b>Разработка.</b> ИИ-разработчик ещё раз сверяет план и делает изменение. Проверяющий принимает его или возвращает. Если мешает сама заявка — она уходит на доработку с объяснением.</li>
+      <li><b>Приёмка.</b> Аналитик проверяет результат, дальше изменение идёт на тестовый сервер и в плановый выпуск.</li>
+    </ol>
+  </section>
+
+  <section class="panel">
+    <h2>Что берёт на себя AIWorks</h2>
+    <ul class="why">
+      <li><b>Очередь проверок.</b> Заявок много, они приходят пачками. AIWorks держит очередь и не теряет её при перезагрузке.</li>
+      <li><b>Повторная проверка после ответа.</b> Автор ответил на вопрос — заявка проверяется снова. Если текст не менялся, повторной проверки нет.</li>
+      <li><b>Сам трекер тоже пишут агенты.</b> Код ELMA Wiki делают задачи AIWorks. Изменения, которые касаются только документации и тестов, он выкладывает сам — по разрешению на ограниченный срок и с автоматическим откатом.</li>
+    </ul>
+  </section>
+
+  <nav class="pager" aria-label="Соседние страницы"><a href='cycle.html'><span>Назад</span>Как идёт задача</a><a href='uh.html'><span>Дальше</span>1С:УХ</a></nav>
+</main>
+<footer><p>AIWorks — открытый проект, лицензия MIT. <a href="https://github.com/netbka/aiworks">Код и документация</a> · <a href="https://github.com/netbka/aiworks/blob/main/README.ru.md">README на русском</a> · <a href="../index.html">Демонстрация экранов (англ.)</a>. Названия компаний, людей и серверов здесь не приводятся.</p></footer>
+</body>
+</html>
