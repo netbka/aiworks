@@ -879,13 +879,17 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
             ...(step.decision.snoozedUntil ? [{ link: null, text: NEEDS.snoozed(step.decision.snoozedUntil) }] : [])] });
       }
     }
-    // AW-016: a checked result waiting for the owner's acceptance. In a project without GitHub that is Apply on its Overview.
+    // AW-016: a checked result that is not in the folder and waits for the owner's press under Review. Where the owner
+    // accepts results themselves (AW-015), Apply is that acceptance and it is counted (AW-017); otherwise it is listed
+    // apart: AIWorks applies by itself, so one left out (undone, or refused over the folder) is information.
     for (const c of localWork[record.id] ?? []) {
-      for (const result of c.results.filter((row) => row.action === 'apply')) {
+      for (const result of c.results.filter((row) => row.waiting)) {
         items.push({ campaignId: null, repository: null, project: record.id, projectName: record.name, kind: 'local-result', action: 'Review this result',
-          text: result.title, local: { project: record.id, campaignId: result.campaignId, taskId: result.taskId },
-          why: 'It passed the independent check and is ready to apply. Review shows the latest status.',
-          route: { label: 'Open the project', address: { screen: 'project', project: record.id, tab: 'overview' } }, points: [] });
+          text: result.title, local: { project: record.id, campaignId: result.campaignId, taskId: result.taskId }, accept: c.ownerAccepts === true,
+          why: c.ownerAccepts === true ? 'It passed the independent check. You accept it by pressing Apply under Review.'
+            : 'It passed the independent check and is not applied to your folder. Review shows why and what to press.',
+          route: { label: 'Open the project', address: { screen: 'project', project: record.id, tab: 'review' } },
+          points: c.ownerAccepts === true ? [{ link: null, text: 'It passed the independent check and waits for your Apply under Review.' }] : [] });
       }
     }
   }
@@ -908,7 +912,7 @@ export function ownerView(supervisor, merges = NO_MERGES, { host = null, now = D
   // offered for review are all read from it, so no screen can say something needs the owner that Needs you does not list.
   // AW-017: of those, Needs you counts only what needs the owner's own sign-in, credential or payment, and the checked
   // versions waiting for the acceptance the owner chose (AW-015, off by default). Everything else stays listed, apart.
-  for (const item of items) if (!item.system && !OWNER_KINDS.has(item.kind)) item.system = true;
+  for (const item of items) if (!item.system && !OWNER_KINDS.has(item.kind) && !(item.kind === 'local-result' && item.accept)) item.system = true;
   const actions = items.filter((item) => !item.system), count = actions.length;
   const attention = { count, projects: {}, results: [] };
   for (const item of actions) {

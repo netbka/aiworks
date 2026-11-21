@@ -616,6 +616,42 @@ export function isAncestor({ git, path, ancestor, descendant }) {
   return exec(git, ['merge-base', '--is-ancestor', ancestor, descendant], { cwd: path }).ok;
 }
 
+/**
+ * For each group of fixed strings, whether the tracked text files of commit `sha` hold one of them as a whole word,
+ * ignoring case: one `git grep -q` per group (binary files and submodules skipped), at most `parallel` at once and all
+ * within `timeoutMs` together. A group is true only when git grep reports a match (exit 0); one that finds none (exit 1),
+ * fails, runs past the time or never starts is false, as is every group when `sha` is not a full commit id. Local,
+ * never fetches; asynchronous and bounded (execBounded): await it before the fence.
+ */
+export async function holdsWords({ git, repoPath, sha, groups, timeoutMs = 30_000, parallel = 4 }) {
+  const held = groups.map(() => false);
+  if (!SHA.test(sha ?? '')) return held;
+  const deadline = Date.now() + timeoutMs;
+  let next = 0;
+  const search = async () => {
+    while (next < groups.length) {
+      const at = next++, left = deadline - Date.now();
+      if (left <= 0) return;
+      const out = await execBounded(git, ['grep', '-q', '-w', '-F', '-i', '-I', '--no-recurse-submodules',
+        ...groups[at].flatMap((text) => ['-e', text]), sha, '--'], { cwd: repoPath, timeoutMs: left });
+      held[at] = out.ok;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(parallel, groups.length) }, search));
+  return held;
+}
+
+/**
+ * The GitHub repository (`owner/name`, lowercase) that every fetch URL of `remote` names, insteadOf rewrites applied,
+ * or null when one is not a github.com URL, they name different repositories, or they cannot be read within `timeoutMs`.
+ */
+export async function fetchRepository({ git, repoPath, remote = 'origin', timeoutMs = 30_000 }) {
+  const out = await execBounded(git, ['remote', 'get-url', '--all', remote], { cwd: repoPath, timeoutMs });
+  if (!out.ok || !out.stdout) return null;
+  const names = new Set(out.stdout.split(/\r?\n/).filter(Boolean).map((url) => githubRemote(url)?.toLowerCase() ?? null));
+  return names.size === 1 && !names.has(null) ? [...names][0] : null;
+}
+
 /** The commits on the first-parent line of `to` after `from`, newest first; null when unreadable. Local, never fetches. */
 export function firstParentSince({ git, path, from, to }) {
   const result = exec(git, ['rev-list', '--first-parent', `${from}..${to}`], { cwd: path });

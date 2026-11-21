@@ -2,6 +2,7 @@
 // without touching its files is gated on the exact merge result; a shared file, a failed or stuck gate falls back to the
 // integration repair. The harness is merge-refresh-harness.mjs; BASE-HOLD and merge groups have their own files.
 import { test } from 'node:test';
+import { repositorySettings } from '../../src/supervisor/merge.mjs';
 import { spawnSync, A, B, C, BATCH, GATE, ON, REPOSITORY, assert, branchName, campaignStart, Controller, declaration, existsSync, git, groupRows, join, mergePass, mergeSettings, mkdirSync, passedGate, passedTree, published, readFileSync, refreshSettings, refreshStep, rmSync, sleep, Store, task, writeFileSync } from './merge-refresh-harness.mjs';
 
 test('refresh settings: absent is off, a command list turns it on, anything else keeps merging off', () => {
@@ -17,6 +18,40 @@ test('refresh settings: absent is off, a command list turns it on, anything else
   assert.equal(mergeSettings({ merges: { ...ON().merges, refresh: undefined } }).refresh, null);
   assert.equal(mergeSettings({ merges: { ...ON().merges, refresh: undefined, batch: true } }).enabled, false, 'a group merge needs the gate command');
   assert.deepEqual(mergeSettings(ON()).refresh.command, GATE);
+});
+
+test('per-repository refresh: a listed repository gets its own command, others the global one, and a malformed entry keeps merging off', () => {
+  const own = ['npm', 'run', 'verify'];
+  const settings = mergeSettings({ merges: { ...ON().merges, refreshByRepository: { 'Example-Org/SampleApp': { command: own, timeoutMinutes: 30 }, 'example-org/quiet': null } } });
+  assert.equal(settings.enabled, true);
+  assert.deepEqual(repositorySettings(settings, REPOSITORY).refresh, { command: own, timeoutMs: 30 * 60_000 });
+  assert.deepEqual(repositorySettings(settings, 'example-org/other').refresh.command, GATE);
+  assert.equal(repositorySettings(settings, 'example-org/quiet').refresh, null);
+  for (const bad of [[], { 'not a repository': { command: own } }, { [REPOSITORY]: { command: [] } }, { [REPOSITORY]: 'npm run verify' },
+    { [REPOSITORY]: { command: own, timeoutMinutes: 0 } }, { [REPOSITORY]: { command: own }, 'EXAMPLE-ORG/sampleapp': null }]) {
+    const off = mergeSettings({ merges: { ...ON().merges, refreshByRepository: bad } });
+    assert.equal(off.enabled, false, JSON.stringify(bad));
+    assert.match(off.problem, /merges\.refreshByRepository/);
+  }
+});
+
+test('a repository with its own refresh entry gates the merge result with that command, not merges.refresh', async (t) => {
+  const { r, heads } = await published(t, { [A]: 'a.txt', [B]: 'b.txt' });
+  const global = [`"${process.execPath}"`, '-e', '"process.exit(1)"'];
+  r.start({ merges: { ...ON({ command: global }).merges, refreshByRepository: { 'Example-Org/SampleApp': { command: GATE } } } });
+  await r.controller.tick();
+  // A pass of this head on this base under the earlier global command no longer counts: the merge result is gated again.
+  const stale = { task: 'B1', sha: heads[B], base: r.main(), tree: '0'.repeat(40) };
+  r.store.journal(B, 'merge-refresh-started', { ...stale, commit: '0'.repeat(40), path: join(r.env.tmp, 'stale-refresh'), command: global }, r.controller.now());
+  r.store.journal(B, 'merge-refresh-passed', stale, r.controller.now());
+  await r.pass();
+  const started = r.journal(B, 'merge-refresh-started').at(-1);
+  assert.deepEqual(started.command, GATE);
+  await r.gateEnds(started.path);
+  await r.pass();
+  assert.equal(r.runs().length, 1, 'the repository command ran on the merge result');
+  assert.deepEqual(r.mergeCalls().at(-1).fields, { merge_method: 'merge', sha: heads[B] });
+  assert.equal(r.journal(B, 'merge-refresh-failed').length, 0);
 });
 
 test('a moved base that shares no file with the pull request is gated on the exact merge result and merged without an AI round', async (t) => {

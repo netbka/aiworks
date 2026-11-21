@@ -417,15 +417,22 @@ function envelopeConstraint(envelope) {
   const deny = envelope.denyWrites ?? [];
   return `Approved outcome: ${envelope.outcome}${/[.!?]$/.test(envelope.outcome) ? '' : '.'} Planned files: ${envelope.writes.length ? envelope.writes.join(', ') : 'no repository path'}${deny.length ? `; never change ${deny.join(', ')}` : ''}. ${BEYOND_RULE}`.slice(0, 2000);
 }
+// A private term or a repository name is written with hyphens or underscores interchangeably, in either case.
+const folded = (text) => String(text).toLowerCase().replace(/_/g, '-');
+
 /**
- * The private terms that bind a publication into one target. A term that the target's own repository name (the part after
- * the owner) contains names that target itself: a pull request into a repository says that public name. Such a term is
- * dropped for that target only and still binds every other target. Neither the owner part nor the private projectId
- * exempts a term.
+ * The private terms that bind a publication into one target (work item 97). Two kinds of term are dropped for that
+ * target only and still bind every other target:
+ * - a term that the target's own repository name (the part after the owner) contains names that target itself: a pull
+ *   request into a repository says that public name. Neither the owner part nor the private projectId exempts a term;
+ * - a term in `present`, which the target's tracked text already holds at its base (Controller.presentTerms): its
+ *   readers can already read it there, so publishing it to them shows nothing new.
+ * Both compare ignoring case and treating `-` and `_` alike.
  */
-export function termsForTarget(terms, target) {
-  const own = String(target?.repository ?? '').split('/').slice(1).join('/').toLowerCase();
-  return own ? terms.filter((term) => !own.includes(String(term).toLowerCase())) : terms;
+export function termsForTarget(terms, target, present = []) {
+  const own = folded(String(target?.repository ?? '').split('/').slice(1).join('/'));
+  const held = new Set(present.map(folded));
+  return terms.filter((term) => !(own && own.includes(folded(term))) && !held.has(folded(term)));
 }
 
 /** Where a task's work belongs in owner-facing text: `owner/name#issue`, or the project id of a project without GitHub. */
@@ -3130,7 +3137,9 @@ export class Controller {
 
   /** Folders whose stacks stay: every open operation's workspace and every running refresh or group gate's checkout. */
   cleanupKeep() {
-    const windowMs = this.merges.refresh?.timeoutMs ?? 2 * 60 * 60_000;
+    // The longest refresh bound of any repository (merges.refresh or its own merges.refreshByRepository entry).
+    const bounds = [this.merges.refresh, ...(this.merges.refreshByRepository?.values() ?? [])].filter(Boolean).map((refresh) => refresh.timeoutMs);
+    const windowMs = bounds.length ? Math.max(...bounds) : 2 * 60 * 60_000;
     return [...openOperations(this.store, this.cleanup).map((op) => op.workspace),
       ...runningRefreshes(this.store, this.cleanup, { now: this.now(), windowMs }).map((gate) => gate.path),
       ...runningBatches(this.store, this.cleanup, { now: this.now(), windowMs })].filter(Boolean);
@@ -4108,6 +4117,8 @@ export class Controller {
     const pushOptions = { git: this.cmd.git, repository: decl.target.repository, repoPath: repo.path, branch, sha: task.verified_sha, base: forkPoint };
     const pushKey = `push\u0000${JSON.stringify(pushOptions)}`;
     const push = (ready) => ready(pushKey, () => gitA.pushVerifiedAsync(pushOptions));
+    // Read before the fence: the private terms the target's base already holds, never its verified head (presentTerms).
+    const present = await this.presentTerms(decl);
     try {
       await this.fencedPrepared(ctx, (ready) => {
         const pushed = ready.done(pushKey);
@@ -4137,7 +4148,7 @@ export class Controller {
         const repairKind = integration ? 'integration' : repair?.id === OWNER_CHANGES ? 'owner-changes' : 'ci';
         const local = this.selfHosted(decl.target.repository);
         // The installation's public-publication terms bind GitHub writes only: malformed ones never stop a work-list record.
-        const terms = local ? null : this.publicationTerms(decl);
+        const terms = local ? null : this.publicationTerms(decl, present);
         if (local) {
           url = this.recordLocalReview(ctx, decl, spec, fresh, { repair, integration, repairKind });
           if (!url) return;
@@ -4291,11 +4302,44 @@ export class Controller {
     }
   }
 
-  /** The installation's private terms for publication: the runtime checkout's and the target checkout's `.local/publication.json`. */
-  publicationTerms(decl) {
+  /**
+   * The installation's private terms for publication: the runtime checkout's and the target checkout's
+   * `.local/publication.json`, less those termsForTarget drops for the target. `present`: the terms presentTerms found
+   * in the target's base.
+   */
+  publicationTerms(decl, present = []) {
     const roots = [resolve(here, '../..')];
     try { roots.push(this.repo(decl).path); } catch { /* no checkout: the generic rules and the runtime's terms still apply */ }
-    return termsForTarget([...new Set(roots.flatMap((root) => privateTerms(root)))], decl?.target);
+    return termsForTarget([...new Set(roots.flatMap((root) => privateTerms(root)))], decl?.target, present);
+  }
+
+  /**
+   * The printable-ASCII private terms binding `decl`'s target (publicationTerms) that its repository already holds:
+   * found as a whole word in the tracked text at the tip of `target.baseBranch` as fetchBase reads it from `origin`, ignoring case and
+   * with `-` and `_` alike. Only that base counts, never the verified head or any other commit a worker made: a worker
+   * that wrote a term into its own change could otherwise publish it. And only when every fetch URL of `origin` names
+   * the target repository on GitHub: another repository's base says nothing about what the target's readers can read.
+   * One bounded `git grep -q` per term (gitA.holdsWords, config baseReadMs), awaited before the fence. A base or remote
+   * that cannot be read finds nothing, and a term whose search fails or times out is not found, so it still binds (fail
+   * closed). Never throws.
+   */
+  async presentTerms(decl) {
+    try {
+      if (isLocalTarget(decl) || this.selfHosted(decl.target.repository)) return [];
+      // git grep -w counts only ASCII letters, digits and `_` as word characters, so every byte of another letter is a
+      // boundary and a non-ASCII term would be found inside a longer word (an inflected form, say): such a term always binds.
+      const terms = this.publicationTerms(decl).filter((term) => /^[\x20-\x7e]+$/.test(term));
+      if (!terms.length) return [];
+      const repo = this.repo(decl), git = this.cmd.git, timeoutMs = this.config.baseReadMs;
+      const origin = await gitA.fetchRepository({ git, repoPath: repo.path, timeoutMs });
+      if (!origin || origin !== String(decl.target.repository).toLowerCase()) return [];
+      const base = await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository);
+      if (!base.ok) return [];
+      const groups = terms.map((term) => [...new Set([term, term.replace(/_/g, '-'), term.replace(/-/g, '_')])]);
+      const held = await this.tickCached(`present:${repo.path}|${base.sha}|${JSON.stringify(groups)}`, () =>
+        gitA.holdsWords({ git, repoPath: repo.path, sha: base.sha, groups, timeoutMs }));
+      return terms.filter((_, at) => held[at] === true);
+    } catch { return []; }
   }
 
   /**
@@ -5070,9 +5114,17 @@ export class Controller {
     const items = [...this.held.keys()].flatMap((id) => this.store.all(
       "SELECT * FROM outbox WHERE campaign_id = ? AND state = 'pending' ORDER BY updated_at LIMIT 5", id))
       .filter((item) => item.attempts === 0 || now - item.updated_at >= this.config.outboxRetryMs * item.attempts);
+    // By campaign: the private terms its target's base already holds (presentTerms), read once in this drain.
+    const present = new Map();
     for (const item of items) {
       const [repository, issue] = item.target.split('#');
       try {
+        // Read before the fence, and only for a GitHub note to its campaign's own target: another repository's base
+        // says nothing about what this one's readers can read.
+        const declared = this.store.campaign(item.campaign_id)?.declaration;
+        const own = Boolean(declared) && item.campaign_id !== COORDINATOR_LANE && !WORK_TARGET.test(item.target) &&
+          String(repository).toLowerCase() === String(declared.target?.repository).toLowerCase();
+        if (own && !present.has(item.campaign_id)) present.set(item.campaign_id, await this.presentTerms(declared));
         this.fenced({ id: item.campaign_id, generation: this.held.get(item.campaign_id) }, () => {
           if (this.store.get('SELECT state FROM outbox WHERE key = ?', item.key)?.state !== 'pending') return;
           // Replies queued by an older runtime stay local too; never publish them after an upgrade.
@@ -5093,7 +5145,7 @@ export class Controller {
           }
           const body = `${item.body}\n\n${github.marker(item.key)}`;
           const decl = this.store.campaign(item.campaign_id)?.declaration;
-          const terms = decl ? this.publicationTerms(decl) : [];
+          const terms = decl ? this.publicationTerms(decl, own ? present.get(item.campaign_id) : []) : [];
           // aiworks#8: a note whose text fails the publication check is never sent or retried. It stays in the store as
           // `refused`, and a note without its text tells the tracking issue that one was withheld.
           const findings = publicationFindings(body, { repository, terms });

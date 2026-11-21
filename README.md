@@ -248,6 +248,7 @@ Details are in the [Sign-in to web systems plugin](docs/plugins/README.md#sign-i
 
 | Document | What it covers |
 | --- | --- |
+| [How we use AIWorks](https://netbka.github.io/aiworks/cases/) (in Russian) | Three real projects — changes to a low-code system, finance requests in 1C, a marketing agency — with diagrams |
 | [Setup by layers](docs/setup/README.md) | Each layer: why it exists, what you decide, commands, how to check |
 | [Plugins](docs/plugins/README.md) | A passport for each plugin: settings, secrets, "turn on" and "turn off" prompts |
 | [How it works](docs/HOW_IT_WORKS.md) | The life of one step, safety rules, where things are kept |

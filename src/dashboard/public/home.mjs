@@ -32,7 +32,8 @@ export function summaryLine(goals, landed, checking = 0, count = 0, stopped = fa
 /**
  * @param data   the Home data (goals, landed, needs, quiet, tokensToday) plus `decided` ({ question, chosen, change?, address }),
  *               `goalAddress(goal)` for a goal's own page, `address(project)` for a project's page, `needCards`
- *               (finished nodes) and `stopped` (AIWorks stopped on this computer)
+ *               (finished nodes), `stopped` (AIWorks stopped on this computer) and `notApplied` ({ name, count, address }:
+ *               checked results left out of a project's folder that nobody is counted for)
  * @param h      { el, timeAgo }
  */
 export function homeBlocks(data, h) {
@@ -43,9 +44,15 @@ export function homeBlocks(data, h) {
 
   // AIWorks's own problems are one grey line linking to Settings, never part of the owner's count (HOME_V2.md).
   const ownWords = own.count > 0 ? `AIWorks has ${plural(own.count, 'problem')} of its own.` : null;
+  // Checked results left out of a folder (undone, or refused over it) are not counted (AW-017: AIWorks applies by itself),
+  // yet never hidden behind calm: one grey line per project, as its Overview says, linking to its Review.
+  const notApplied = (data.notApplied ?? []).map((entry) => {
+    const words = `${entry.count === 1 ? 'A checked result' : `${entry.count} checked results`} in ${entry.name} ${entry.count === 1 ? 'is' : 'are'} not applied to your folder. Review says why and what to press.`;
+    return el('p', { class: 'home-summary' }, entry.address ? el('a', { href: entry.address }, words) : words);
+  });
   out.push(el('section', { class: 'home-hero', 'aria-labelledby': 'home-title' },
     el('h1', { id: 'home-title', tabindex: '-1' }, heroWords(count, checking)),
-    el('p', { class: 'home-summary' }, summaryLine(goals, landed, checking, count, data.stopped === true)),
+    el('p', { class: 'home-summary' }, summaryLine(goals, landed, checking, count, data.stopped === true)), ...notApplied,
     ownWords ? el('p', { class: 'home-summary home-own' }, own.address ? el('a', { href: own.address }, ownWords) : ownWords) : null));
 
   if (count > 0 && data.needCards?.length) out.push(el('section', { class: 'home-block home-needs', 'aria-label': 'Needs you' },
