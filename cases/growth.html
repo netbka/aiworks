@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Growth Farm: агентство на ИИ-агентах · Как мы работаем с AIWorks</title>
+<meta name="description" content="Growth Farm — маркетинговое агентство, где AIWorks ведёт ИИ-агентов: гипотезы, тексты, проверку и публикацию.">
+<link rel="stylesheet" href="../showcase.css">
+<link rel="stylesheet" href="cases.css">
+</head>
+<body>
+<a class="skip" href="#content">К содержанию</a>
+<header class="top">
+  <div class="top-inner">
+    <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">aw</span> Как мы работаем с AIWorks</a>
+    <nav aria-label="Разделы"><ul><li><a href='index.html'>Обзор</a></li><li><a href='cycle.html'>Как идёт задача</a></li><li><a href='elma.html'>ELMA 365</a></li><li><a href='uh.html'>1С:УХ</a></li><li><a href='growth.html' aria-current="page">Growth Farm</a></li><li><a href='lessons.html'>Чему научились</a></li></ul></nav>
+  </div>
+</header>
+<main id="content" tabindex="-1">
+  <p class="crumbs"><a href="../index.html">AIWorks</a> / <a href="index.html">Как мы работаем</a> / Growth Farm</p>
+  <h1>Growth Farm: агентство на ИИ-агентах</h1>
+  <p class="lead">Growth Farm — маркетинговое агентство для наших продуктов, где сотрудники — ИИ-агенты. Здесь нет кода для людей: агенты исследуют рынок, ищут площадки, пишут и проверяют тексты и ведут гипотезы. Цель — деньги, а не число постов.</p>
+
+  <section class="panel">
+    <h2>Из чего состоит</h2>
+    <ul class="facts">
+      <li><b>Где рождается задача</b>План волны на две недели: гипотезы с метрикой и правилом остановки, задачи по каждой.</li>
+      <li><b>Чем работают агенты</b>Поиск и браузер, почтовые черновики, API площадок для публикации, база гипотез и реестр фактов о продуктах.</li>
+      <li><b>Что на выходе</b>Проверенный текст на площадке, отчёт об исследовании, итог гипотезы по её метрике.</li>
+    </ul>
+  </section>
+
+  <section class="panel">
+    <h2>Как идёт волна</h2>
+    <div class="diagram"><svg viewBox='0 0 760 276' role='img' aria-label='Ход волны в Growth Farm'><defs><marker id='ah' viewBox='0 0 10 10' refX='9' refY='5' markerWidth='7' markerHeight='7' orient='auto-start-reverse'><path class='ah' d='M0 0L10 5L0 10z'/></marker></defs><rect class='bx' x='24' y='24' width='212' height='92' rx='8'/><text class='t1' x='38' y='48'>Разбор волны</text><text class='t2' x='38' y='68'>что сработало</text><text class='t2' x='38' y='85'>по метрикам</text><rect class='bx' x='274' y='24' width='212' height='92' rx='8'/><text class='t1' x='288' y='48'>План и гипотезы</text><text class='t2' x='288' y='68'>метрика и стоп</text><text class='t2' x='288' y='85'>до запуска</text><rect class='bx' x='524' y='24' width='212' height='92' rx='8'/><text class='t1' x='538' y='48'>Три автора</text><text class='t2' x='538' y='68'>Claude, Gemini, Codex</text><text class='t2' x='538' y='85'>пишут по одному брифу</text><rect class='bx' x='524' y='160' width='212' height='92' rx='8'/><text class='t1' x='538' y='184'>Редактор-агент</text><text class='t2' x='538' y='204'>видит версии A, B, C</text><text class='t2' x='538' y='221'>без имён, сверяет факты</text><rect class='bx' x='274' y='160' width='212' height='92' rx='8'/><text class='t1' x='288' y='184'>Публикация</text><text class='t2' x='288' y='204'>агент выпускает сам,</text><text class='t2' x='288' y='221'>собирает замеры</text><rect class='bx-acc' x='24' y='160' width='212' height='92' rx='8'/><text class='t1' x='38' y='184'>Владелец</text><text class='t2' x='38' y='204'>утренний пакет:</text><text class='t2' x='38' y='221'>деньги и письма</text><g><path class='ln' d='M236 70.0H274' marker-end='url(#ah)'/><path class='ln' d='M486 70.0H524' marker-end='url(#ah)'/><path class='ln' d='M630.0 116V160' marker-end='url(#ah)'/><path class='ln' d='M524 206.0H486' marker-end='url(#ah)'/><path class='ln' d='M274 206.0H236' marker-end='url(#ah)'/></g></svg></div>
+    <ol class="steps">
+      <li><b>Подключение.</b> Репозиторий агентства подключён к AIWorks как проект. Задачи волны — обычные задачи в трекере GitHub, AIWorks выполняет их и пишет отчёт прямо туда.</li>
+      <li><b>Гипотезы до запуска.</b> Каждую записывают с прогнозом, метрикой и правилом остановки. Вывод проверяет отдельный агент-скептик, а не автор.</li>
+      <li><b>Тексты.</b> Три разных агента пишут по одному брифу независимо. Редактор выбирает версию, сверяет факты и правила площадки и закрепляет точный текст.</li>
+      <li><b>Выпуск без владельца.</b> Утверждённый текст агент публикует сам — через API или последним кликом в браузере — и собирает замеры через сутки, двое и неделю.</li>
+    </ol>
+  </section>
+
+  <section class="panel">
+    <h2>Что здесь особенного для AIWorks</h2>
+    <ul class="why">
+      <li><b>Несколько агентов по очереди.</b> Одинаковые задачи распределяются между Claude, Gemini и Codex. По каждому результату видно, кто его сделал, сколько токенов ушло и прошёл ли он проверку. Получается живое сравнение агентов на реальной работе.</li>
+      <li><b>Проверяющий ловит цифры.</b> В первой волне он дважды вернул отчёт об исследовании из-за неверных чисел. План волны прошёл с первого раза.</li>
+      <li><b>Человек — не узкое место.</b> Владелец смотрит один утренний пакет: письма, которые нужно отправить от его имени, и решения о деньгах.</li>
+    </ul>
+  </section>
+
+  <nav class="pager" aria-label="Соседние страницы"><a href='uh.html'><span>Назад</span>1С:УХ</a><a href='lessons.html'><span>Дальше</span>Чему научились</a></nav>
+</main>
+<footer><p>AIWorks — открытый проект, лицензия MIT. <a href="https://github.com/netbka/aiworks">Код и документация</a> · <a href="https://github.com/netbka/aiworks/blob/main/README.ru.md">README на русском</a> · <a href="../index.html">Демонстрация экранов (англ.)</a>. Названия компаний, людей и серверов здесь не приводятся.</p></footer>
+</body>
+</html>
