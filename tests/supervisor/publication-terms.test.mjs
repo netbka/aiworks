@@ -14,3 +14,12 @@ test('a private term is dropped only for the target it names', () => {
   assert.deepEqual(termsForTarget(terms, { repository: 'example-owner/other', projectId: 'other' }), terms);
   assert.deepEqual(termsForTarget(terms, undefined), terms);
 });
+
+// A term and a repository name are written with hyphens or underscores interchangeably, in any case: such a variant of
+// the target's own name names that target too, and still binds every other target.
+test('a hyphen or underscore variant of the target name is dropped for that target only', () => {
+  const terms = ['sample-wiki', 'Sample_Shop'];
+  assert.deepEqual(termsForTarget(terms, { repository: 'example-owner/sample_wiki' }), ['Sample_Shop']);
+  assert.deepEqual(termsForTarget(terms, { repository: 'example-owner/SAMPLE-SHOP' }), ['sample-wiki']);
+  assert.deepEqual(termsForTarget(terms, { repository: 'example-owner/other' }), terms);
+});
