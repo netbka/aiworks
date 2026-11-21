@@ -107,11 +107,13 @@ async function closeSource(ctl, c, bases, report) {
   if (attempts >= MAX_ATTEMPTS) return;
   const lines = await finishedWork(ctl, c, bases);
   if (!lines || otherHolder(ctl, c)) return;
+  // Read before the lease is taken: the private terms the issue's repository already holds at its base (presentTerms).
+  const present = await ctl.presentTerms(decl);
   const ctx = lease(ctl, c.id);
   if (!ctx) return;
   const body = [`AIWorks finished the work this ${local ? 'item' : 'issue'} asked for (campaign \`${c.id}\`). Every step passed independent verification and is in \`${decl.target.baseBranch}\`:`,
     '', ...lines, '', `AIWorks closes this ${local ? 'item' : 'issue'} as completed. Merged is not deployed: nothing was released or deployed.`].join('\n');
-  const closed = local ? closeWorkItem(ctl, ctx, c, issue, body) : closeIssue(ctl, ctx, c, issue, body);
+  const closed = local ? closeWorkItem(ctl, ctx, c, issue, body) : closeIssue(ctl, ctx, c, issue, body, present);
   if (closed) report.sources.push(local ? workLink(issue) : `${repository}#${issue}`);
 }
 
@@ -172,7 +174,7 @@ function otherHolder(ctl, c) {
 }
 
 /** Comment once (a marked comment) and close the issue as completed, journaled before and after. Returns whether it closed. */
-function closeIssue(ctl, ctx, c, issue, text) {
+function closeIssue(ctl, ctx, c, issue, text, present) {
   const decl = c.declaration, repository = decl.target.repository, gh = ctl.cmd.gh;
   let live;
   try { live = github.issueState({ gh, repository, issue }); } catch (error) { ctl.log(`source of ${c.id}: ${repository}#${issue} unread: ${error.message}`); return false; }
@@ -187,7 +189,7 @@ function closeIssue(ctl, ctx, c, issue, text) {
     return ctl.store.journal(c.id, 'source-close-started', { subject: 'source', repository, issue }, ctl.now());
   });
   if (!started) return false;
-  const { outcome, comment, reason } = commentAndClose(ctl, decl, { issue, key, body: ctl.publicText(decl, text), reason: 'completed' });
+  const { outcome, comment, reason } = commentAndClose(ctl, decl, { issue, key, body: ctl.publicText(decl, text), reason: 'completed', present });
   ctl.fenced(ctx, () => ctl.store.journal(c.id, 'source-closed', { subject: 'source', started, repository, issue, outcome, comment, reason }, ctl.now()));
   return outcome === 'closed';
 }
@@ -207,13 +209,13 @@ function settleIssue(ctl, c, open) {
  * The marked comment (found again rather than posted twice) and the one PATCH. `reason` is the state reason, null for a
  * pull request. Returns { outcome: 'closed' | 'failed', comment, reason }.
  */
-function commentAndClose(ctl, decl, { issue, key, body, reason }) {
+function commentAndClose(ctl, decl, { issue, key, body, reason, present }) {
   const repository = decl.target.repository, gh = ctl.cmd.gh;
   try {
     const dir = join(ctl.dataDir, 'runs');
     mkdirSync(dir, { recursive: true });
     const comment = github.findMarkedComment({ gh, repository, issue, key }) ?? github.postComment({ gh, repository, issue,
-      body: `${body}\n\n${github.marker(key)}`, bodyFile: join(dir, 'close-finished.md'), terms: ctl.publicationTerms(decl) });
+      body: `${body}\n\n${github.marker(key)}`, bodyFile: join(dir, 'close-finished.md'), terms: ctl.publicationTerms(decl, present) });
     github.closeIssue({ gh, repository, issue, reason });
     return { outcome: 'closed', comment, reason: null };
   } catch (error) {
@@ -268,6 +270,7 @@ async function closePulls(ctl, c, bases, report, state) {
     if (!why) continue;
     let pr;
     try { pr = github.pullRequest({ gh: ctl.cmd.gh, repository, number }); } catch (error) { ctl.log(`pull request ${url} unread: ${error.message}`); continue; }
+    const present = await ctl.presentTerms(decl);
     const ctx = lease(ctl, c.id);
     if (!ctx) continue;
     const ours = pr.headRef === gitA.branchName(c.id, task.task_id);
@@ -291,7 +294,7 @@ async function closePulls(ctl, c, bases, report, state) {
       : why === 'not-done' ? `step \`${task.task_id}\` of campaign \`${c.id}\` ended without being done, so AIWorks will not merge this change`
         : `campaign \`${c.id}\` is finished and its verified head \`${task.verified_sha}\` is already in \`${decl.target.baseBranch}\`: the change landed through another merge`;
     const body = `AIWorks closes this pull request: ${words}. Nothing was deleted; the branch \`${gitA.branchName(c.id, task.task_id)}\` stays.`;
-    const { outcome, comment, reason } = commentAndClose(ctl, decl, { issue: number, key: `${c.id}:${task.task_id}:pr-closed:${number}`, body, reason: null });
+    const { outcome, comment, reason } = commentAndClose(ctl, decl, { issue: number, key: `${c.id}:${task.task_id}:pr-closed:${number}`, body, reason: null, present });
     ctl.fenced(ctx, () => ctl.store.journal(c.id, 'pr-closed', { subject: 'pull', started, task: task.task_id, url, outcome, why, comment, reason }, ctl.now()));
     if (outcome === 'closed') report.pulls.push(url);
   }

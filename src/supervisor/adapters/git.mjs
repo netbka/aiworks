@@ -616,6 +616,24 @@ export function isAncestor({ git, path, ancestor, descendant }) {
   return exec(git, ['merge-base', '--is-ancestor', ancestor, descendant], { cwd: path }).ok;
 }
 
+/**
+ * The text `patterns` match in the tracked text files of commit `sha`, ignoring case: one `git grep` of that commit's
+ * tree for every pattern at once (fixed strings; binary files skipped), lowercased, without repeats. [] when nothing
+ * matches; null when it cannot tell: `sha` is not a full commit id, or the search failed, ran past `timeoutMs` or
+ * printed more than execBounded keeps. Local, never fetches; asynchronous and bounded: await it before the fence.
+ */
+export async function matchesAt({ git, repoPath, sha, patterns, timeoutMs = 30_000 }) {
+  if (!SHA.test(sha ?? '')) return null;
+  if (!patterns.length) return [];
+  // -h drops the `<commit>:<path>:` prefix, and the explicit options win over any grep or color setting of the checkout.
+  const out = await execBounded(git, ['grep', '--no-color', '--no-line-number', '--no-column', '-I', '-F', '-i', '-o', '-h',
+    ...patterns.flatMap((pattern) => ['-e', pattern]), sha, '--'], { cwd: repoPath, timeoutMs });
+  // git grep exits 1 when nothing matches and above 1 when it fails.
+  if (out.status === 1 && !out.error) return [];
+  if (!out.ok) return null;
+  return [...new Set(out.stdout.split('\n').map((line) => line.trim().toLowerCase()).filter(Boolean))];
+}
+
 /** The commits on the first-parent line of `to` after `from`, newest first; null when unreadable. Local, never fetches. */
 export function firstParentSince({ git, path, from, to }) {
   const result = exec(git, ['rev-list', '--first-parent', `${from}..${to}`], { cwd: path });
