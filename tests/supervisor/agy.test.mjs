@@ -105,9 +105,11 @@ test('each agy run gets its own profile home, explicit denies and a browser lock
     runDir, workspace: 'unused-checkout', prompt: 'review this', web, chromeCommand: ['C:/Chrome/chrome.exe'], timeoutMs: 30 * 60_000 });
   const home = join(runDir, 'agy-home');
   const temp = join(runDir, 'agy-tmp');
-  assert.deepEqual(invocation.env, { USERPROFILE: home, HOME: home, APPDATA: join(home, 'AppData', 'Roaming'),
+  const { AGY_CLI_DISABLE_AUTO_UPDATE: update, ...folders } = invocation.env;
+  assert.equal(update, '1', 'the audited CLI does not change under a campaign');
+  assert.deepEqual(folders, { USERPROFILE: home, HOME: home, APPDATA: join(home, 'AppData', 'Roaming'),
     LOCALAPPDATA: join(home, 'AppData', 'Local'), TEMP: temp, TMP: temp, TMPDIR: temp }, 'every per-user folder is run-local');
-  assert.ok(Object.values(invocation.env).every((path) => path.startsWith(runDir)));
+  assert.ok(Object.values(folders).every((path) => path.startsWith(runDir)));
   assert.equal(invocation.cwd, join(runDir, 'agy-scratch'), 'no repository checkout is reachable');
   const argv = invocation.argv;
   for (const [flag, value] of [['--input-format', 'stream-json'], ['--output-format', 'stream-json'], ['--model', agy.model], ['--print-timeout', '1800s']]) {
@@ -440,8 +442,12 @@ test('agy code mode takes only report tasks, only under agy.codeRoles, in a sand
   assert.equal(route(inputs('report', { agyCodeRoles: true })).chosen.kind, 'agy-cli');
   assert.equal(route(inputs('commit', { agyCodeRoles: true })).chosen.kind, 'claude-cli');
   const runDir = mkdtempSync(join(tmpdir(), 'aiworks-agy-code-'));
-  const workspace = mkdtempSync(join(tmpdir(), 'aiworks-agy-tree-'));
-  t.after(() => { rmSync(runDir, { recursive: true, force: true }); rmSync(workspace, { recursive: true, force: true }); });
+  const above = mkdtempSync(join(tmpdir(), 'aiworks-agy-tree-'));
+  const workspace = join(above, 'checkout');
+  mkdirSync(workspace);
+  // A linked worktree: its .git is a file, and the main checkout's folders above it still count.
+  writeFileSync(join(workspace, '.git'), 'gitdir: ../main/.git/worktrees/checkout\n');
+  t.after(() => { rmSync(runDir, { recursive: true, force: true }); rmSync(above, { recursive: true, force: true }); });
   const launch = (deliverable) => prepare({ executor: agy, command: ['agy'], role: 'verification', deliverable, sessionId: 'bound-run', digest, runDir, workspace, prompt: 'p', timeoutMs: 60_000 });
   assert.throws(() => launch('commit'));
   const invocation = launch('report');
@@ -454,9 +460,15 @@ test('agy code mode takes only report tasks, only under agy.codeRoles, in a sand
   assert.ok(!settings.permissions.allow.some((rule) => rule.startsWith('command(')), 'a command allow rule would also approve leaving the sandbox');
   for (const rule of ['write_file(*)', 'mcp(*)', 'read_url(*)']) assert.ok(settings.permissions.deny.includes(rule));
   assert.equal(unavailableReason(agy, workspace, null, {}), null, 'code mode needs no browser');
-  mkdirSync(join(workspace, '.agents'));
-  writeFileSync(join(workspace, '.agents', 'hooks.json'), '{}');
-  assert.ok(unavailableReason(agy, workspace, null, {}), 'a project hook would run outside the audit');
+  // agy loads project hooks, which run outside the sandbox and the audit, from any of four folders, even above the checkout.
+  for (const name of ['.agents', '.agent', '_agents', '_agent']) {
+    for (const dir of [workspace, above]) {
+      mkdirSync(join(dir, name));
+      assert.ok(unavailableReason(agy, workspace, null, {}), join(dir, name));
+      rmSync(join(dir, name), { recursive: true });
+    }
+  }
+  assert.equal(unavailableReason(agy, workspace, null, {}), null);
 });
 
 test('the code-mode audit voids denied commands, writes, MCP calls, unknown tools and a sandbox bypass', () => {
@@ -472,7 +484,9 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
   assert.equal(read(allowed).class, 'result');
   const voided = [
     ...['git push origin HEAD', 'git -C . push', 'cmd /c "git push origin x"', 'git status; git commit -am x', '& "git" push', 'gh pr create --fill',
-      'gh workflow run ci', 'npm run deploy', 'ssh host', 'powershell -EncodedCommand ZQB='].map(shell),
+      'gh workflow run ci', 'npm run deploy', 'ssh host', 'powershell -EncodedCommand ZQB=', 'git -c core.sshCommand="ssh -v" push',
+      'git -c alias.p=push p origin main', 'bash -lc "git push origin x"', 'git subtree push --prefix=docs origin pages', 'git send-pack origin main',
+      'gh gist create notes.md'].map(shell),
     { state: 'DONE', tool_name: 'run_command', tool_info: { parameters: {} } },
     { state: 'DONE', tool_name: 'write_file' }, { state: 'DONE', tool_name: 'search_web' }, browserTool('DONE'),
     { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'send_input' } } },

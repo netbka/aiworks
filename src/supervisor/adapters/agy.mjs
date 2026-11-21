@@ -64,7 +64,7 @@ export const MIN_CHROME = 149;
 export const LOG_LIMIT = 64 * 1024 * 1024;
 
 // Code mode (AW-024). Probed with agy 1.5.9 on a Windows 11 workstation (2026-11-21), in throwaway repositories with a
-// linked worktree and a local bare remote:
+// linked worktree and a local bare remote; an independent review re-confirmed the sandbox denial on agy 1.5.14:
 // - print mode runs every command in agy's terminal sandbox: no network (a name did not resolve, and even 127.0.0.1 was
 //   refused), and .git read-only to commands (git add, git commit and a push to the local remote failed);
 // - a command may ask to leave the sandbox (run_command BypassSandbox, which the event log does not show). A command(*)
@@ -90,30 +90,42 @@ export const CODE_TOOLS = ['read_file', 'view_file', 'list_dir', 'find_by_name',
 export const MANAGE_TASK_ACTIONS = ['status', 'list', 'kill'];
 // Step types of a code-mode stream: agy 1.5.9 adds system_message steps (a backgrounded command finished).
 const CODE_STEP_TYPES = ['user_input', 'agent_response', 'tool', 'finish', 'system_message'];
-// Project extensions agy loads from a workspace's .agents folder: hooks and plugins run programs, custom agents and
-// workflows carry their own tools. A run-local profile does not stop them, so a checkout with one is not given to agy.
-export const PROJECT_EXTENSIONS = ['.agents/hooks.json', '.agents/plugins.json', '.agents/plugins', '.agents/agents', '.agents/workflows',
-  '.agents/skills.json', '.agents/skills'];
+// The folders agy loads project extensions from (its help, 1.5.14: ".agents/ (or .agent/, _agents/, _agent/) at the root of
+// your project"): hooks, plugins, rules, agents, sidecars, skills and workflows, a list that grows between releases. A
+// probe on 1.5.14 found that hooks in any of the four run outside the sandbox and never appear in the event log, so the
+// audit cannot see them. A checkout with such a folder, with any content or none, in its own directory or any directory
+// above it (the main checkout above a linked worktree included) is not given to agy.
+export const PROJECT_EXTENSION_DIRS = ['.agents', '.agent', '_agents', '_agent'];
 
 // What ALWAYS_DENIED and VERIFIER_DENIED deny a Claude worker (claude.mjs), as patterns over a whole command line: a
-// command name may follow a quote, a path separator, a shell operator or a wrapper such as `cmd /c` or `&`, and Git's
-// global options (-C dir, -c key=value, --git-dir=...) may stand before its subcommand. Every code run is write-less, so
-// commands that write Git history are denied too.
-// A quote opens a command only inside a wrapper (`cmd /c "git push"`); elsewhere `grep "git push" docs` is a search.
+// command name may follow a quote, a path separator, a shell operator or a wrapper such as `cmd /c`, `bash -lc` or `&`,
+// and Git's global options (-C dir, -c key="a value", --git-dir=...) may stand before its subcommand. Every code run is
+// write-less, so commands that write Git history are denied too, and so is any Git alias definition, which could rename
+// a denied subcommand. This is a second check over the command text, not a lock: a command assembled at run time
+// escapes it, and the sandbox is what holds then.
+// A quote opens a command only inside a wrapper (`bash -lc "git push"`); elsewhere `grep "git push" docs` is a search.
 const TOKEN_END = String.raw`(?=$|[\s;&|)"'\x60])`;
-const QUOTED = String.raw`(?:"[^"]*"|'[^']*'|[^\s;&|"']+)`;
-const WRAPPER = /(?:^|[\s;&|(])(?:cmd(?:\.exe)?\s+\/[ck]|(?:powershell|pwsh|bash|sh|wsl)(?:\.exe)?\s[^;&|]*?-(?:c|command)\s|iex\s|invoke-expression\s|start-process\s)/i;
-const nameAt = (name, wrapped) => String.raw`(?:(?:^|[\s;&|(\x60\\/=]${wrapped ? `|["']` : ''})${name}(?:\.exe|\.cmd)?["']?|["']${name}(?:\.exe|\.cmd)?["'])`;
-const gitAt = (wrapped) => String.raw`${nameAt('git', wrapped)}(?:\s+(?:-[Cc]\s+${QUOTED}|--?[\w-]+(?:[= ]${QUOTED})?))*\s+`;
+// One shell word: plain characters and quoted runs, so `-c core.sshCommand="ssh -v"` is one option and its value.
+const QUOTED = String.raw`(?:"[^"]*"|'[^']*'|[^\s;&|"'])+`;
+const SHELLS = '(?:powershell|pwsh|bash|sh|zsh|dash|ksh|wsl)';
+// cmd /c or /k (other switches may come first); a shell with an option holding c (-c, -lc, -Command, -NoProfile
+// -Command); a PowerShell evaluator or launcher.
+const WRAPPER = new RegExp(String.raw`(?:^|[\s;&|("'])(?:cmd(?:\.exe)?\s(?:[^;&|]*?\s)?\/[ck]|${SHELLS}(?:\.exe)?["']?\s(?:[^;&|]*?\s)?-[a-z]*c[a-z]*\s`
+  + String.raw`|iex\s|invoke-expression\s|invoke-command\s|start-process\s|start-job\s)`, 'i');
+const nameAt = (name, wrapped) => String.raw`(?:(?:^|[\s;&|({\x60\\/=]${wrapped ? `|["']` : ''})${name}(?:\.exe|\.cmd)?["']?|["']${name}(?:\.exe|\.cmd)?["'])`;
+const gitAt = (wrapped) => String.raw`${nameAt('git', wrapped)}(?:\s+(?:-[Cc]\s+${QUOTED}|--?[\w.-]+(?:[= ]${QUOTED})?))*\s+`;
 const RULES = [
-  ['git push', (w) => `${gitAt(w)}push${TOKEN_END}`],
-  ['git history write', (w) => `${gitAt(w)}(?:commit|merge|rebase|cherry-pick|revert|am|update-ref|filter-branch)${TOKEN_END}`],
-  ['git worktree', (w) => `${gitAt(w)}worktree\\s+(?:add|remove|move|prune)${TOKEN_END}`],
-  ['git remote change', (w) => `${gitAt(w)}remote\\s+(?:add|set-url|remove|rm|rename)${TOKEN_END}`],
-  ['git lfs transfer', (w) => `${gitAt(w)}lfs\\s+(?:push|fetch|pull)${TOKEN_END}`],
-  ['gh write', (w) => `${nameAt('gh', w)}\\s+(?:pr\\s+(?:create|merge|close|edit|comment|review|ready|reopen)|release|issue\\s+(?:create|comment|close|edit|delete|reopen)` +
-    `|workflow|run|actions|codespaces?|cs|repo\\s+(?:create|delete|edit|fork|rename|archive)|secret|variable|api)${TOKEN_END}`],
-  ['npm publish or deploy', (w) => `${nameAt('npm', w)}\\s+(?:publish|run(?:-script)?\\s+(?:update|deploy))${TOKEN_END}`],
+  ['git push', (w) => String.raw`${gitAt(w)}(?:push|send-pack|http-push|subtree\s+push)${TOKEN_END}`],
+  ['git history write', (w) => String.raw`${gitAt(w)}(?:commit|merge|rebase|cherry-pick|revert|am|update-ref|filter-branch|subtree|fast-import)${TOKEN_END}`],
+  ['git worktree', (w) => String.raw`${gitAt(w)}worktree\s+(?:add|remove|move|prune)${TOKEN_END}`],
+  ['git remote change', (w) => String.raw`${gitAt(w)}remote\s+(?:add|set-url|remove|rm|rename)${TOKEN_END}`],
+  ['git lfs transfer', (w) => String.raw`${gitAt(w)}lfs\s+(?:push|fetch|pull)${TOKEN_END}`],
+  // An alias can rename any subcommand: -c alias.p=push, --config-env, git config alias.p, or Git's config variables.
+  ['git alias', (w) => String.raw`${nameAt('git', w)}[^;&|\n]*?\s(?:-c\s*|--config-env[= ]|config\s(?:[^;&|\n]*\s)?)["']?alias\.|\bGIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+)\b`],
+  ['gh write', (w) => String.raw`${nameAt('gh', w)}\s+(?:pr\s+(?:create|merge|close|edit|comment|review|ready|reopen)|release|issue\s+(?:create|comment|close|edit|delete|reopen)`
+    + String.raw`|workflow|run|actions|codespaces?|cs|repo\s+(?:create|delete|edit|fork|rename|archive)|secret|variable|api|gist|alias|extensions?|ext`
+    + String.raw`|label\s+(?:create|edit|delete|clone)|ssh-key|gpg-key|auth)${TOKEN_END}`],
+  ['package publish or deploy', (w) => String.raw`${nameAt('(?:npm|pnpm|yarn)', w)}\s+(?:publish|unpublish|deprecate|dist-tag|owner|access|run(?:-script)?\s+(?:update|deploy))${TOKEN_END}`],
   ['remote shell', (w) => `${nameAt('(?:ssh|scp|sftp|rsync)', w)}${TOKEN_END}`],
   // A command the audit cannot read.
   ['encoded command', () => String.raw`(?:^|[\s;&|(\\/"'])(?:powershell|pwsh)(?:\.exe)?["']?\s(?:[^;&|]*\s)?-(?:e|ec|enc|encodedcommand)\s`],
@@ -219,18 +231,22 @@ export function prepare({ command, executor, role, sessionId, digest, runDir, pr
     prompt: JSON.stringify({ event: 'user', message: { content: `${prompt}\nSubmit the terminal result with the finish tool as JSON with exactly three keys: runId "${sessionId}", packetDigest "${digest}", and result (the terminal result described above).\n` } }) + '\n',
     cwd,
     env: { USERPROFILE: home, HOME: home, APPDATA: join(home, 'AppData', 'Roaming'), LOCALAPPDATA: join(home, 'AppData', 'Local'),
-      TEMP: temp, TMP: temp, TMPDIR: temp },
+      TEMP: temp, TMP: temp, TMPDIR: temp, AGY_CLI_DISABLE_AUTO_UPDATE: '1' },
   };
 }
 
 // Told to every code-mode run, after the prompt: what the sandbox allows, so a worker does not try to leave it.
 export const CODE_SANDBOX_NOTE = 'This run reads and reports only. Your commands run in a sandbox with no network, where the checkout and its .git are read-only: GitHub and other servers cannot be reached, so take the task from the packet, and never commit, push or change files. Never ask to run a command outside the sandbox (BypassSandbox): that voids the run.';
 
-/** Why this host cannot run a code-mode worker in `workspace`, or null: a project extension agy would load (PROJECT_EXTENSIONS). */
+/**
+ * Why this host cannot run a code-mode worker in `workspace`, or null: an agy project extension folder
+ * (PROJECT_EXTENSION_DIRS) in the workspace or any directory above it, up to the filesystem root.
+ */
 export function codeUnavailableReason(workspace) {
-  for (let root = resolve(workspace); ; root = dirname(root)) {
-    if (PROJECT_EXTENSIONS.some((path) => existsSync(join(root, path)))) return 'project AGY extensions (.agents) require a scoped adapter policy';
-    if (existsSync(join(root, '.git')) || dirname(root) === root) return null;
+  for (let dir = resolve(workspace); ; dir = dirname(dir)) {
+    const found = PROJECT_EXTENSION_DIRS.find((name) => existsSync(join(dir, name)));
+    if (found) return `an AGY project extension folder (${found}) in the checkout or a folder above it would run hooks outside the sandbox and the audit`;
+    if (dirname(dir) === dir) return null;
   }
 }
 
@@ -446,7 +462,7 @@ export function classify({ role, run, stdoutText, stderrText, expect, now, logBy
   // A denied command is named by its rule, never by its text, which may hold anything.
   const named = ({ update, parameters }) => update.tool_name === 'call_mcp_tool' ? `${parameters?.ServerName}/${parameters?.ToolName}`
     : code && update.tool_name === 'run_command' ? `run_command (${typeof parameters?.CommandLine === 'string' ? deniedCommand(parameters.CommandLine) : 'no command line'})`
-    : code && update.tool_name === 'manage_task' ? `manage_task (${String(parameters?.Action ?? 'no action').replace(/[^w-]/g, '').slice(0, 20)})`
+    : code && update.tool_name === 'manage_task' ? `manage_task (${String(parameters?.Action ?? 'no action').replace(/[^\w-]/g, '').slice(0, 20)})`
     : update.tool_name ?? `step ${update.step_type}`;
   const tokens = providerTokens({ ...final, model: final?.model ?? init?.model }, 'agy-cli');
   const receipt = { executorKind: 'agy-cli', nativeSessionId: final?.conversation_id || null, sessionId: null,

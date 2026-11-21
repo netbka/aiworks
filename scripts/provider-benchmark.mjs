@@ -33,7 +33,8 @@ function cmd(c, prompt, dir) {
 function run(c, prompt, dir, timeout = 420000) {
   return new Promise((res) => {
     const [x, a] = cmd(c, prompt, dir); const t0 = Date.now(); let out = '', err = '';
-    const ch = spawn(x, a, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
+    // AGY's web run, like every production AGY run, keeps auto-update off, so the CLI cannot change mid-benchmark.
+    const ch = spawn(x, a, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], env: c.p === 'agy' ? { ...process.env, AGY_CLI_DISABLE_AUTO_UPDATE: '1' } : process.env });
     const to = setTimeout(() => { ch.kill(); }, timeout);
     ch.stdout.on('data', (d) => out += d); ch.stderr.on('data', (d) => err += d);
     ch.on('close', (code) => { clearTimeout(to); res({ code, out, err: err.slice(-300), ms: Date.now() - t0 }); });
