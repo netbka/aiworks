@@ -4309,8 +4309,8 @@ export class Controller {
   }
 
   /**
-   * The private terms binding `decl`'s target (publicationTerms) that its repository already holds: found as a whole
-   * word in the tracked text at the tip of `target.baseBranch` as fetchBase reads it from `origin`, ignoring case and
+   * The printable-ASCII private terms binding `decl`'s target (publicationTerms) that its repository already holds:
+   * found as a whole word in the tracked text at the tip of `target.baseBranch` as fetchBase reads it from `origin`, ignoring case and
    * with `-` and `_` alike. Only that base counts, never the verified head or any other commit a worker made: a worker
    * that wrote a term into its own change could otherwise publish it. And only when every fetch URL of `origin` names
    * the target repository on GitHub: another repository's base says nothing about what the target's readers can read.
@@ -4321,7 +4321,9 @@ export class Controller {
   async presentTerms(decl) {
     try {
       if (isLocalTarget(decl) || this.selfHosted(decl.target.repository)) return [];
-      const terms = this.publicationTerms(decl);
+      // git grep -w counts only ASCII letters, digits and `_` as word characters, so every byte of another letter is a
+      // boundary and a non-ASCII term would be found inside a longer word (an inflected form, say): such a term always binds.
+      const terms = this.publicationTerms(decl).filter((term) => /^[\x20-\x7e]+$/.test(term));
       if (!terms.length) return [];
       const repo = this.repo(decl), git = this.cmd.git, timeoutMs = this.config.baseReadMs;
       const origin = await gitA.fetchRepository({ git, repoPath: repo.path, timeoutMs });

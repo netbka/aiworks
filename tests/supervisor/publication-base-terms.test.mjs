@@ -28,13 +28,13 @@ process.exit(spawnSync('git', args, { stdio: 'inherit', windowsHide: true }).sta
 
 // A private term the target's base already holds as a word shows that repository's readers nothing new, so it is exempt
 // there. A term only a worker's verified head holds stays private: otherwise a worker could publish a term by writing it
-// into its own change. A term inside a longer word, a search that fails and an origin not shown to be the target
-// exempt nothing.
+// into its own change. A term inside a longer word (git grep -w sees only ASCII word characters, so a non-ASCII term
+// never qualifies), a search that fails and an origin not shown to be the target exempt nothing.
 test('only a term the target base holds is exempt, never one only the verified head holds', { skip: skipWithoutSqlite }, async (t) => {
   const env = environment();
   const store = new Store(join(env.dataDir, 'supervisor.db'));
   t.after(() => { store.close(); env.cleanup(); });
-  writeFileSync(join(env.repo, 'NOTES.md'), 'Runs beside Fictional_Base_Host and fictional-long-hostname.\n');
+  writeFileSync(join(env.repo, 'NOTES.md'), 'Runs beside Fictional_Base_Host and fictional-long-hostname, see вымысловский-сервис.\n');
   git(env.repo, 'add', '-A');
   git(env.repo, 'commit', '-q', '-m', 'base');
   git(env.repo, 'push', '-q', 'origin', 'main');
@@ -47,7 +47,7 @@ test('only a term the target base holds is exempt, never one only the verified h
   // Written after the commits, so the terms file itself is tracked nowhere.
   mkdirSync(join(env.repo, '.local'));
   writeFileSync(join(env.repo, '.local', 'publication.json'),
-    JSON.stringify({ privateTerms: ['fictional-base-host', 'fictional-head-host', 'fictional-long-host'] }));
+    JSON.stringify({ privateTerms: ['fictional-base-host', 'fictional-head-host', 'fictional-long-host', 'вымыслов'] }));
   const decl = declaration();
   const controller = (gitCommand) => {
     const made = new Controller({ store, config: { ...env.config, commands: { ...env.config.commands, ...(gitCommand ? { git: gitCommand } : {}) } },
@@ -61,6 +61,7 @@ test('only a term the target base holds is exempt, never one only the verified h
   assert.ok(present.includes('fictional-base-host'), 'the base holds it, in another case and with an underscore');
   assert.ok(!present.includes('fictional-head-host'), 'only the verified head holds it');
   assert.ok(!present.includes('fictional-long-host'), 'the base holds only a longer word that contains it');
+  assert.ok(!present.includes('вымыслов'), 'the base holds only a longer Cyrillic word that contains it');
   const terms = ctl.publicationTerms(decl, present);
   assert.ok(!terms.includes('fictional-base-host'));
   assert.ok(terms.includes('fictional-head-host'));
