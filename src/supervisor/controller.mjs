@@ -1650,7 +1650,6 @@ export class Controller {
       stderrText: readTextIfExists(join(op.run_dir, 'stderr.log')),
       expect: { deliverable: broker && op.kind === 'implement' && !op.publication_rewrite ? 'report' : this.deliverable(ctx, op.task_id), targetSha: op.target_sha, reportDigest: op.report_digest,
         sessionId: op.session_id, packetDigest: op.packet_digest, web: executors.webFlag(specOf(this.store, ctx.id, op.task_id, decl)?.web),
-        ...(op.publication_rewrite ? { publicationRewrite: true } : {}),
         acceptance: this.acceptanceCount(ctx, op.task_id) },
       now: this.now(),
     });
