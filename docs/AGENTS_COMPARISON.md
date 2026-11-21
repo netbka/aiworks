@@ -39,7 +39,7 @@ Scoring uses facts only: did the tests pass, is there a commit, did the verdict 
 
 - **Codex could not merge the branch** because on Windows its safety sandbox does not allow Git commits. The cause is the environment, not the model.
 - **`gpt-6-luna` at low effort** missed the contradiction in the brief. At high effort it caught it.
-- **AGY failed the code tasks because of the rules, not for lack of skill.** AIWorks allowed it only website checks at the time, and in this run its commands needed a confirmation nobody could give. AGY can now be allowed into every role with a switch, and the comparison is being run again with it. The results will appear here.
+- **AGY failed the code tasks because of the rules, not for lack of skill.** AIWorks allowed it only website checks at the time, and in this run its commands needed a confirmation nobody could give. With a switch AGY can now also take plans and reports, in a sandbox without network or write access, though never commits, and the comparison is being run again for those tasks. The results will appear here.
 
 ## Who can do what on Windows
 
