@@ -7,10 +7,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { BROWSER_SERVER, BUILD_RETRY_NOTE, DENY, TOOLS, webScope } from '../../src/supervisor/adapters/agy.mjs';
+import { BROWSER_SERVER, BUILD_RETRY_NOTE, CODE_TOOLS, CODE_WRITE_TOOLS, DENY, TOOLS, webScope } from '../../src/supervisor/adapters/agy.mjs';
 import { validResult } from '../../src/supervisor/adapters/claude.mjs';
 import { passedCheck } from '../../src/supervisor/result-review.mjs';
-import { buildPrompt, classify, prepare, roleUnavailableReason, unavailableReason, webFlag } from '../../src/supervisor/adapters/executors.mjs';
+import { agyCodeRoles, buildPrompt, classify, prepare, roleUnavailableReason, unavailableReason, webFlag } from '../../src/supervisor/adapters/executors.mjs';
 import { route } from '../../src/supervisor/router.mjs';
 import { validateDeclaration } from '../../src/supervisor/campaign.mjs';
 import { declaration, environment, GOVERNANCE, runUntil, skipWithoutSqlite } from './helpers.mjs';
@@ -23,7 +23,7 @@ const webTask = { id: 'W1', issue: 439, title: 'checkout view acceptance', deliv
   dependsOn: [], acceptance: ['A1 the total equals the sum of the items'], references: ['AGENTS.md'], web };
 const chain = (...providers) => ({ kind: 'cli-chain', providers, implementerTimeoutMinutes: 1, verifierTimeoutMinutes: 1 });
 const digest = 'a'.repeat(64);
-const expect = { deliverable: 'report', sessionId: 'bound-run', packetDigest: digest };
+const expect = { deliverable: 'report', sessionId: 'bound-run', packetDigest: digest, web: true };
 const terminal = { result: 'resolved', summary: 'ACCEPTED', report: '**Visual acceptance: ACCEPTED**' };
 
 const events = ({ result = { runId: 'bound-run', packetDigest: digest, result: terminal }, status = 'SUCCESS', tools = [], extra = {}, mode = 'request-review' } = {}) => [
@@ -69,7 +69,8 @@ test('web acceptance tasks are reports reviewed by the declared agy browser work
   const publicSite = structuredClone(d);
   publicSite.tasks[1].web = { urls: ['https://example.org/pricing'] };
   assert.equal(validateDeclaration(publicSite).tasks[1].web.urls[0], 'https://example.org/pricing', 'any declared public site is allowed');
-  invalid((c) => { c.executor = chain(agy); }, /task without web needs an executor other than agy-cli/);
+  assert.equal(validateDeclaration({ ...structuredClone(d), executor: chain(agy) }).executor.providers[0].kind, 'agy-cli',
+    'an all-agy declaration registers: without agy.codeRoles its code task waits as unavailable at run time');
   const webOnly = structuredClone(d);
   webOnly.tasks = [webTask];
   webOnly.executor = { ...agy, implementerTimeoutMinutes: 1, verifierTimeoutMinutes: 1 };
@@ -99,7 +100,7 @@ test('only the browser workers run web tasks, and agy runs nothing else', (t) =>
 test('each agy run gets its own profile home, explicit denies and a browser locked to the declared origins', (t) => {
   const runDir = mkdtempSync(join(tmpdir(), 'aiworks-agy-'));
   t.after(() => rmSync(runDir, { recursive: true, force: true }));
-  assert.throws(() => prepare({ executor: agy, command: ['agy'], role: 'implementer', deliverable: 'report', runDir, prompt: 'p' }), /web acceptance task/);
+  assert.throws(() => prepare({ executor: agy, command: ['agy'], role: 'implementer', deliverable: 'commit', runDir, prompt: 'p', web }), /web acceptance task/);
   const invocation = prepare({ executor: agy, command: ['C:/agy/agy.exe'], role: 'implementer', deliverable: 'report', sessionId: 'bound-run', digest,
     runDir, workspace: 'unused-checkout', prompt: 'review this', web, chromeCommand: ['C:/Chrome/chrome.exe'], timeoutMs: 30 * 60_000 });
   const home = join(runDir, 'agy-home');
@@ -417,4 +418,53 @@ test('an origin removed from the registry stops new build runs', { skip: skipWit
   for (let tick = 0; tick < 3; tick++) await controller.tick();
   assert.equal(store.campaign(d.campaignId).blocker.code, 'WEB_BUILD_ORIGIN_NOT_ALLOWED');
   assert.equal(store.all('SELECT id FROM operations WHERE campaign_id = ?', d.campaignId).length, 0, 'no worker was dispatched');
+});
+
+test('agy takes ordinary code roles only when agy.codeRoles is exactly true, and the router follows the same switch', () => {
+  for (const role of ['implementer', 'verification']) for (const deliverable of ['commit', 'report']) {
+    assert.match(roleUnavailableReason(agy, role, deliverable, 'linux', false), /only web acceptance/, 'off by default');
+    assert.match(roleUnavailableReason(agy, role, deliverable, 'linux', false, { agyCodeRoles: false }), /only web acceptance/);
+    assert.equal(roleUnavailableReason(agy, role, deliverable, 'linux', false, { agyCodeRoles: true }), null);
+  }
+  assert.match(roleUnavailableReason(agy, 'implementer', 'report', 'linux', 'build', { agyCodeRoles: true }), /never runs a web build/, 'a build task stays Claude-only');
+  assert.deepEqual([{ agy: { codeRoles: true } }, { agy: { codeRoles: 'true' } }, { agy: {} }, {}, null].map(agyCodeRoles), [true, false, false, false, false]);
+  const inputs = (extra = {}) => ({ stage: 'implement', chain: true, task: { deliverable: 'commit', web: false }, platform: 'linux',
+    candidates: [{ kind: 'agy-cli', model: agy.model }, { kind: 'claude-cli', model: 'opus' }],
+    hostFacts: ['agy-cli', 'claude-cli'].map((kind) => ({ kind, cliConfigured: true, hostUnavailable: false, wait: null })),
+    escalation: { priorAttempts: [] }, ...extra });
+  const settingsOf = (role, deliverable) => {
+    const runDir = mkdtempSync(join(tmpdir(), 'aiworks-agy-code-'));
+    try {
+      const invocation = prepare({ executor: agy, command: ['agy'], role, deliverable, sessionId: 'bound-run', digest, runDir, workspace: '/work/tree', prompt: 'p', timeoutMs: 60_000 });
+      assert.equal(invocation.cwd, '/work/tree');
+      assert.deepEqual(JSON.parse(readFileSync(join(runDir, 'agy-home', '.gemini', 'config', 'mcp_config.json'), 'utf8')), { mcpServers: {} });
+      return JSON.parse(readFileSync(join(runDir, 'agy-home', '.gemini', 'antigravity-cli', 'settings.json'), 'utf8')).permissions;
+    } finally { rmSync(runDir, { recursive: true, force: true }); }
+  };
+  assert.ok(settingsOf('implementer', 'commit').allow.includes('write_file(*)'));
+  for (const [role, deliverable] of [['verification', 'commit'], ['implementer', 'report']]) {
+    const permissions = settingsOf(role, deliverable);
+    assert.ok(!permissions.allow.includes('write_file(*)') && permissions.deny.includes('write_file(*)'), `${role} ${deliverable} cannot write`);
+    assert.ok(permissions.deny.includes('mcp(*)'));
+  }
+  assert.equal(route(inputs()).chosen.kind, 'claude-cli');
+  assert.equal(route(inputs({ agyCodeRoles: 'yes' })).chosen.kind, 'claude-cli', 'only the exact true counts');
+  assert.equal(route(inputs({ agyCodeRoles: true })).chosen.kind, 'agy-cli');
+  assert.equal(route(inputs({ candidates: [{ kind: 'agy-cli', model: agy.model }], hostFacts: [{ kind: 'agy-cli', cliConfigured: true, hostUnavailable: false, wait: null }] })).chosen, null);
+});
+
+test('the code-mode audit voids MCP calls, unknown built-ins and writes by a write-less run', () => {
+  const code = { ...expect, web: false };
+  const read = (tools, options = {}) => run(events({ result: { runId: 'bound-run', packetDigest: digest, result: options.result ?? terminal }, tools }), { expect: code, ...options.args });
+  const named = (...names) => names.map((tool_name) => ({ state: 'DONE', tool_name }));
+  assert.equal(read(named(...CODE_TOOLS.filter((name) => !CODE_WRITE_TOOLS.includes(name)))).class, 'result', 'every non-writing code tool is allowed');
+  const commit = { result: 'resolved', headSha: 'c'.repeat(40), summary: 'synthetic', report: 'synthetic report' };
+  assert.equal(read(named(...CODE_WRITE_TOOLS), { result: commit, args: { expect: { ...code, deliverable: 'commit' } } }).class, 'result', 'an implementing commit run may write');
+  assert.match(read([browserTool('DONE')]).detail, /unexpected tool \(browser\/navigate_page\)/, 'any MCP call voids a code run');
+  assert.match(read(named('search_web')).detail, /unexpected tool \(search_web\)/);
+  for (const args of [{ role: 'verification', expect: { ...code, deliverable: 'commit' } }, { expect: code }, { expect: { ...code, deliverable: 'commit', publicationRewrite: true } }]) {
+    const voided = read(named('write_to_file'), { args });
+    assert.equal(voided.violation, true);
+    assert.match(voided.detail, /unexpected tool \(write_to_file\)/);
+  }
 });

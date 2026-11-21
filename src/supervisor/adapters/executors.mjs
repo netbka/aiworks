@@ -294,11 +294,15 @@ export function unavailableReason(executor, workspace, ghCommand, { probe = null
   return executor.kind === 'cursor-cli' ? cursorGate(executor, command, includedOnly) : null;
 }
 
-export function roleUnavailableReason(executor, role, deliverable, platform = process.platform, web = false) {
-  // A web acceptance task (task.web) needs a browser: only agy has one, and agy has nothing else. A build task (web
-  // "build") changes pages, and agy's own browser cannot be audited for that, so it never runs one, in either role.
+/** config.json agy.codeRoles: only the exact value true lets AGY take the ordinary (non-web) worker roles. */
+export const agyCodeRoles = (config) => config?.agy?.codeRoles === true;
+
+export function roleUnavailableReason(executor, role, deliverable, platform = process.platform, web = false, { agyCodeRoles: agyCode = false } = {}) {
+  // A web acceptance task (task.web) needs a browser: only agy has one. A build task (web "build") changes pages, and agy's
+  // own browser cannot be audited for that, so it never runs one, in either role. A task without web goes to agy only when
+  // the owner switched agy.codeRoles on (agyCode); agy's code mode then takes every role and deliverable (agy.mjs).
   if (executor.kind === 'agy-cli') return web === 'build' ? 'AGY never runs a web build task: only Claude with the isolated browser does'
-    : web ? null : 'AGY runs only web acceptance tasks';
+    : web || agyCode ? null : 'AGY runs only web acceptance tasks';
   if (web) return executor.kind === 'claude-cli' && !executor.researchOnly ? null
     : 'Web acceptance tasks run only on a browser worker: AGY, or Claude with the isolated browser';
   // Windows Cursor runs only tool-free through the WSL transport (cursorGate): an ordinary Cursor worker with tools has no
@@ -330,7 +334,12 @@ export function prepare({ executor, command, role, deliverable, sessionId, diges
   // Resolved first, so a bad home or a kind CAAM does not rotate fails before any run file is written.
   const profile = profileEnv(executor.kind, profileHome);
   if (executor.kind === 'agy-cli') {
-    if (!web || deliverable !== 'report' || agy.webMode(web) !== 'acceptance') throw new Error('The AGY browser worker requires a web acceptance task with a report deliverable');
+    // No web: code mode (reachable only after roleUnavailableReason allowed it, i.e. agy.codeRoles is on).
+    if (!web) {
+      if (deliverable !== 'commit' && deliverable !== 'report') throw new Error('The AGY code worker requires a commit or report deliverable');
+      return agy.prepareCode({ command, executor, role, deliverable, publicationRewrite, sessionId, digest, runDir, workspace, prompt, timeoutMs });
+    }
+    if (deliverable !== 'report' || agy.webMode(web) !== 'acceptance') throw new Error('The AGY browser worker requires a web acceptance task with a report deliverable');
     return agy.prepare({ command, executor, role, sessionId, digest, runDir, prompt, web, chromeCommand, browserLogin, timeoutMs });
   }
   if (executor.kind === 'claude-cli' && web) {

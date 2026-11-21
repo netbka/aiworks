@@ -1,6 +1,11 @@
 import { providerTokens } from '../token-usage.mjs';
-// Antigravity CLI (agy) adapter: the browser worker for web acceptance tasks (a task that declares `web`). Each
-// operation is one fresh `agy` print-mode session with a stream-json prompt on stdin, a JSON-schema terminal result
+// Antigravity CLI (agy) adapter. Two modes, both one fresh headless session per operation:
+// - browser mode (a task that declares `web`, acceptance only): the browser MCP server is the only tool, in an empty
+//   scratch workspace;
+// - code mode (a task without `web`, only when config.json agy.codeRoles is exactly true; executors.mjs
+//   roleUnavailableReason refuses it otherwise): the task worktree is the workspace, agy's own file and command tools are
+//   allowed (writes only for an implementing commit task), and no MCP server is loaded at all.
+// Each operation is one fresh `agy` print-mode session with a stream-json prompt on stdin, a JSON-schema terminal result
 // and a per-step event log that the supervisor audits. Probed with agy 1.3.3 on workstation (2026-10-11):
 // - agy reads every setting from %USERPROFILE%\.gemini and takes its login from the OS keyring, so a run-local
 //   profile home leaves out the owner's grants, MCP servers, memories and conversations and still authenticates;
@@ -58,6 +63,15 @@ export const MIN_CHROME = 149;
 // The audit reads the whole event log up to this size (canary runs wrote 50-85 KB); a longer log cannot be audited.
 export const LOG_LIMIT = 64 * 1024 * 1024;
 
+// Code mode. Deny beats allow: agy's own URL reader, its unsandboxed escape and every MCP server are never needed.
+export const CODE_DENY = ['read_url(*)', 'unsandboxed(*)', 'mcp(*)'];
+// The agy built-in tools a code worker may use (tool_name of a step_update). UNVERIFIED: these names are a best guess for
+// agy 1.3.3 and must be confirmed on a real machine by the provider benchmark's `toolsSeen` before code mode is switched on.
+export const CODE_TOOLS = ['view_file', 'list_dir', 'find_by_name', 'grep_search', 'codebase_search', 'view_file_outline', 'write_to_file',
+  'replace_file_content', 'multi_replace_file_content', 'run_command', 'command_status', 'finish'];
+// The subset of CODE_TOOLS that changes files; a run that must not write (verification, report) is voided by any of them.
+export const CODE_WRITE_TOOLS = ['write_to_file', 'replace_file_content', 'multi_replace_file_content'];
+
 const origin = (url) => new URL(url).origin;
 /** Hosts the agent may navigate to (agy execute_url) and the origins Chrome may load anything from. */
 export function webScope(web) {
@@ -74,6 +88,17 @@ export function settings(web) {
     allowNonWorkspaceAccess: false,
     enableTelemetry: false,
     permissions: { allow: [`mcp(${BROWSER_SERVER}/*)`, ...webScope(web).hosts.map((host) => `execute_url(${host})`)], deny: DENY },
+  };
+}
+
+/** Code-mode settings: files and commands inside the workspace; file writes only when `write` (an implementing commit task). */
+export function codeSettings({ write }) {
+  return {
+    toolPermission: 'request-review',
+    allowNonWorkspaceAccess: false,
+    enableTelemetry: false,
+    permissions: { allow: ['read_file(*)', 'command(*)', ...(write ? ['write_file(*)'] : [])],
+      deny: [...CODE_DENY, ...(write ? [] : ['write_file(*)'])] },
   };
 }
 
@@ -134,6 +159,33 @@ export function prepare({ command, executor, role, sessionId, digest, runDir, pr
     // out: given only the schema, a canary run guessed runId from its directory name and its finish call was refused.
     prompt: JSON.stringify({ event: 'user', message: { content: `${prompt}\nSubmit the terminal result with the finish tool as JSON with exactly three keys: runId "${sessionId}", packetDigest "${digest}", and result (the terminal result described above).\n` } }) + '\n',
     cwd,
+    env: { USERPROFILE: home, HOME: home, APPDATA: join(home, 'AppData', 'Roaming'), LOCALAPPDATA: join(home, 'AppData', 'Local'),
+      TEMP: temp, TMP: temp, TMPDIR: temp },
+  };
+}
+
+/** Whether a code-mode run may write files: an implementing commit task, never a verification, report or publication rewrite. */
+export const codeWrites = ({ role, deliverable, publicationRewrite = false }) => role !== 'verification' && deliverable === 'commit' && !publicationRewrite;
+
+/**
+ * The invocation of a code-mode run (a non-web task): as prepare(), but the working directory is the task worktree and the
+ * run-local home loads no MCP server (an empty mcp_config.json), so agy has only its own built-in tools.
+ */
+export function prepareCode({ command, executor, role, deliverable, publicationRewrite = false, sessionId, digest, runDir, workspace, prompt, timeoutMs }) {
+  const home = join(runDir, 'agy-home');
+  const temp = join(runDir, 'agy-tmp');
+  for (const dir of [temp, join(home, '.gemini', 'antigravity-cli'), join(home, '.gemini', 'config'),
+    join(home, 'AppData', 'Local'), join(home, 'AppData', 'Roaming')]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(home, '.gemini', 'antigravity-cli', 'settings.json'),
+    JSON.stringify(codeSettings({ write: codeWrites({ role, deliverable, publicationRewrite }) }), null, 2));
+  writeFileSync(join(home, '.gemini', 'config', 'mcp_config.json'), JSON.stringify({ mcpServers: {} }, null, 2));
+  const schemaPath = join(runDir, 'output-schema.json');
+  writeFileSync(schemaPath, JSON.stringify(envelopeSchema(role, sessionId, digest)));
+  return {
+    argv: [...command, '--input-format', 'stream-json', '--output-format', 'stream-json', '--json-schema', schemaPath,
+      '--model', executor.model, '--print-timeout', `${Math.max(60, Math.ceil(timeoutMs / 1000))}s`, '--disable-slash-commands', '-p='],
+    prompt: JSON.stringify({ event: 'user', message: { content: `${prompt}\nSubmit the terminal result with the finish tool as JSON with exactly three keys: runId "${sessionId}", packetDigest "${digest}", and result (the terminal result described above).\n` } }) + '\n',
+    cwd: workspace,
     env: { USERPROFILE: home, HOME: home, APPDATA: join(home, 'AppData', 'Roaming'), LOCALAPPDATA: join(home, 'AppData', 'Local'),
       TEMP: temp, TMP: temp, TMPDIR: temp },
   };
@@ -296,7 +348,12 @@ export function classify({ role, run, stdoutText, stderrText, expect, now, logBy
     steps.set(key, [...(steps.get(key) ?? []), update]);
   }
   // finish is agy's own tool for submitting the structured result; a step without a tool must not be a tool step.
+  // Code mode (an explicit `web: false`): agy's own file and command tools, never an MCP call, and no file write on a
+  // write-less run. Any other value keeps the stricter browser audit, so a caller that omits `web` never loosens it.
+  const code = expect.web === false;
+  const writeless = role === 'verification' || expect.deliverable === 'report' || expect.publicationRewrite === true;
   const permitted = (update, parameters) => update.tool_name === undefined ? update.step_type !== 'tool'
+    : code ? CODE_TOOLS.includes(update.tool_name) && !(writeless && CODE_WRITE_TOOLS.includes(update.tool_name))
     : update.tool_name === 'finish' || (update.tool_name === 'call_mcp_tool' && parameters?.ServerName === BROWSER_SERVER &&
       TOOLS.includes(parameters?.ToolName));
   const unexpected = [];
@@ -347,7 +404,8 @@ export function classify({ role, run, stdoutText, stderrText, expect, now, logBy
     return { ...base, class: 'invalid-result', detail: 'terminal runId or packetDigest does not match the recorded operation' };
   }
   // agy never runs a build task (executors.mjs prepare refuses one); a build expectation keeps its full-pass rule anyway.
-  const invalid = claude.validResult(role, envelope.result, { ...expect, web: expect.web === 'build' ? 'build' : true });
+  // Code mode judges the result by the task's own (non-web) expectation.
+  const invalid = claude.validResult(role, envelope.result, code ? expect : { ...expect, web: expect.web === 'build' ? 'build' : true });
   if (invalid) return { ...base, class: 'invalid-result', detail: invalid };
   receipt.sessionId = envelope.runId;
   return { ...base, class: 'result', value: envelope.result };

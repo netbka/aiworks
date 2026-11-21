@@ -20,7 +20,7 @@ import { serverPreviewDeclaration, serverPreviewPlan, serverPreviewSupport } fro
 import { packageCacheOf } from '../supervisor/preview-packages.mjs';
 import { resolveCheckout, resolveLocalProject } from '../supervisor/project-connect.mjs';
 import { configuredGitCommand } from './merges.mjs';
-import { roleUnavailableReason, runNotCounted } from '../supervisor/adapters/executors.mjs';
+import { agyCodeRoles, roleUnavailableReason, runNotCounted } from '../supervisor/adapters/executors.mjs';
 import { repairRoundsSource } from '../supervisor/campaign.mjs';
 import { parseReference } from '../supervisor/reading.mjs';
 import { coordinatorView, LANE as COORDINATOR_LANE, postOwnerMessage } from '../supervisor/coordinator.mjs';
@@ -435,7 +435,7 @@ export function aiWorkers(campaigns, config, { platform = process.platform, now 
     const rows = active.flatMap((c) => (c.providers ?? []).filter((p) => p.kind === w.kind && p.priority !== null));
     const setUp = names.includes(w.command) && (w.needs ?? []).every((name) => names.includes(name)) ? 'configured' : w.fallback ? 'default' : 'missing';
     const hostLimit = w.kind === 'cursor-cli' && platform === 'win32' ? 'windows' : null;
-    const limit = roleUnavailableReason({ kind: w.kind }, 'implementer', 'commit', platform);
+    const limit = roleUnavailableReason({ kind: w.kind }, 'implementer', 'commit', platform, false, { agyCodeRoles: agyCodeRoles(config) });
     const waits = rows.filter((p) => ['cooldown', 'retry-due'].includes(p.state) && p.retryAt !== null);
     const unavailable = rows.find((p) => p.state === 'unavailable');
     const state = hostLimit ? 'host-unavailable' : rows.some((p) => p.state === 'running') ? 'running' : setUp === 'missing' ? 'not-set-up'
@@ -1097,7 +1097,7 @@ const stepStats = (stats, rejections, taskId) => ({ ...(stats.get(taskId) ?? { r
   checkerRejections: rejections.get(taskId) ?? 0 });
 
 /** Each AI worker a piece of work may use, in its order: whether it runs, waits or is unavailable and why, from status only. */
-function workProviders(status, taskRows, operations, now) {
+function workProviders(status, taskRows, operations, now, config = null) {
   const order = status.executorOrder;
   return [...order, ...['codex-cli', 'claude-cli', 'cursor-cli'].filter((kind) => !order.includes(kind))].map((kind) => {
     const wait = status.executorWaits.find((item) => item.executor_kind === kind);
@@ -1114,7 +1114,7 @@ function workProviders(status, taskRows, operations, now) {
             : /sandbox setup failed|sandbox probe|could not start any local process/.test(wait?.reason ?? '') ? 'Codex sandbox could not start a local process (its runtime is locked by another Codex session on this host); retried automatically after the wait' : null,
       credits: /credits\/billing/.test(wait?.reason ?? ''), retryAt: wait?.retry_at ?? legacyWait?.retry_at ?? null,
       hostLimit: kind === 'cursor-cli' && process.platform === 'win32' ? 'Cursor native sandbox does not support Windows' : null,
-      roleLimit: roleUnavailableReason({ kind }, 'implementer', 'commit') };
+      roleLimit: roleUnavailableReason({ kind }, 'implementer', 'commit', undefined, false, { agyCodeRoles: agyCodeRoles(config) }) };
   });
 }
 
@@ -1139,7 +1139,7 @@ function localRuns(store, c, now, config, projectOf) {
     usageToday: usageToday(ops, now),
     usage: status.usage,
     executors: (c.declaration.executor.providers ?? [c.declaration.executor]).map((item) => code(item.kind)),
-    providers: workProviders(status, taskRows, operations, now),
+    providers: workProviders(status, taskRows, operations, now, config),
     agents: operations.map((op) => ({ id: op.id, taskId: op.task_id, executor: code(op.executor_kind), state: op.state })),
     tasks: taskRows.map((task) => ({ id: task.task_id, title: safeText(specs.get(task.task_id)?.title ?? task.task_id),
       outcome: specs.get(task.task_id)?.outcome ? safeText(specs.get(task.task_id).outcome) : null, state: task.state,
@@ -1254,7 +1254,7 @@ export function supervisorSnapshot(dataDir, now = Date.now(), { since, textCheck
 
         usage: status.usage,
         executors: (c.declaration.executor.providers ?? [c.declaration.executor]).map((item) => code(item.kind)),
-        providers: workProviders(status, taskRows, operations, now),
+        providers: workProviders(status, taskRows, operations, now, config),
         instructions: store.all("SELECT * FROM events WHERE campaign_id = ? AND kind = 'agent-instruction' ORDER BY seq DESC LIMIT 30", id).map((event) => {
           const p = event.payload, task = taskRows.find((item) => item.task_id === p.taskId);
           return { id: event.seq, taskId: p.taskId, role: p.role, text: textChecks?.read(p.text, 2000).text ?? safeText(p.text, 2000), at: event.received_at,
