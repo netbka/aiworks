@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Как идёт задача · Как мы работаем с AIWorks</title>
+<meta name="description" content="Шесть шагов задачи в AIWorks и пять причин, почему агенту нельзя просто дать задачу и права.">
+<link rel="stylesheet" href="../showcase.css">
+<link rel="stylesheet" href="cases.css">
+</head>
+<body>
+<a class="skip" href="#content">К содержанию</a>
+<header class="top">
+  <div class="top-inner">
+    <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">aw</span> Как мы работаем с AIWorks</a>
+    <nav aria-label="Разделы"><ul><li><a href='index.html'>Обзор</a></li><li><a href='cycle.html' aria-current="page">Как идёт задача</a></li><li><a href='elma.html'>ELMA 365</a></li><li><a href='uh.html'>1С:УХ</a></li><li><a href='growth.html'>Growth Farm</a></li><li><a href='lessons.html'>Чему научились</a></li></ul></nav>
+  </div>
+</header>
+<main id="content" tabindex="-1">
+  <p class="crumbs"><a href="../index.html">AIWorks</a> / <a href="index.html">Как мы работаем</a> / Как идёт задача</p>
+  <h1>Как идёт задача</h1>
+  <p class="lead">Путь задачи одинаков в любом проекте. Меняется только то, откуда она пришла, какими инструментами работает агент и куда уходит результат.</p>
+
+  <section class="panel">
+    <h2>Шесть шагов</h2>
+    <div class="diagram"><svg viewBox='0 0 760 276' role='img' aria-label='Путь задачи через AIWorks'><defs><marker id='ah' viewBox='0 0 10 10' refX='9' refY='5' markerWidth='7' markerHeight='7' orient='auto-start-reverse'><path class='ah' d='M0 0L10 5L0 10z'/></marker></defs><rect class='bx' x='24' y='24' width='212' height='92' rx='8'/><text class='t1' x='38' y='48'>Проект подключён</text><text class='t2' x='38' y='68'>свои правила: что можно</text><text class='t2' x='38' y='85'>трогать, как проверять</text><rect class='bx' x='274' y='24' width='212' height='92' rx='8'/><text class='t1' x='288' y='48'>Пришла задача</text><text class='t2' x='288' y='68'>из трекера, бота</text><text class='t2' x='288' y='85'>или плана волны</text><rect class='bx-acc' x='524' y='24' width='212' height='92' rx='8'/><text class='t1' x='538' y='48'>Человек одобрил</text><text class='t2' x='538' y='68'>объём работы —</text><text class='t2' x='538' y='85'>один раз</text><rect class='bx' x='524' y='160' width='212' height='92' rx='8'/><text class='t1' x='538' y='184'>Исполнитель</text><text class='t2' x='538' y='204'>делает в своей копии</text><text class='t2' x='538' y='221'>проекта</text><rect class='bx' x='274' y='160' width='212' height='92' rx='8'/><text class='t1' x='288' y='184'>Проверяющий</text><text class='t2' x='288' y='204'>другой агент, та же</text><text class='t2' x='288' y='221'>версия, свои проверки</text><rect class='bx-acc' x='24' y='160' width='212' height='92' rx='8'/><text class='t1' x='38' y='184'>Результат</text><text class='t2' x='38' y='204'>уходит в систему,</text><text class='t2' x='38' y='221'>человек принимает</text><g><path class='ln' d='M236 70.0H274' marker-end='url(#ah)'/><path class='ln' d='M486 70.0H524' marker-end='url(#ah)'/><path class='ln' d='M630.0 116V160' marker-end='url(#ah)'/><path class='ln' d='M524 206.0H486' marker-end='url(#ah)'/><path class='ln' d='M274 206.0H236' marker-end='url(#ah)'/></g></svg></div>
+    <ol class="steps">
+      <li><b>Подключение проекта.</b> Один раз на проект: откуда приходят задачи, какие папки и системы агентам трогать нельзя, чем проверять результат и кто его принимает. Настраивает это ИИ-ассистент по готовым инструкциям, человек только подтверждает правила.</li>
+      <li><b>Задача приходит сама.</b> Внешняя система ставит её через API со своим ключом и потом сама спрашивает статус. Можно и вручную — словами ассистенту или кнопкой в панели.</li>
+      <li><b>Одобрение объёма.</b> Работа идёт только по одобренному плану. Новые шаги внутри него AIWorks добавляет сам, но выйти за рамки плана не может.</li>
+      <li><b>Исполнитель</b> работает в отдельной копии проекта и в ограниченной среде: без личных настроек и паролей владельца.</li>
+      <li><b>Проверяющий</b> — свежий агент. Он заново гоняет проверки на той самой версии и ничего не меняет. Нашёл ошибку — работа уходит на доработку, не больше трёх кругов.</li>
+      <li><b>Результат</b> уходит туда, где его ждут: в трекер, в отчёт, в pull request. Принимает человек, если так решено для проекта.</li>
+    </ol>
+  </section>
+
+  <section class="panel">
+    <h2>Почему это не решить «в лоб»</h2>
+    <p>Можно просто дать агенту задачу и права. Это работает, пока всё идёт гладко. На практике мешает пять вещей, и каждую AIWorks закрывает отдельно.</p>
+    <ul class="why">
+      <li><b>Агент уверенно ошибается.</b> «Тесты прошли» с его слов ничего не значит. Поэтому проверяет другой агент на точной версии.</li>
+      <li><b>Сессия модели короткая.</b> Контекст переполняется, сессия обрывается. Поэтому ход работы хранится в базе AIWorks, а не в памяти модели, и после сбоя он продолжает с того же места.</li>
+      <li><b>Среда нестабильна.</b> Кончился лимит подписки — AIWorks ждёт сброса или берёт запасного агента. Перезагрузился компьютер — подхватывает работу, не запуская её второй раз и не создавая дублей.</li>
+      <li><b>Просьба в промпте — не гарантия.</b> Что агенту нельзя, проверяет код: доступ к папкам, публикация, слияние, выкладка.</li>
+      <li><b>Человек — самый дефицитный ресурс.</b> В список «нужны вы» попадает только то, что может сделать лишь он: вход в аккаунт, оплата, приёмка. Всё остальное AIWorks решает сам и сообщает.</li>
+    </ul>
+  </section>
+
+  <section class="panel">
+    <h2>Расписание и нагрузка</h2>
+    <div class="pair">
+      <div><h3>Очередь</h3><p>Следующий шаг начинается, как только закончен предыдущий. Шаги, которые трогают одни и те же файлы, идут по очереди; независимые — параллельно, если компьютер тянет.</p></div>
+      <div><h3>Лимиты и сбои</h3><p>Один исчерпанный аккаунт — одно ожидание для всех проектов. Зависший агент останавливается по таймеру. Фоновые задачи Windows поднимают AIWorks после перезагрузки.</p></div>
+    </div>
+  </section>
+
+  <nav class="pager" aria-label="Соседние страницы"><a href='index.html'><span>Назад</span>Обзор</a><a href='elma.html'><span>Дальше</span>ELMA 365</a></nav>
+</main>
+<footer><p>AIWorks — открытый проект, лицензия MIT. <a href="https://github.com/netbka/aiworks">Код и документация</a> · <a href="https://github.com/netbka/aiworks/blob/main/README.ru.md">README на русском</a> · <a href="../index.html">Демонстрация экранов (англ.)</a>. Названия компаний, людей и серверов здесь не приводятся.</p></footer>
+</body>
+</html>

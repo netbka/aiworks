@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Один AIWorks — очень разные задачи · Как мы работаем с AIWorks</title>
+<meta name="description" content="Как AIWorks ведёт три разных проекта: изменения ELMA 365, финансовые заявки к 1С:УХ и маркетинговое агентство на ИИ-агентах.">
+<link rel="stylesheet" href="../showcase.css">
+<link rel="stylesheet" href="cases.css">
+</head>
+<body>
+<a class="skip" href="#content">К содержанию</a>
+<header class="top">
+  <div class="top-inner">
+    <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">aw</span> Как мы работаем с AIWorks</a>
+    <nav aria-label="Разделы"><ul><li><a href='index.html' aria-current="page">Обзор</a></li><li><a href='cycle.html'>Как идёт задача</a></li><li><a href='elma.html'>ELMA 365</a></li><li><a href='uh.html'>1С:УХ</a></li><li><a href='growth.html'>Growth Farm</a></li><li><a href='lessons.html'>Чему научились</a></li></ul></nav>
+  </div>
+</header>
+<main id="content" tabindex="-1">
+  <p class="crumbs"><a href="../index.html">AIWorks</a> / <a href="index.html">Как мы работаем</a></p>
+  <h1>Один AIWorks — очень разные задачи</h1>
+  <p class="lead">AIWorks — смена ИИ-агентов на одном компьютере. Он берёт одобренную задачу, отдаёт её агенту-исполнителю, проверяет результат другим агентом и сдаёт только проверенное. Ниже — как мы с ним ведём три совсем разных проекта: изменения корпоративной системы, финансовые заявки в 1С и маркетинговое агентство.</p>
+
+  <section class="panel">
+    <h2>Общая картина</h2>
+    <p>Всё держится на трёх слоях.</p>
+    <ol class="steps">
+      <li><b>Технологическая база.</b> API и MCP-инструменты, которые мы публикуем, чтобы агент мог работать с системой: видеть и менять конфигурацию ELMA 365, читать описание и данные 1С, выходить на площадки для публикаций. Это инженерный фундамент — без него агенту нечем работать.</li>
+      <li><b>Источник задач.</b> Трекер, где рождается работа: ELMA Wiki, Redmine или план волны Growth Farm.</li>
+      <li><b>AIWorks.</b> Диспетчер посередине: принимает задачу, отдаёт её агенту, проверяет результат вторым агентом и возвращает в систему. Для всех проектов одинаково.</li>
+    </ol>
+    <div class="diagram"><svg viewBox='0 0 790 494' role='img' aria-label='Три источника задач, один AIWorks, одно окно операций на общей технологической базе'><defs><marker id='ah' viewBox='0 0 10 10' refX='9' refY='5' markerWidth='7' markerHeight='7' orient='auto-start-reverse'><path class='ah' d='M0 0L10 5L0 10z'/></marker></defs><text class='t3' x='24' y='28'>ОТКУДА ЗАДАЧА</text><text class='t3' x='228' y='28'>ДИСПЕТЧЕР</text><text class='t3' x='412' y='28'>ЧТО ДЕЛАЮТ АГЕНТЫ</text><rect class='bx' x='24' y='48' width='170' height='80' rx='8'/><text class='t1' x='38' y='72'>ELMA Wiki</text><text class='t2' x='38' y='92'>трекер изменений</text><text class='t2' x='38' y='109'>ELMA 365</text><path class='ln' d='M194 88.0H228' marker-end='url(#ah)'/><rect class='bx' x='24' y='148' width='170' height='80' rx='8'/><text class='t1' x='38' y='172'>Redmine</text><text class='t2' x='38' y='192'>финансовые заявки</text><text class='t2' x='38' y='209'>к 1С:УХ</text><path class='ln' d='M194 188.0H228' marker-end='url(#ah)'/><rect class='bx' x='24' y='248' width='170' height='80' rx='8'/><text class='t1' x='38' y='272'>Growth Farm</text><text class='t2' x='38' y='292'>план волны:</text><text class='t2' x='38' y='309'>гипотезы и задачи</text><path class='ln' d='M194 288.0H228' marker-end='url(#ah)'/><rect class='bx-acc' x='228' y='48' width='150' height='280' rx='8'/><text class='t1' x='242' y='74'>AIWorks</text><text class='t2' x='242' y='100'>принимает задачу</text><text class='t2' x='242' y='119'>отдаёт исполнителю</text><text class='t2' x='242' y='138'>проверяет другим</text><text class='t2' x='242' y='157'>агентом</text><text class='t2' x='242' y='176'>возвращает или</text><text class='t2' x='242' y='195'>сдаёт результат</text><path class='ln' d='M378 188H412' marker-end='url(#ah)'/><rect class='bx' x='412' y='48' width='354' height='280' rx='8'/><text class='t1' x='428' y='74'>Одно окно операций</text><text class='t2' x='428' y='94'>каждую проверяет второй агент</text><rect class='bx-band' x='428' y='118' width='156' height='38' rx='6'/><text class='t2' x='440' y='142'>Разбор заявки</text><rect class='bx-band' x='428' y='168' width='156' height='38' rx='6'/><text class='t2' x='440' y='192'>Сверка с системой</text><rect class='bx-band' x='428' y='218' width='156' height='38' rx='6'/><text class='t2' x='440' y='242'>Разработка</text><rect class='bx-band' x='428' y='268' width='156' height='38' rx='6'/><text class='t2' x='440' y='292'>Тесты и сценарии</text><rect class='bx-band' x='596' y='118' width='156' height='38' rx='6'/><text class='t2' x='608' y='142'>Анализ текстов</text><rect class='bx-band' x='596' y='168' width='156' height='38' rx='6'/><text class='t2' x='608' y='192'>Правила площадок</text><rect class='bx-band' x='596' y='218' width='156' height='38' rx='6'/><text class='t2' x='608' y='242'>Публикация</text><rect class='bx-band' x='596' y='268' width='156' height='38' rx='6'/><text class='t2' x='608' y='292'>Расписание и замеры</text><rect class='bx-band' x='24' y='364' width='742' height='106' rx='8'/><text class='t1' x='40' y='390'>Технологическая база</text><text class='t2' x='40' y='410'>API и MCP, которые мы публикуем для агентов</text><rect class='bx' x='40' y='424' width='89' height='32' rx='16'/><text class='t2' x='54' y='445'>ELMA MCP</text><rect class='bx' x='140.8' y='424' width='180' height='32' rx='16'/><text class='t2' x='154.8' y='445'>MCP и инструменты 1С</text><rect class='bx' x='332.8' y='424' width='195' height='32' rx='16'/><text class='t2' x='346.8' y='445'>API площадок и браузер</text><path class='ln' d='M589 328V364' marker-end='url(#ah)'/><text class='t2' x='598' y='352'>агенты работают через</text></svg></div>
+    <p class="note muted">Операции разные — от разработки до публикации текста, — но путь у всех один. AIWorks не знает, что внутри проекта. Он знает, откуда пришла задача, что агенту можно трогать и как проверить результат.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Три проекта</h2>
+    <div class="grid3">
+      <a class="card" href="elma.html"><span class="kind">Инженерия</span><h3>Изменения ELMA 365</h3><p>Заявка из трекера проходит разбор ИИ-аналитиком, а потом ИИ-разработчик делает изменение в low-code системе.</p></a>
+      <a class="card" href="uh.html"><span class="kind">Учёт и финансы</span><h3>Финансовые заявки к 1С:УХ</h3><p>ИИ-аналитик читает каждую новую финансовую заявку и решает, хватает ли в ней данных, чтобы начать работу.</p></a>
+      <a class="card" href="growth.html"><span class="kind">Продажи и маркетинг</span><h3>Growth Farm</h3><p>Агентство, где сотрудники — ИИ-агенты: ищут площадки, пишут и проверяют тексты, ведут гипотезы.</p></a>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Что важно понять сразу</h2>
+    <ul class="why">
+      <li><b>Задачу ставит система, а не человек в чате.</b> Трекер или бот передаёт задачу в AIWorks и сам забирает результат.</li>
+      <li><b>Делает один агент, проверяет другой.</b> Проверяющий не видел, как шла работа, и смотрит ровно ту версию, которую сдали.</li>
+      <li><b>Человек появляется два раза:</b> когда одобряет объём работы и когда принимает результат.</li>
+      <li><b>Ничего не зависает.</b> Лимиты, сбои и перезагрузки AIWorks переживает сам. Шаг, который не удался, сдаётся с перечисленными недостатками или закрывается с задачей на потом.</li>
+    </ul>
+    <p>Как это устроено внутри — на странице <a href="cycle.html">«Как идёт задача»</a>.</p>
+  </section>
+
+  <nav class="pager" aria-label="Соседние страницы"><span></span><a href='cycle.html'><span>Дальше</span>Как идёт задача</a></nav>
+</main>
+<footer><p>AIWorks — открытый проект, лицензия MIT. <a href="https://github.com/netbka/aiworks">Код и документация</a> · <a href="https://github.com/netbka/aiworks/blob/main/README.ru.md">README на русском</a> · <a href="../index.html">Демонстрация экранов (англ.)</a>. Названия компаний, людей и серверов здесь не приводятся.</p></footer>
+</body>
+</html>

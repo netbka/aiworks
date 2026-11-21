@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Финансовые заявки к 1С:УХ · Как мы работаем с AIWorks</title>
+<meta name="description" content="ИИ-аналитик финансовых заявок к 1С:УХ: что он делает, чего не делает и как подключён через бот Redmine и AIWorks.">
+<link rel="stylesheet" href="../showcase.css">
+<link rel="stylesheet" href="cases.css">
+</head>
+<body>
+<a class="skip" href="#content">К содержанию</a>
+<header class="top">
+  <div class="top-inner">
+    <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">aw</span> Как мы работаем с AIWorks</a>
+    <nav aria-label="Разделы"><ul><li><a href='index.html'>Обзор</a></li><li><a href='cycle.html'>Как идёт задача</a></li><li><a href='elma.html'>ELMA 365</a></li><li><a href='uh.html' aria-current="page">1С:УХ</a></li><li><a href='growth.html'>Growth Farm</a></li><li><a href='lessons.html'>Чему научились</a></li></ul></nav>
+  </div>
+</header>
+<main id="content" tabindex="-1">
+  <p class="crumbs"><a href="../index.html">AIWorks</a> / <a href="index.html">Как мы работаем</a> / 1С:УХ</p>
+  <h1>Финансовые заявки к 1С:УХ</h1>
+  <p class="lead">1С:Управление холдингом — учётная система группы компаний, в ней работают финансовые службы. Заявки на её доработку часто ходят по кругу: специалист переспрашивает, автор отвечает через день. ИИ-аналитик убирает этот круг до того, как заявка дошла до специалиста.</p>
+
+  <section class="panel">
+    <h2>Из чего состоит</h2>
+    <ul class="facts">
+      <li><b>Где рождается задача</b>Redmine — обычный трекер заявок. Бот следит за новыми финансовыми заявками и отправляет их в AIWorks.</li>
+      <li><b>Чем работает агент</b>Наш репозиторий инструментов 1С: описание конфигурации и MCP для доступа к метаданным и данным. Аналитику хватает описания — в базу он не ходит.</li>
+      <li><b>Что на выходе</b>Вердикт по заявке: можно начинать, нужен вопрос автору или есть техническая остановка.</li>
+    </ul>
+  </section>
+
+  <section class="panel">
+    <h2>Как идёт заявка</h2>
+    <div class="diagram"><svg viewBox='0 0 760 276' role='img' aria-label='Путь заявки к 1С:УХ'><defs><marker id='ah' viewBox='0 0 10 10' refX='9' refY='5' markerWidth='7' markerHeight='7' orient='auto-start-reverse'><path class='ah' d='M0 0L10 5L0 10z'/></marker></defs><rect class='bx' x='24' y='24' width='212' height='92' rx='8'/><text class='t1' x='38' y='48'>Новая заявка</text><text class='t2' x='38' y='68'>финансовая заявка</text><text class='t2' x='38' y='85'>в Redmine</text><rect class='bx' x='274' y='24' width='212' height='92' rx='8'/><text class='t1' x='288' y='48'>Бот</text><text class='t2' x='288' y='68'>замечает изменение</text><text class='t2' x='288' y='85'>и ставит задачу</text><rect class='bx' x='524' y='24' width='212' height='92' rx='8'/><text class='t1' x='538' y='48'>ИИ-аналитик</text><text class='t2' x='538' y='68'>читает описание</text><text class='t2' x='538' y='85'>конфигурации</text><rect class='bx' x='524' y='160' width='212' height='92' rx='8'/><text class='t1' x='538' y='184'>Проверяющий</text><text class='t2' x='538' y='204'>второй агент</text><text class='t2' x='538' y='221'>сверяет вердикт</text><rect class='bx' x='274' y='160' width='212' height='92' rx='8'/><text class='t1' x='288' y='184'>Вердикт</text><text class='t2' x='288' y='204'>понятно / вопрос /</text><text class='t2' x='288' y='221'>остановка</text><rect class='bx-acc' x='24' y='160' width='212' height='92' rx='8'/><text class='t1' x='38' y='184'>Специалист</text><text class='t2' x='38' y='204'>начинает работу</text><text class='t2' x='38' y='221'>без переписки</text><g><path class='ln' d='M236 70.0H274' marker-end='url(#ah)'/><path class='ln' d='M486 70.0H524' marker-end='url(#ah)'/><path class='ln' d='M630.0 116V160' marker-end='url(#ah)'/><path class='ln' d='M524 206.0H486' marker-end='url(#ah)'/><path class='ln' d='M274 206.0H236' marker-end='url(#ah)'/></g></svg></div>
+    <ol class="steps">
+      <li><b>Подключение.</b> Бот получил в AIWorks свой ключ. Правило проекта простое: агент только читает. Базу 1С и её сервисы он не открывает.</li>
+      <li><b>Задача подхватывается сама.</b> Бот отправляет заявку, только когда изменилось её содержание: текст, вложения или комментарий человека. Одна версия заявки проверяется один раз.</li>
+      <li><b>Разбор.</b> Аналитик отвечает на один вопрос: может ли специалист начать работу, не переписываясь с автором.</li>
+      <li><b>Вопрос автору.</b> Если данных не хватает — один–три вопроса, понятных финансисту, и что будет сделано, если автор не ответит. Бот публикует их одной заметкой в заявке.</li>
+    </ol>
+  </section>
+
+  <section class="panel">
+    <h2>Чего аналитик не делает</h2>
+    <ul class="why">
+      <li><b>Не открывает базу и её сервисы.</b> Читает только описание конфигурации.</li>
+      <li><b>Не повторяет пароли и личные данные,</b> которые иногда попадают в заявку.</li>
+      <li><b>Не спрашивает очевидного:</b> того, что есть в документации, и расшифровку УХ, ДДС, БДДС или ПКО.</li>
+      <li><b>Не запускается зря:</b> смена статуса и заметки самого бота новую проверку не вызывают.</li>
+    </ul>
+    <p>Главный вывод для тех, кто хочет так же: начинать надо не с ИИ, а с описания своей конфигурации. Без него любой аналитик, живой или нет, будет спрашивать одно и то же.</p>
+  </section>
+
+  <nav class="pager" aria-label="Соседние страницы"><a href='elma.html'><span>Назад</span>ELMA 365</a><a href='growth.html'><span>Дальше</span>Growth Farm</a></nav>
+</main>
+<footer><p>AIWorks — открытый проект, лицензия MIT. <a href="https://github.com/netbka/aiworks">Код и документация</a> · <a href="https://github.com/netbka/aiworks/blob/main/README.ru.md">README на русском</a> · <a href="../index.html">Демонстрация экранов (англ.)</a>. Названия компаний, людей и серверов здесь не приводятся.</p></footer>
+</body>
+</html>
