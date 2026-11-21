@@ -105,15 +105,23 @@ export const PROJECT_EXTENSION_DIRS = ['.agents', '.agent', '_agents', '_agent']
 // escapes it, and the sandbox is what holds then.
 // A quote opens a command only inside a wrapper (`bash -lc "git push"`); elsewhere `grep "git push" docs` is a search.
 const TOKEN_END = String.raw`(?=$|[\s;&|)"'\x60])`;
+// A worker writes the command line and the audit runs in the supervisor, so its time must grow only linearly with the
+// line: every pattern reads a line in one way only (no exponential backtracking), and after a command name it looks at
+// a bounded number of words (ARGS, and at most 32 Git options), never at the rest of the line.
 // One shell word: plain characters and quoted runs, so `-c core.sshCommand="ssh -v"` is one option and its value.
-const QUOTED = String.raw`(?:"[^"]*"|'[^']*'|[^\s;&|"'])+`;
+const WORD = String.raw`(?:"[^"]*"|'[^']*'|[^\s;&|"'])+`;
+const ARGS = (count) => String.raw`(?:${WORD}\s+){0,${count}}`;
 const SHELLS = '(?:powershell|pwsh|bash|sh|zsh|dash|ksh|wsl)';
 // cmd /c or /k (other switches may come first); a shell with an option holding c (-c, -lc, -Command, -NoProfile
 // -Command); a PowerShell evaluator or launcher.
-const WRAPPER = new RegExp(String.raw`(?:^|[\s;&|("'])(?:cmd(?:\.exe)?\s(?:[^;&|]*?\s)?\/[ck]|${SHELLS}(?:\.exe)?["']?\s(?:[^;&|]*?\s)?-[a-z]*c[a-z]*\s`
+const WRAPPER = new RegExp(String.raw`(?:^|[\s;&|("'])(?:cmd(?:\.exe)?\s+${ARGS(6)}\/[ck]|${SHELLS}(?:\.exe)?["']?\s+${ARGS(12)}-(?=[a-z]*c)[a-z]+\s`
   + String.raw`|iex\s|invoke-expression\s|invoke-command\s|start-process\s|start-job\s)`, 'i');
 const nameAt = (name, wrapped) => String.raw`(?:(?:^|[\s;&|({\x60\\/=]${wrapped ? `|["']` : ''})${name}(?:\.exe|\.cmd)?["']?|["']${name}(?:\.exe|\.cmd)?["'])`;
-const gitAt = (wrapped) => String.raw`${nameAt('git', wrapped)}(?:\s+(?:-[Cc]\s+${QUOTED}|--?[\w.-]+(?:[= ]${QUOTED})?))*\s+`;
+// Git's global options before the subcommand: one that takes the next word as its value (-C dir, -c key=value,
+// --git-dir dir, ...), or any other option, with its value after = if it has one. A value is never read as an option.
+const VALUE_OPTION = String.raw`(?:-[Cc]|--(?:git-dir|work-tree|namespace|super-prefix|config-env))`;
+const GIT_OPTION = String.raw`(?:${VALUE_OPTION}\s+${WORD}|(?!${VALUE_OPTION}\s)-[\w.-]+(?:=${WORD})?)`;
+const gitAt = (wrapped) => String.raw`${nameAt('git', wrapped)}(?:\s+${GIT_OPTION}){0,32}\s+`;
 const RULES = [
   ['git push', (w) => String.raw`${gitAt(w)}(?:push|send-pack|http-push|subtree\s+push)${TOKEN_END}`],
   ['git history write', (w) => String.raw`${gitAt(w)}(?:commit|merge|rebase|cherry-pick|revert|am|update-ref|filter-branch|subtree|fast-import)${TOKEN_END}`],
@@ -121,14 +129,15 @@ const RULES = [
   ['git remote change', (w) => String.raw`${gitAt(w)}remote\s+(?:add|set-url|remove|rm|rename)${TOKEN_END}`],
   ['git lfs transfer', (w) => String.raw`${gitAt(w)}lfs\s+(?:push|fetch|pull)${TOKEN_END}`],
   // An alias can rename any subcommand: -c alias.p=push, --config-env, git config alias.p, or Git's config variables.
-  ['git alias', (w) => String.raw`${nameAt('git', w)}[^;&|\n]*?\s(?:-c\s*|--config-env[= ]|config\s(?:[^;&|\n]*\s)?)["']?alias\.|\bGIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+)\b`],
+  ['git alias', (w) => String.raw`(?:^|[\s"'])(?:-c\s*|--config-env[= ])["']?alias\.|${gitAt(w)}config\s+${ARGS(8)}["']?alias\.`
+    + String.raw`|\bGIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+)\b`],
   ['gh write', (w) => String.raw`${nameAt('gh', w)}\s+(?:pr\s+(?:create|merge|close|edit|comment|review|ready|reopen)|release|issue\s+(?:create|comment|close|edit|delete|reopen)`
     + String.raw`|workflow|run|actions|codespaces?|cs|repo\s+(?:create|delete|edit|fork|rename|archive)|secret|variable|api|gist|alias|extensions?|ext`
     + String.raw`|label\s+(?:create|edit|delete|clone)|ssh-key|gpg-key|auth)${TOKEN_END}`],
   ['package publish or deploy', (w) => String.raw`${nameAt('(?:npm|pnpm|yarn)', w)}\s+(?:publish|unpublish|deprecate|dist-tag|owner|access|run(?:-script)?\s+(?:update|deploy))${TOKEN_END}`],
   ['remote shell', (w) => `${nameAt('(?:ssh|scp|sftp|rsync)', w)}${TOKEN_END}`],
   // A command the audit cannot read.
-  ['encoded command', () => String.raw`(?:^|[\s;&|(\\/"'])(?:powershell|pwsh)(?:\.exe)?["']?\s(?:[^;&|]*\s)?-(?:e|ec|enc|encodedcommand)\s`],
+  ['encoded command', () => String.raw`(?:^|[\s;&|(\\/"'])(?:powershell|pwsh)(?:\.exe)?["']?\s+${ARGS(12)}-e(?:c|n[a-z]*)?\s`],
 ];
 export const DENIED_COMMANDS = RULES.map(([name, pattern]) => ({ name, plain: new RegExp(pattern(false), 'i'), wrapped: new RegExp(pattern(true), 'i') }));
 /** The name of the first denied command a command line contains, or null. */

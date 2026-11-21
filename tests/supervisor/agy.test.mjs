@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { BROWSER_SERVER, BUILD_RETRY_NOTE, CODE_PERMISSION_MODE, DENY, TOOLS, webScope } from '../../src/supervisor/adapters/agy.mjs';
+import { BROWSER_SERVER, BUILD_RETRY_NOTE, CODE_PERMISSION_MODE, DENY, TOOLS, deniedCommand, webScope } from '../../src/supervisor/adapters/agy.mjs';
 import { validResult } from '../../src/supervisor/adapters/claude.mjs';
 import { passedCheck } from '../../src/supervisor/result-review.mjs';
 import { agyCodeRoles, buildPrompt, classify, prepare, roleUnavailableReason, unavailableReason, webFlag } from '../../src/supervisor/adapters/executors.mjs';
@@ -492,6 +492,11 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
     { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'send_input' } } },
   ];
   for (const step of voided) assert.equal(read([step]).violation, true, JSON.stringify(step));
+  // The worker writes the command line and the supervisor reads it: a line built to make a pattern backtrack is still read
+  // at once (with nested option patterns, 25 Git options took seconds, and each one more doubled it).
+  const started = performance.now();
+  assert.equal(deniedCommand(`git ${'--x=y '.repeat(25)}status`), null);
+  assert.ok(performance.now() - started < 1000, 'the audit cannot stall the supervisor');
   assert.equal(read(allowed, { mode: 'request-review' }).violation, true, 'only the sandboxed permission mode');
   assert.equal(read(allowed, { extra: { denied_actions: [{ action: 'command' }] } }).violation, true, 'a refused bypass voids the run');
 });
