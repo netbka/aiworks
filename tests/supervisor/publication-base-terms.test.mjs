@@ -13,14 +13,28 @@ const git = (cwd, ...args) => {
   return out.stdout.trim();
 };
 
-// A private term the target's base already holds shows that repository's readers nothing new, so it is exempt there. A
-// term only a worker's verified head holds stays private: otherwise a worker could publish a term by writing it into its
-// own change. A search that cannot run exempts nothing.
+// A git that names the target's GitHub repository as `origin` while it fetches from the local test origin, and whose
+// search fails with `failGrep`; every other call goes to the real git.
+function wrappedGit(env, name, { failGrep = false } = {}) {
+  const path = join(env.tmp, `${name}.mjs`);
+  writeFileSync(path, `import { spawnSync } from 'node:child_process';
+const args = process.argv.slice(2);
+if (args[0] === 'remote' && args[1] === 'get-url') { console.log('https://github.com/example-org/sampleapp.git'); process.exit(0); }
+if (${failGrep} && args[0] === 'grep') process.exit(2);
+process.exit(spawnSync('git', args, { stdio: 'inherit', windowsHide: true }).status ?? 1);
+`);
+  return [process.execPath, path];
+}
+
+// A private term the target's base already holds as a word shows that repository's readers nothing new, so it is exempt
+// there. A term only a worker's verified head holds stays private: otherwise a worker could publish a term by writing it
+// into its own change. A term inside a longer word, a search that fails and an origin not shown to be the target
+// exempt nothing.
 test('only a term the target base holds is exempt, never one only the verified head holds', { skip: skipWithoutSqlite }, async (t) => {
   const env = environment();
   const store = new Store(join(env.dataDir, 'supervisor.db'));
   t.after(() => { store.close(); env.cleanup(); });
-  writeFileSync(join(env.repo, 'NOTES.md'), 'Runs beside Fictional_Base_Host.\n');
+  writeFileSync(join(env.repo, 'NOTES.md'), 'Runs beside Fictional_Base_Host and fictional-long-hostname.\n');
   git(env.repo, 'add', '-A');
   git(env.repo, 'commit', '-q', '-m', 'base');
   git(env.repo, 'push', '-q', 'origin', 'main');
@@ -32,27 +46,30 @@ test('only a term the target base holds is exempt, never one only the verified h
   git(env.repo, 'push', '-q', 'origin', 'campaign/test-campaign/T1');
   // Written after the commits, so the terms file itself is tracked nowhere.
   mkdirSync(join(env.repo, '.local'));
-  writeFileSync(join(env.repo, '.local', 'publication.json'), JSON.stringify({ privateTerms: ['fictional-base-host', 'fictional-head-host'] }));
+  writeFileSync(join(env.repo, '.local', 'publication.json'),
+    JSON.stringify({ privateTerms: ['fictional-base-host', 'fictional-head-host', 'fictional-long-host'] }));
   const decl = declaration();
+  const controller = (gitCommand) => {
+    const made = new Controller({ store, config: { ...env.config, commands: { ...env.config.commands, ...(gitCommand ? { git: gitCommand } : {}) } },
+      dataDir: env.dataDir, fault: null });
+    made.log = () => {};
+    return made;
+  };
 
-  const controller = new Controller({ store, config: env.config, dataDir: env.dataDir, fault: null });
-  controller.log = () => {};
-  const present = await controller.presentTerms(decl);
+  const ctl = controller(wrappedGit(env, 'github-origin'));
+  const present = await ctl.presentTerms(decl);
   assert.ok(present.includes('fictional-base-host'), 'the base holds it, in another case and with an underscore');
   assert.ok(!present.includes('fictional-head-host'), 'only the verified head holds it');
-  const terms = controller.publicationTerms(decl, present);
+  assert.ok(!present.includes('fictional-long-host'), 'the base holds only a longer word that contains it');
+  const terms = ctl.publicationTerms(decl, present);
   assert.ok(!terms.includes('fictional-base-host'));
   assert.ok(terms.includes('fictional-head-host'));
+  assert.ok(terms.includes('fictional-long-host'));
 
-  // A git whose search fails, while its fetch and reads work: nothing is exempt.
-  const failing = join(env.tmp, 'failing-grep.mjs');
-  writeFileSync(failing, `import { spawnSync } from 'node:child_process';
-const args = process.argv.slice(2);
-if (args.includes('grep')) process.exit(2);
-process.exit(spawnSync('git', args, { stdio: 'inherit', windowsHide: true }).status ?? 1);
-`);
-  const broken = new Controller({ store, config: { ...env.config, commands: { ...env.config.commands, git: [process.execPath, failing] } }, dataDir: env.dataDir, fault: null });
-  broken.log = () => {};
+  // The real git: origin is a local folder, not shown to be the target repository.
+  assert.deepEqual(await controller(null).presentTerms(decl), []);
+  // A search that fails, while the remote, the fetch and the base read work.
+  const broken = controller(wrappedGit(env, 'failing-grep', { failGrep: true }));
   assert.equal((await broken.fetchBase(env.repo, 'main', decl.target.repository, { fresh: true })).ok, true, 'the base itself is readable');
   assert.deepEqual(await broken.presentTerms(decl), []);
 });

@@ -4309,26 +4309,29 @@ export class Controller {
   }
 
   /**
-   * The private terms binding `decl`'s target (publicationTerms) that its repository already holds: found in the
-   * tracked text at the tip of `target.baseBranch` as fetchBase reads it from the remote, ignoring case and with `-` and
-   * `_` alike. Only that base counts, never the verified head or any other commit a worker made: a worker that wrote a
-   * term into its own change could otherwise publish it. One bounded git grep (config baseReadMs), awaited before the
-   * fence. A base that cannot be read, or a search that fails, times out or prints too much, finds nothing, so every
-   * term still binds (fail closed). Never throws.
+   * The private terms binding `decl`'s target (publicationTerms) that its repository already holds: found as a whole
+   * word in the tracked text at the tip of `target.baseBranch` as fetchBase reads it from `origin`, ignoring case and
+   * with `-` and `_` alike. Only that base counts, never the verified head or any other commit a worker made: a worker
+   * that wrote a term into its own change could otherwise publish it. And only when every fetch URL of `origin` names
+   * the target repository on GitHub: another repository's base says nothing about what the target's readers can read.
+   * One bounded `git grep -q` per term (gitA.holdsWords, config baseReadMs), awaited before the fence. A base or remote
+   * that cannot be read finds nothing, and a term whose search fails or times out is not found, so it still binds (fail
+   * closed). Never throws.
    */
   async presentTerms(decl) {
     try {
       if (isLocalTarget(decl) || this.selfHosted(decl.target.repository)) return [];
       const terms = this.publicationTerms(decl);
       if (!terms.length) return [];
-      const repo = this.repo(decl);
+      const repo = this.repo(decl), git = this.cmd.git, timeoutMs = this.config.baseReadMs;
+      const origin = await gitA.fetchRepository({ git, repoPath: repo.path, timeoutMs });
+      if (!origin || origin !== String(decl.target.repository).toLowerCase()) return [];
       const base = await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository);
       if (!base.ok) return [];
-      const patterns = [...new Set(terms.flatMap((term) => [term, term.replace(/_/g, '-'), term.replace(/-/g, '_')]))];
-      const matches = await this.tickCached(`present:${repo.path}|${base.sha}|${JSON.stringify(patterns)}`, () =>
-        gitA.matchesAt({ git: this.cmd.git, repoPath: repo.path, sha: base.sha, patterns, timeoutMs: this.config.baseReadMs }));
-      // A match of a longer term holds every term inside it.
-      return matches ? terms.filter((term) => matches.some((match) => folded(match).includes(folded(term)))) : [];
+      const groups = terms.map((term) => [...new Set([term, term.replace(/_/g, '-'), term.replace(/-/g, '_')])]);
+      const held = await this.tickCached(`present:${repo.path}|${base.sha}|${JSON.stringify(groups)}`, () =>
+        gitA.holdsWords({ git, repoPath: repo.path, sha: base.sha, groups, timeoutMs }));
+      return terms.filter((_, at) => held[at] === true);
     } catch { return []; }
   }
 
