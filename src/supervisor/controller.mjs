@@ -3129,7 +3129,9 @@ export class Controller {
 
   /** Folders whose stacks stay: every open operation's workspace and every running refresh or group gate's checkout. */
   cleanupKeep() {
-    const windowMs = this.merges.refresh?.timeoutMs ?? 2 * 60 * 60_000;
+    // The longest refresh bound of any repository (merges.refresh or its own merges.refreshByRepository entry).
+    const bounds = [this.merges.refresh, ...(this.merges.refreshByRepository?.values() ?? [])].filter(Boolean).map((refresh) => refresh.timeoutMs);
+    const windowMs = bounds.length ? Math.max(...bounds) : 2 * 60 * 60_000;
     return [...openOperations(this.store, this.cleanup).map((op) => op.workspace),
       ...runningRefreshes(this.store, this.cleanup, { now: this.now(), windowMs }).map((gate) => gate.path),
       ...runningBatches(this.store, this.cleanup, { now: this.now(), windowMs })].filter(Boolean);

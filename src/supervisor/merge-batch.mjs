@@ -3,7 +3,8 @@
 // lands on the base is their combination, so that combination is what the gate runs on, once.
 //
 // The group is built locally: each head is merged in turn onto the previous result with `git merge-tree`, committed only
-// locally (never pushed) and checked out in a detached worktree, where the configured gate command (merges.refresh) runs
+// locally (never pushed) and checked out in a detached worktree, where the repository's refresh command (merges.refresh, or
+// its own merges.refreshByRepository entry; a repository without a refresh is never grouped, merge.mjs repositorySettings) runs
 // through the gate helper. A pull request that conflicts stays out of the group. When the gate passes, the pull requests
 // merge on GitHub in the same order, each only while the base is exactly the previous step of the checked chain, and each
 // merge commit must carry the tree that step predicted. A failed or stuck gate, a base that moved, or a pull request that
@@ -43,11 +44,14 @@ function groups(store, repository, branch) {
 const memberRow = (store, { campaignId, task, sha }, kind, since = 0) => store.get(`SELECT detail FROM journal WHERE campaign_id = ? AND kind = ?
   AND json_extract(detail, '$.task') = ? AND json_extract(detail, '$.sha') = ? AND seq > ? ORDER BY seq DESC LIMIT 1`, campaignId, kind, task, sha, since)?.detail ?? null;
 
-/** A refresh of this verified head against this base that started and has not ended (merge-refresh.mjs). */
+/**
+ * A refresh of this verified head against this base that started and has not ended (merge-refresh.mjs): its newest row
+ * is a start, also when it runs again after a pass under another command.
+ */
 const refreshRunning = (store, { campaignId, task }, base) => store.all(`SELECT kind FROM journal WHERE campaign_id = ?
   AND kind IN ('merge-refresh-started', 'merge-refresh-passed', 'merge-refresh-failed') AND json_extract(detail, '$.task') = ?
-  AND json_extract(detail, '$.sha') = ? AND json_extract(detail, '$.base') = ?`, campaignId, task.task_id, task.verified_sha, base)
-  .map((row) => row.kind).join(' ') === 'merge-refresh-started';
+  AND json_extract(detail, '$.sha') = ? AND json_extract(detail, '$.base') = ? ORDER BY seq`, campaignId, task.task_id, task.verified_sha, base)
+  .at(-1)?.kind === 'merge-refresh-started';
 
 /**
  * The tree one verified head's step must carry in group `id` once that group's gate passed, or null. Read-only: the local
@@ -114,7 +118,7 @@ async function startGroup(controller, all, items, settings, repoPath, baseSha, n
   // A pull request whose own refresh already runs on this base finishes that first.
   if (ready.length < 2 || ready.some((item) => refreshRunning(controller.store, item, baseSha))) return false;
   // Spend an already passed check before changing its base with a new group. Existing groups continue above unchanged.
-  if (ready.some((item) => refreshedOnBase(controller.store, item, baseSha))) return false;
+  if (ready.some((item) => refreshedOnBase(controller.store, item, baseSha, settings.refresh))) return false;
   // The same candidates on the same base are combined once: after a failure they go one at a time.
   const candidates = ready.map((item) => `${item.campaignId}:${item.task.task_id}:${item.task.verified_sha}`).join(' ');
   if (all.some((group) => group.started.detail.base === baseSha && group.started.detail.candidates === candidates)) return false;
