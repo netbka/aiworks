@@ -1,4 +1,5 @@
-// Merge-gate refresh (opt-in, config.json `merges.refresh`): when the base moved past a verified pull request without
+// Merge-gate refresh (opt-in, config.json `merges.refresh`, or a repository's own `merges.refreshByRepository` entry,
+// merge.mjs repositorySettings): when the base moved past a verified pull request without
 // touching any file the pull request changed, the supervisor gates the exact merge result itself instead of reopening
 // the task for an AI repair round. Measured 2026-10-16/17: 19 of 23 `merge-base-moved` rounds shared no file with the
 // base, and each round cost a fresh implementer, a fresh verifier and two full gates.
@@ -27,11 +28,12 @@ export const IDENTITY = ['-c', 'user.name=AIWorks Supervisor', '-c', 'user.email
 
 /**
  * `merges.refresh` from config.json: `{ "command": ["npm", "ci", "&&", "npm", "run", "check"], "timeoutMinutes": 120 }`.
- * Absent: null (no refresh; every moved base is an integration repair, as before). Malformed: { problem }.
+ * Absent: null (no refresh; every moved base is an integration repair, as before). Malformed: { problem }, naming `name`
+ * (one `merges.refreshByRepository` entry is read the same way, merge.mjs mergeSettings).
  */
-export function refreshSettings(value) {
+export function refreshSettings(value, name = 'merges.refresh') {
   if (value === undefined || value === null) return null;
-  const problem = (text) => ({ problem: `merges.refresh ${text}` });
+  const problem = (text) => ({ problem: `${name} ${text}` });
   if (typeof value !== 'object' || Array.isArray(value)) return problem('must be an object');
   const { command, timeoutMinutes = DEFAULT_TIMEOUT_MINUTES } = value;
   if (!Array.isArray(command) || !command.length || !command.every((part) => typeof part === 'string' && part.trim())) {

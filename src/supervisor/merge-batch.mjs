@@ -3,7 +3,8 @@
 // lands on the base is their combination, so that combination is what the gate runs on, once.
 //
 // The group is built locally: each head is merged in turn onto the previous result with `git merge-tree`, committed only
-// locally (never pushed) and checked out in a detached worktree, where the configured gate command (merges.refresh) runs
+// locally (never pushed) and checked out in a detached worktree, where the repository's refresh command (merges.refresh, or
+// its own merges.refreshByRepository entry; a repository without a refresh is never grouped, merge.mjs repositorySettings) runs
 // through the gate helper. A pull request that conflicts stays out of the group. When the gate passes, the pull requests
 // merge on GitHub in the same order, each only while the base is exactly the previous step of the checked chain, and each
 // merge commit must carry the tree that step predicted. A failed or stuck gate, a base that moved, or a pull request that

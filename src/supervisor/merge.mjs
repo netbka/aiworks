@@ -72,7 +72,8 @@ const OFF = Object.freeze({ enabled: false, repositories: new Set(), held: new S
  * Merge settings from config.json `merges`, the setting the dashboard already reads (src/dashboard/merges.mjs):
  * `"delegatedTo": "supervisor"` and an explicit `"repositories": ["owner/name", ...]` turn merging on for exactly those
  * repositories. `held` (pull request URL to reason) still holds a pull request back. `refresh` (merge-refresh.mjs) gates
- * the merge result itself when the base moved without touching the pull request's files. Absent, delegated to anyone
+ * the merge result itself when the base moved without touching the pull request's files; `refreshByRepository` gives a
+ * repository its own refresh, which the merge pass reads through repositorySettings. Absent, delegated to anyone
  * else (for example "monitor"), or malformed: off, and `problem` says what is malformed.
  */
 export function mergeSettings(config) {
@@ -90,10 +91,50 @@ export function mergeSettings(config) {
   }
   const refresh = refreshSettings(merges.refresh);
   if (refresh?.problem) return off(refresh.problem);
+  const own = refreshesByRepository(merges.refreshByRepository);
+  if (own.problem) return off(own.problem);
   if (merges.batch !== undefined && typeof merges.batch !== 'boolean') return off('merges.batch must be true or false');
-  if (merges.batch === true && !refresh) return off('merges.batch needs merges.refresh, the gate command it runs on the combined result');
-  return { enabled: true, repositories: new Set(list.map((item) => item.toLowerCase())), problem: null, refresh, batch: merges.batch === true,
-    held: new Set(Object.keys(merges.held ?? {}).map((url) => url.toLowerCase())) };
+  const settings = { enabled: true, repositories: new Set(list.map((item) => item.toLowerCase())), problem: null, refresh, batch: merges.batch === true,
+    held: new Set(Object.keys(merges.held ?? {}).map((url) => url.toLowerCase())), refreshByRepository: own.byRepository };
+  // A group runs the refresh command on its combined result, so it needs a refresh in at least one listed repository.
+  if (settings.batch && !list.some((name) => repositorySettings(settings, name).batch)) {
+    return off('merges.batch needs merges.refresh (or a merges.refreshByRepository entry for a listed repository), the gate command it runs on the combined result');
+  }
+  return settings;
+}
+
+/**
+ * `merges.refreshByRepository` from config.json: `{ "owner/name": { "command": [...], "timeoutMinutes": 120 } }` gives one
+ * repository its own refresh (merge-refresh.mjs refreshSettings), and `null` switches the refresh off there. Keys compare
+ * in lower case, as `merges.repositories` does. Returns { byRepository } (lower-case key to refresh or null), or { problem }
+ * naming the malformed key.
+ */
+function refreshesByRepository(value) {
+  const byRepository = new Map();
+  if (value === undefined || value === null) return { byRepository };
+  if (typeof value !== 'object' || Array.isArray(value)) return { problem: 'merges.refreshByRepository must map owner/name repositories to a refresh or null' };
+  for (const [name, entry] of Object.entries(value)) {
+    const key = `merges.refreshByRepository[${JSON.stringify(name.slice(0, 100))}]`;
+    if (!REPOSITORY.test(name)) return { problem: `${key} is not an owner/name repository` };
+    if (byRepository.has(name.toLowerCase())) return { problem: `${key} is listed twice` };
+    const refresh = refreshSettings(entry, key);
+    if (refresh?.problem) return refresh;
+    byRepository.set(name.toLowerCase(), refresh);
+  }
+  return { byRepository };
+}
+
+/**
+ * The merge settings one repository merges under: `refresh` is its own `merges.refreshByRepository` entry when it has one
+ * (null there: no refresh), else `merges.refresh`, and `batch` holds only with that refresh. Without an entry of its own,
+ * and with a group merge that has its refresh, this is `settings` itself, so a configuration without
+ * `merges.refreshByRepository` merges exactly as before.
+ */
+export function repositorySettings(settings, repository) {
+  const key = String(repository).toLowerCase();
+  const refresh = settings.refreshByRepository?.has(key) ? settings.refreshByRepository.get(key) : settings.refresh;
+  const batch = settings.batch && Boolean(refresh);
+  return refresh === settings.refresh && batch === settings.batch ? settings : { ...settings, refresh, batch };
 }
 
 /** Journal entries of one kind for a campaign, as `<task>:<sha>` keys. */
@@ -196,16 +237,18 @@ export async function mergePass(controller) {
   }
   for (const items of byRepository.values()) {
     const decl = items[0].decl;
+    // The refresh and group merge of this repository: its own merges.refreshByRepository entry, else merges.refresh.
+    const scoped = repositorySettings(settings, decl.target.repository);
     if (resolveCheckout(controller.store, controller.config, decl.target.repository)?.conflict) { controller.log(`merge pass for ${decl.target.repository} skipped: CONFIG_CONFLICT`); continue; }
     let repoPath;
     try { repoPath = controller.repo(decl).path; } catch (error) { controller.log(`merge pass for ${decl.target.repository} skipped: ${error.message}`); continue; }
     if (items[0].local) {
       // With merges.batch, AIWorks's own verified reviews waiting for trusted main first merge as one group (merge-batch.mjs).
-      if (settings.batch) {
+      if (scoped.batch) {
         try {
           const tip = trustedTip(controller.store, { git: controller.cmd.git, repoPath, repository: decl.target.repository });
           if (tip.state === 'TRUSTED' && await batchStep(controller, items.filter((item) => item.decl.target.baseBranch === 'main' &&
-            !authorityBlocked(controller, item, repoPath, tip.tip)), settings, repoPath, tip.main)) continue;
+            !authorityBlocked(controller, item, repoPath, tip.tip)), scoped, repoPath, tip.main)) continue;
         } catch (error) {
           if (error instanceof FencedError || error instanceof ConflictError) { controller.log(`group merge for ${decl.target.repository} retried later: ${error.message}`); continue; }
           controller.log(`group merge for ${decl.target.repository} failed, merging one at a time: ${error.stack || error}`);
@@ -213,13 +256,13 @@ export async function mergePass(controller) {
       }
       // Re-read after a group step: a stopped group may have advanced trusted main.
       const tip = trustedTip(controller.store, { git: controller.cmd.git, repoPath, repository: decl.target.repository });
-      const ordered = settings.refresh && tip.state === 'TRUSTED'
+      const ordered = scoped.refresh && tip.state === 'TRUSTED'
         ? prioritizeRefreshed(controller.store, items, new Map([['main', tip.tip]])) : items;
       const busy = new Set();
       for (const item of ordered) {
         if (busy.has(item.decl.target.baseBranch)) continue;
         try {
-          const result = await mergeLocal(controller, item, settings, repoPath, null, true);
+          const result = await mergeLocal(controller, item, scoped, repoPath, null, true);
           if (result === PRIORITY_BUSY) { busy.add(item.decl.target.baseBranch); continue; }
           if (result) break;
         } catch (error) {
@@ -243,13 +286,13 @@ export async function mergePass(controller) {
         controller.log(`merge shape check for ${repository} retried later: ${error.message}`);
       }
     };
-    if (settings.batch) {
+    if (scoped.batch) {
       const branch = decl.target.baseBranch;
       bases.set(branch, (await controller.fetchBase(repoPath, branch)).sha);
       checkShape(branch);
       try {
         if (SHA.test(bases.get(branch) ?? '') && await batchStep(controller, items.filter((item) => item.decl.target.baseBranch === branch &&
-          !authorityBlocked(controller, item, repoPath, bases.get(branch))), settings, repoPath, bases.get(branch))) continue;
+          !authorityBlocked(controller, item, repoPath, bases.get(branch))), scoped, repoPath, bases.get(branch))) continue;
       } catch (error) {
         if (error instanceof FencedError || error instanceof ConflictError) { controller.log(`group merge for ${decl.target.repository} retried later: ${error.message}`); continue; }
         controller.log(`group merge for ${decl.target.repository} failed, merging one at a time: ${error.stack || error}`);
@@ -261,7 +304,7 @@ export async function mergePass(controller) {
       if (!bases.has(branch)) bases.set(branch, (await controller.fetchBase(repoPath, branch)).sha);
       checkShape(branch);
     }
-    const ordered = settings.refresh ? prioritizeRefreshed(controller.store, items, bases) : items;
+    const ordered = scoped.refresh ? prioritizeRefreshed(controller.store, items, bases) : items;
     const busy = new Set();
     for (const item of ordered) {
       const branch = item.decl.target.baseBranch;
@@ -269,7 +312,7 @@ export async function mergePass(controller) {
       if (!SHA.test(bases.get(branch) ?? '')) { controller.log(`merge of ${item.campaignId}/${item.task.task_id} waits: ${branch} could not be fetched`); continue; }
       checkShape(branch);
       try {
-        const result = await mergeOne(controller, item, settings, repoPath, bases.get(branch));
+        const result = await mergeOne(controller, item, scoped, repoPath, bases.get(branch));
         if (result === PRIORITY_BUSY) { busy.add(branch); continue; }
         if (result) break;
       } catch (error) {
