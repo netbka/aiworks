@@ -12,8 +12,9 @@
 // self-hosted repository (merge.mjs mergeLocal) writes a merge commit with exactly that tree itself. A shared file, a textual
 // conflict, a failed or stuck gate, or a git failure falls back to the integration repair (merge.mjs repair). The
 // journal records every step, so a restart continues the same refresh: `merge-refresh-started` (with the worktree and
-// gate process), then `merge-refresh-passed` or `merge-refresh-failed`. A gate is never killed. Worktrees are left in
-// place, like every supervisor worktree (adapters/git.mjs).
+// gate process), then `merge-refresh-passed` or `merge-refresh-failed`. A running gate keeps the command its start
+// recorded; a pass counts only while the repository's refresh command is still that command, else a new refresh runs.
+// A gate is never killed. Worktrees are left in place, like every supervisor worktree (adapters/git.mjs).
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -95,12 +96,31 @@ function refreshPlan(git, repoPath, baseSha, sha) {
   return { tree: check.tree };
 }
 
+const sameCommand = (a, b) => Array.isArray(a) && Array.isArray(b) && JSON.stringify(a) === JSON.stringify(b);
+
 /**
- * The tree whose gate passed for one verified head against one base, or null. Read-only: the local merge gate uses it
- * after a crash to recognize the refreshed merge commit it requested (merge.mjs mergeLocal).
+ * The refresh records that still count under the repository's current refresh `command`: a pass whose gate ran another
+ * command (its started row recorded it) no longer counts once the command changed, so it is dropped with everything
+ * before it, and a new refresh runs with the current command. Without `command`, all records.
  */
-export function passedTree(store, campaignId, taskId, sha, base) {
-  const done = records(store, campaignId, taskId, sha, base).find((row) => row.kind !== 'merge-refresh-started');
+function counting(rows, command) {
+  if (command === undefined) return rows;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].kind !== 'merge-refresh-passed') continue;
+    const started = rows.slice(0, i).findLast((row) => row.kind === 'merge-refresh-started');
+    if (!sameCommand(started?.detail.command, command)) return rows.slice(i + 1);
+  }
+  return rows;
+}
+
+/**
+ * The tree whose gate passed for one verified head against one base, or null. With `command` (the repository's current
+ * refresh command), only a pass under that command counts: ordering uses it (merge.mjs refreshedOnBase). Without it, any
+ * pass, read-only: the local merge gate uses it after a crash to recognize the refreshed merge commit it requested
+ * (merge.mjs mergeLocal), whose tree is the same merge result whichever command gated it.
+ */
+export function passedTree(store, campaignId, taskId, sha, base, command = undefined) {
+  const done = counting(records(store, campaignId, taskId, sha, base), command).find((row) => row.kind !== 'merge-refresh-started');
   return done?.kind === 'merge-refresh-passed' && typeof done.detail.tree === 'string' ? done.detail.tree : null;
 }
 
@@ -113,7 +133,9 @@ export async function refreshStep(controller, ctx, item, repoPath, baseSha, sett
   const { store } = controller, git = controller.cmd.git, { campaignId, decl, task } = item;
   const sha = task.verified_sha, key = { task: task.task_id, sha, base: baseSha }, now = controller.now();
   const journal = (kind, detail) => controller.fenced(ctx, () => store.journal(campaignId, kind, { ...key, ...detail }, now));
-  const seen = records(store, campaignId, task.task_id, sha, baseSha);
+  const all = records(store, campaignId, task.task_id, sha, baseSha);
+  // A pass under another command than the repository's current one no longer counts: a new refresh runs (counting).
+  const seen = counting(all, settings.command);
   const done = seen.find((row) => row.kind !== 'merge-refresh-started');
   if (done?.kind === 'merge-refresh-passed') return { tree: done.detail.tree, next: 'merge' };
   if (done) return { next: 'repair', detail: done.detail.reason };
@@ -128,7 +150,9 @@ export async function refreshStep(controller, ctx, item, repoPath, baseSha, sett
     let plan;
     try { plan = refreshPlan(git, repoPath, baseSha, sha); } catch (error) { return fail(`the merge could not be computed: ${error.message}`); }
     if (!plan.tree) return fail(plan.reason, plan.shared ? { paths: plan.shared } : {});
-    const path = join(controller.repo(decl).worktreeRoot, `${gitA.workspaceName(campaignId, task.task_id)}-refresh-${sha.slice(0, 12)}-${baseSha.slice(0, 12)}`);
+    // A refresh after one whose pass no longer counts gets a worktree of its own; the first keeps the usual name.
+    const attempt = all.filter((row) => row.kind === 'merge-refresh-started').length;
+    const path = join(controller.repo(decl).worktreeRoot, `${gitA.workspaceName(campaignId, task.task_id)}-refresh-${sha.slice(0, 12)}-${baseSha.slice(0, 12)}${attempt ? `-${attempt + 1}` : ''}`);
     try {
       const commit = gitA.exec(git, [...IDENTITY, 'commit-tree', plan.tree, '-p', baseSha, '-p', sha, '-m', `AIWorks refresh: ${sha} merged with ${baseSha} (local only)`], { cwd: repoPath });
       if (!commit.ok) throw new Error(`commit-tree failed: ${commit.stderr || `exit ${commit.status}`}`);
@@ -173,5 +197,9 @@ export async function refreshStep(controller, ctx, item, repoPath, baseSha, sett
   journal('merge-refresh-passed', { tree: started.detail.tree, summary: run.summary });
   results(true);
   controller.log(`refresh of ${campaignId}/${task.task_id}: the merge with ${baseSha} passed the gate`);
+  // A gate that ran a command the repository no longer has does not merge: the next pass gates again (counting).
+  if (!sameCommand(started.detail.command, settings.command)) {
+    return { next: 'wait', reason: `the refresh command changed while its gate ran; the merge result (${baseSha.slice(0, 12)}) is gated again` };
+  }
   return { tree: started.detail.tree, next: 'merge' };
 }

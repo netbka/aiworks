@@ -185,19 +185,22 @@ function candidates(controller, repositories) {
   return out.filter((item) => Number.isSafeInteger(item.number) && item.number > 0);
 }
 
-/** A durable passed refresh for this exact verified head and current base; ordering only, never merge authority. */
-export function refreshedOnBase(store, { campaignId, task }, baseSha) {
-  return SHA.test(baseSha ?? '') && SHA.test(task.verified_sha ?? '')
-    && SHA.test(passedTree(store, campaignId, task.task_id, task.verified_sha, baseSha) ?? '');
+/**
+ * A durable passed refresh for this exact verified head and current base, under the repository's current `refresh`
+ * command (repositorySettings); ordering only, never merge authority.
+ */
+export function refreshedOnBase(store, { campaignId, task }, baseSha, refresh) {
+  return Array.isArray(refresh?.command) && SHA.test(baseSha ?? '') && SHA.test(task.verified_sha ?? '')
+    && SHA.test(passedTree(store, campaignId, task.task_id, task.verified_sha, baseSha, refresh.command) ?? '');
 }
 
 /** Promote checked results within each branch's existing positions, keeping age/plan order among equal ranks. */
-function prioritizeRefreshed(store, items, bases) {
+function prioritizeRefreshed(store, items, bases, refresh) {
   const branches = new Map();
   for (const item of items) {
     const branch = item.decl.target.baseBranch;
     if (!branches.has(branch)) branches.set(branch, []);
-    branches.get(branch).push({ item, ready: refreshedOnBase(store, item, bases.get(branch)) });
+    branches.get(branch).push({ item, ready: refreshedOnBase(store, item, bases.get(branch), refresh) });
   }
   for (const entries of branches.values()) entries.sort((a, b) => Number(b.ready) - Number(a.ready));
   return items.map((item) => branches.get(item.decl.target.baseBranch).shift().item);
@@ -257,7 +260,7 @@ export async function mergePass(controller) {
       // Re-read after a group step: a stopped group may have advanced trusted main.
       const tip = trustedTip(controller.store, { git: controller.cmd.git, repoPath, repository: decl.target.repository });
       const ordered = scoped.refresh && tip.state === 'TRUSTED'
-        ? prioritizeRefreshed(controller.store, items, new Map([['main', tip.tip]])) : items;
+        ? prioritizeRefreshed(controller.store, items, new Map([['main', tip.tip]]), scoped.refresh) : items;
       const busy = new Set();
       for (const item of ordered) {
         if (busy.has(item.decl.target.baseBranch)) continue;
@@ -304,7 +307,7 @@ export async function mergePass(controller) {
       if (!bases.has(branch)) bases.set(branch, (await controller.fetchBase(repoPath, branch)).sha);
       checkShape(branch);
     }
-    const ordered = scoped.refresh ? prioritizeRefreshed(controller.store, items, bases) : items;
+    const ordered = scoped.refresh ? prioritizeRefreshed(controller.store, items, bases, scoped.refresh) : items;
     const busy = new Set();
     for (const item of ordered) {
       const branch = item.decl.target.baseBranch;
@@ -622,7 +625,7 @@ async function mergeOne(controller, item, settings, repoPath, baseSha) {
   const git = controller.cmd.git, sha = item.task.verified_sha;
   const { pr, acted } = inspect(controller, item, settings, repoPath, baseSha);
   if (!pr) return acted;
-  const priority = Boolean(settings.refresh) && refreshedOnBase(controller.store, item, baseSha);
+  const priority = Boolean(settings.refresh) && refreshedOnBase(controller.store, item, baseSha, settings.refresh);
   // Only an otherwise eligible checked result holds siblings when its actual lease acquisition loses a race.
   if (priority) {
     const blocker = mergeBlocker(controller, item, pr), owed = refusalWait(controller, item);
@@ -839,7 +842,7 @@ export async function mergeLocal(controller, item, settings, repoPath, step = nu
     return true;
   }
 
-  const priority = prioritize && !step && Boolean(settings.refresh) && refreshedOnBase(store, item, tip.tip);
+  const priority = prioritize && !step && Boolean(settings.refresh) && refreshedOnBase(store, item, tip.tip, settings.refresh);
   let checkout;
   if (priority) {
     if (!still() || !accepted()) return false;

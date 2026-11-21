@@ -40,8 +40,12 @@ test('a repository with its own refresh entry gates the merge result with that c
   const global = [`"${process.execPath}"`, '-e', '"process.exit(1)"'];
   r.start({ merges: { ...ON({ command: global }).merges, refreshByRepository: { 'Example-Org/SampleApp': { command: GATE } } } });
   await r.controller.tick();
+  // A pass of this head on this base under the earlier global command no longer counts: the merge result is gated again.
+  const stale = { task: 'B1', sha: heads[B], base: r.main(), tree: '0'.repeat(40) };
+  r.store.journal(B, 'merge-refresh-started', { ...stale, commit: '0'.repeat(40), path: join(r.env.tmp, 'stale-refresh'), command: global }, r.controller.now());
+  r.store.journal(B, 'merge-refresh-passed', stale, r.controller.now());
   await r.pass();
-  const [started] = r.journal(B, 'merge-refresh-started');
+  const started = r.journal(B, 'merge-refresh-started').at(-1);
   assert.deepEqual(started.command, GATE);
   await r.gateEnds(started.path);
   await r.pass();
