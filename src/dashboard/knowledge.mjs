@@ -81,12 +81,28 @@ function projectCampaigns(store, resolved) {
   return { ids: rows.map((row) => row.id), name: rows.length ? projectOf(rows[0].declaration) : resolved.id };
 }
 
+/**
+ * The plan version the owner approved for a goal: the newest draft of its request saved by the time the goal was
+ * registered (an approved plan is never edited again). Null for a goal registered without a drafted plan.
+ */
+function approvedPlanVersion(store, campaignId, registeredAt) {
+  try {
+    const row = store.get("SELECT MAX(version) AS version FROM work_drafts WHERE json_extract(declaration, '$.campaignId') = ? AND created_at <= ?", campaignId, registeredAt);
+    return Number.isSafeInteger(row?.version) ? row.version : null;
+  } catch { return null; }
+}
+
 function view(store, resolved, suggestions) {
   const knowledge = projectKnowledge(store, resolved.key, suggestions.list), goals = projectCampaigns(store, resolved);
   // What approved goals already record and what happened in the project, each with its origin (projectEvidence,
-  // typedEvents): read from the store only, never from a file, and never a confirmed fact by itself.
+  // typedEvents): read from the store only, never from a file, and never a confirmed fact by itself. A requirement names
+  // the plan version the owner approved, not the goal's authorization version, which starts at 1 whatever version that was.
+  const evidence = projectEvidence(store, goals.ids), history = typedEvents(store, { project: goals.name, limit: 20 });
+  evidence.requirements = evidence.requirements.map((item) => ({ ...item, planVersion: approvedPlanVersion(store, item.campaignId, item.approvedAt) }));
+  // Each event is this page's project, by the id its addresses use (a project without GitHub records its rules' id).
+  history.events = history.events.map((event) => ({ ...event, project: resolved.id }));
   return { available: true, project: resolved.id, readAt: Date.now(), materials: { readme: suggestions.commit ? suggestions.commit.slice(0, 12) : null }, ...knowledge,
-    evidence: projectEvidence(store, goals.ids), history: typedEvents(store, { project: goals.name, limit: 20 }) };
+    evidence, history };
 }
 
 /** GET /api/v2/projects/:id/knowledge. Read-only; a missing store is unavailable, never an empty list. */
