@@ -20,7 +20,7 @@ import * as gitA from './adapters/git.mjs';
 import { gateFailure, readGateRun } from './gate.mjs';
 import { IDENTITY, alive, checkout, gatePid, startGate } from './merge-refresh.mjs';
 import { recordGateResults } from './test-cache.mjs';
-import { inspect, localBlocker, mergeBlocker, mergeLocal, mergeNow, privateMessages, refreshedOnBase, refusalWait, wait } from './merge.mjs';
+import { inspect, localBlocker, mergeBlocker, mergeLocal, mergeNow, privateMessages, readPull, refreshedOnBase, refusalWait, wait } from './merge.mjs';
 import { trustedTip } from './self-hosting.mjs';
 
 const KINDS = ['merge-batch-started', 'merge-batch-passed', 'merge-batch-failed', 'merge-batch-stopped', 'merge-batch-done'];
@@ -106,6 +106,7 @@ async function startGroup(controller, all, items, settings, repoPath, baseSha, n
         && privateMessages({ git, repoPath, trusted: baseSha, sha: item.task.verified_sha }) === 0) ready.push(item);
       continue;
     }
+    await readPull(controller, item, settings, repoPath, baseSha);
     const { pr, acted } = inspect(controller, item, settings, repoPath, baseSha);
     if (acted) return true;
     if (!pr) continue;
