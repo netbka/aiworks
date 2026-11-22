@@ -52,7 +52,7 @@ export function telegramTransport({ secretRef, recipientRef }, { resolve, reques
     name: 'telegram', live: true, dedup: 'none',
     async send({ alert }) {
       let token, chat;
-      try { token = resolve(secretRef); chat = resolve(recipientRef); } catch { return outcome('retry', 'the secret store could not be read; nothing was sent'); }
+      try { token = await resolve(secretRef); chat = await resolve(recipientRef); } catch { return outcome('retry', 'the secret store could not be read; nothing was sent'); }
       if (typeof token !== 'string' || !token || typeof chat !== 'string' || !chat) {
         return outcome('retry', 'a secret store reference does not resolve; nothing was sent');
       }
