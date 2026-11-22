@@ -95,7 +95,15 @@ export function checkPublicHistory(root, revisions, tip = revisions.at(-1).split
   const terms = publicTerms(root);
   const listed = spawnSync('git', ['cat-file', 'blob', `${tip}:${BINARY_LIST}`], { cwd: root, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
   const binaries = allowedBinaries(listed.status === 0 ? listed.stdout.toString() : '');
-  const commits = git(root, ['rev-list', ...revisions]).toString().trim().split('\n').filter(Boolean);
+  // On standard input, so a destination serving many tips never runs past a command-line limit; `--not` becomes a `^`.
+  let negated = false;
+  const lines = [];
+  for (const revision of revisions) {
+    if (revision === '--not') { negated = !negated; continue; }
+    if (revision.startsWith('-') || (negated && (revision.includes('..') || revision.startsWith('^')))) throw new Error('Cannot inspect the public commit scope.');
+    lines.push(negated ? `^${revision}` : revision);
+  }
+  const commits = git(root, ['rev-list', '--stdin'], `${lines.join('\n')}\n`).toString().trim().split('\n').filter(Boolean);
   const memo = { blobs: new Map(), paths: new Map() };
   for (const commit of commits) {
     const message = git(root, ['show', '-s', '--format=%B', commit]).toString();
@@ -124,6 +132,10 @@ export function checkPublicHistory(root, revisions, tip = revisions.at(-1).split
  */
 export function publishedTips(root, remote) {
   if (!remote || remote.startsWith('-')) return null;
+  // ls-remote applies url.<base>.insteadOf, so with a fetch mirror and pushInsteadOf it would list the mirror, not the
+  // destination; a listing from anywhere but the push URL itself is not trusted.
+  const expanded = spawnSync('git', ['ls-remote', '--get-url', '--', remote], { cwd: root, encoding: 'utf8', windowsHide: true });
+  if (expanded.error || expanded.status !== 0 || expanded.stdout.trim() !== remote) return null;
   // A hidden credential prompt would only stall; no prompt, and a failure falls back to the whole history.
   const listed = spawnSync('git', ['ls-remote', '--heads', '--tags', '--', remote], {
     cwd: root, encoding: 'utf8', windowsHide: true, timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'],

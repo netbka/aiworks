@@ -246,5 +246,19 @@ test('a push skips only the history its real push URL already serves, never what
   ok(root, 'push', '-q', '--no-verify', published, 'HEAD:refs/heads/main');
   ok(root, 'commit', '--allow-empty', '-qm', 'Clean follow-up');
   ok(root, 'push', '-q', 'origin', 'HEAD:refs/heads/feature');
-  assert.equal(ok(published, 'rev-parse', 'refs/heads/feature'), ok(root, 'rev-parse', 'HEAD'));
+  const served = ok(root, 'rev-parse', 'HEAD');
+  assert.equal(ok(published, 'rev-parse', 'refs/heads/feature'), served);
+  // A fetch mirror (url.<mirror>.insteadOf) with pushInsteadOf back to the destination: ls-remote of the push URL would
+  // list the mirror, so history only the mirror holds must not count as served.
+  writeFileSync(join(root, 'README.md'), ['ghp', 'G'.repeat(36)].join('_'));
+  ok(root, 'add', '.'); ok(root, 'commit', '-qm', 'Mirror-only private content');
+  writeFileSync(join(root, 'README.md'), 'Public source once more');
+  ok(root, 'add', '.'); ok(root, 'commit', '-qm', 'Hide it on the mirror');
+  ok(root, 'push', '-q', '--no-verify', fetched, 'HEAD:refs/heads/internal');
+  const destination = slashes(published);
+  ok(root, 'remote', 'add', 'mirrored', destination);
+  ok(root, 'config', `url.${slashes(fetched)}.insteadOf`, destination);
+  ok(root, 'config', `url.${destination}.pushInsteadOf`, destination);
+  assert.notEqual(git(root, 'push', '-q', 'mirrored', 'HEAD:refs/heads/feature').status, 0);
+  assert.equal(ok(published, 'rev-parse', 'refs/heads/feature'), served);
 });
