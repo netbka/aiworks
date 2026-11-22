@@ -51,14 +51,14 @@ function rig(t) {
   };
 }
 
-test('AW-016: an unchecked head costs at most one GitHub read per poll interval, none before a rate limit resets, none once settled', (t) => {
+test('AW-016: an unchecked head costs at most one GitHub read per poll interval, none before a rate limit resets, none once settled', async (t) => {
   const r = rig(t), poll = r.env.config.pollMs;
   const recheck = () => r.controller.recheckUnchecked(r.ctx());
 
   // A failed read waits a poll interval before the next one.
   r.prs([{ url: 'https://github.com/example-org/sampleapp/pull/9', head: r.branch, base: 'main', headSha: r.head }]);
   r.failReads();
-  recheck(); recheck(); recheck();
+  await recheck(); await recheck(); await recheck();
   assert.equal(r.reads(), 1, 'one read per poll interval');
   assert.equal(r.task().state, 'done');
 
@@ -66,33 +66,33 @@ test('AW-016: an unchecked head costs at most one GitHub read per poll interval,
   const reset = Math.ceil(r.at() / 1000) + 600;
   r.env.rateLimit({ route: 'GET pulls', times: 1, reset });
   r.advance(poll);
-  recheck();
+  await recheck();
   assert.equal(r.reads(), 2);
-  for (let i = 0; i < 5; i++) { r.advance(poll); recheck(); }
+  for (let i = 0; i < 5; i++) { r.advance(poll); await recheck(); }
   assert.equal(r.reads(), 2, 'no read before the rate limit resets');
   r.advance(reset * 1000 - r.at() + r.controller.config.rateLimitMarginMs);
-  recheck();
+  await recheck();
   assert.equal(r.reads(), 3);
   const reopened = r.task();
   assert.deepEqual([reopened.state, reopened.head_sha, reopened.verified_sha], ['implemented', r.head, null], 'the next run is a check of the same head, nothing is rebuilt');
 
   // The check is lost again at the same head: no second check, and no further read.
   r.store.patch('tasks', { campaign_id: r.d.campaignId, task_id: 'T1' }, reopened.version, { state: 'done' }, r.at());
-  for (let i = 0; i < 3; i++) { r.advance(poll); recheck(); }
+  for (let i = 0; i < 3; i++) { r.advance(poll); await recheck(); }
   assert.equal(r.task().state, 'done', 'one check per head, never a loop of paid runs');
   assert.equal(r.reads(), 3, 'a head already sent back to the checker is never read again');
   assert.equal(r.store.get("SELECT COUNT(*) AS n FROM events WHERE kind = 'unchecked-recheck'").n, 1);
 });
 
-test('AW-016: a head closed by someone else is left for the owner once, and never read again', (t) => {
+test('AW-016: a head closed by someone else is left for the owner once, and never read again', async (t) => {
   const r = rig(t), poll = r.env.config.pollMs;
   const recheck = () => r.controller.recheckUnchecked(r.ctx());
   r.prs([]);
-  recheck();
+  await recheck();
   assert.equal(r.task().state, 'done', 'a closed pull request is never checked and published again');
   assert.equal(r.store.get("SELECT COUNT(*) AS n FROM events WHERE kind = 'unchecked-recheck-skipped'").n, 1);
   r.prs([{ url: 'https://github.com/example-org/sampleapp/pull/9', head: r.branch, base: 'main', headSha: r.head }]);
-  for (let i = 0; i < 3; i++) { r.advance(poll); recheck(); }
+  for (let i = 0; i < 3; i++) { r.advance(poll); await recheck(); }
   assert.equal(r.task().state, 'done', 'a head left for the owner stays left');
   assert.equal(r.reads(), 1);
 });

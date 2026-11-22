@@ -145,6 +145,8 @@ export const DEFAULTS = {
   baseReadMs: 30_000,
   // Beside it, the start and drain of the Windows job a base fetch runs in (execContained).
   baseReadOverheadMs: 120_000,
+  // aiworks#119: each GitHub read of the tick (github.*Async) ends by this; one that does not ends the tick's other reads.
+  githubReadMs: 30_000,
 };
 // The fixed failures of a base read (fetchBase): the stage that failed, never the command's own output. `unread`: a
 // dispatch needed a base that was not read before its fence (dispatchBase). `uncontained`: a fetch in that checkout
@@ -603,6 +605,12 @@ export class Controller {
     this.baseReads = new Map();
     // The folders of base fetches running in this process (execContained), which a receipt check leaves alone.
     this.baseReadRuns = new Set();
+    // aiworks#119: the tick's GitHub reads share one gate ({ silent }, github.restAsync), new each tick; null outside one.
+    this.githubGate = null;
+    // The step of the tick running now ('campaign <id> > <phase>'), for the slow-step and blocked-loop log lines.
+    this.stepName = null;
+    // When the lease timer last ran (performance.now()), to see the event loop blocked between two of its runs.
+    this.timerAt = null;
   }
 
   /** Crash rehearsal hook: terminate abruptly at a named point (AIWORKS_FAULT). */
@@ -615,7 +623,50 @@ export class Controller {
   /** One pass of the controller loop; while it runs, `tickStartedAt` says since when (the lease timer reads it). */
   async tick() {
     this.tickStartedAt = this.now();
-    try { return await this.tickOnce(); } finally { this.tickStartedAt = null; }
+    try { return await this.githubPass(() => this.tickOnce()); } finally { this.tickStartedAt = null; }
+  }
+
+  /**
+   * Runs `run` as one pass of GitHub reads behind one gate (githubReads, aiworks#119): once a read of the pass ran out of
+   * time, its other reads are skipped until the next pass. The tick is one pass.
+   */
+  async githubPass(run) {
+    this.githubGate = { silent: false };
+    try { return await run(); } finally {
+      if (this.githubGate.silent) this.log(`GitHub did not answer a read within ${Math.round(this.config.githubReadMs / 1000)} s: the other GitHub reads of this tick were skipped until the next tick`);
+      this.githubGate = null;
+    }
+  }
+
+  /**
+   * Runs one named step of the tick (aiworks#119) and logs it when it took longer than a lease: a step that long either
+   * blocked the event loop, so no lease was renewed (the lease timer then logs that too), or kept its tick from ending.
+   * Nested steps are named 'outer > inner'. Returns the step's own result; its error passes through.
+   */
+  async timed(name, run) {
+    const outer = this.stepName, started = performance.now();
+    this.stepName = outer ? `${outer} > ${name}` : name;
+    try { return await run(); } finally {
+      const took = performance.now() - started;
+      if (took > this.config.leaseMs) this.log(`slow step: ${this.stepName} took ${Math.round(took / 1000)} s, longer than the ${Math.round(this.config.leaseMs / 1000)} s lease`);
+      this.stepName = outer;
+    }
+  }
+
+  /** The options of every GitHub read of the tick (github.*Async): bounded, asynchronous, behind the tick's gate. */
+  githubReads() {
+    return { gh: this.cmd.gh, timeoutMs: this.config.githubReadMs, gate: this.githubGate };
+  }
+
+  /** Whether a GitHub read of this tick ran out of time: the tick's further reads then wait for the next tick. */
+  githubSilent() {
+    return this.githubGate?.silent === true;
+  }
+
+  /** Whether this instance still holds `ctx`'s lease generation now: a loop of reads before a fence stops once it does not. */
+  leaseHeld(ctx) {
+    const lease = this.store.lease(ctx.id);
+    return lease?.instance_id === this.instanceId && lease.generation === ctx.generation && lease.expires_at > this.now();
   }
 
   async tickOnce() {
@@ -659,7 +710,7 @@ export class Controller {
         // One long step must not let the other campaigns' leases lapse: every held lease is extended before each step.
         this.renewHeld();
         try {
-          await this.step(id);
+          await this.timed(`campaign ${id}`, () => this.step(id));
         } catch (error) {
           if (error instanceof FencedError) {
             this.held.delete(id);
@@ -676,29 +727,29 @@ export class Controller {
     if (this.sweeper && this.now() - this.sweptAt >= SWEEP_MS) { this.sweptAt = this.now(); this.sweeper.sweep(); }
     if (this.cpuMonitor && this.now() - this.cpuCheckedAt >= this.cpuMonitor.settings.intervalMs) {
       this.cpuCheckedAt = this.now();
-      try { this.checkWorkerCpu(); } catch (error) { this.log(`worker CPU check failed: ${error.message}`); }
+      try { await this.timed('worker CPU check', () => this.checkWorkerCpu()); } catch (error) { this.log(`worker CPU check failed: ${error.message}`); }
     }
     // Merge gate (aiworks#138): verified PRs in repositories the owner opted in, one per repository per pass.
-    try { await mergePass(this); }
+    try { await this.timed('merge pass', () => mergePass(this)); }
     catch (error) { this.log(`merge pass failed: ${error.stack || error}`); }
     // AW-018: a checked result of a project without GitHub is applied to its folder by AIWorks, with a backup, once.
     try {
-      autoApplyPass(this.store, { dataDir: this.dataDir, runtimeRoot: this.runtimeRoot ?? resolve(here, '..', '..'), git: this.cmd.git,
-        now: this.now(), log: (line) => this.log(line), refused: (this.applyRefused ??= new Set()) });
+      await this.timed('apply pass', () => autoApplyPass(this.store, { dataDir: this.dataDir, runtimeRoot: this.runtimeRoot ?? resolve(here, '..', '..'), git: this.cmd.git,
+        now: this.now(), log: (line) => this.log(line), refused: (this.applyRefused ??= new Set()) }));
     } catch (error) { this.log(`apply pass failed: ${error.stack || error}`); }
-    try { await releasePass(this); }
+    try { await this.timed('release pass', () => releasePass(this)); }
     catch (error) { this.log(`release pass failed: ${error.stack || error}`); }
     // Program waves (PROJECT_WORKSPACE_PLAN 6.8d, PROG3): off unless config.json `program.enabled`; registers at most the
     // next wave of each approved program, at most once an hour. The new campaign is stepped from the next tick.
-    try { await programPass(this); }
+    try { await this.timed('program pass', () => programPass(this)); }
     catch (error) { this.log(`program pass failed: ${error.stack || error}`); }
     // Cleanup after finished work (PROJECT_WORKSPACE_PLAN 6.8c, CLN1): off unless config.json `cleanup.enabled` is true;
     // removes only finished, owned, clean worktrees and the local task branches the trusted main contains.
-    try { await cleanupPass(this); }
+    try { await this.timed('cleanup pass', () => cleanupPass(this)); }
     catch (error) { this.log(`cleanup pass failed: ${error.stack || error}`); }
     // Closing finished work: off unless config.json `closeFinished.enabled` is true; closes the source issue or work item of
     // a finished campaign declared `closeWhenDone`, and AIWorks's own pull requests that will never merge.
-    try { await closeFinishedPass(this); }
+    try { await this.timed('close-finished pass', () => closeFinishedPass(this)); }
     catch (error) { this.log(`close-finished pass failed: ${error.stack || error}`); }
     // AW-022: a token-free sign-in check of each configured CLI, at most every 30 minutes. It runs beside the tick, never
     // holding it: a slow status command must not delay lease renewal.
@@ -706,7 +757,7 @@ export class Controller {
       .finally(() => { this.loginCheckRunning = null; });
     // Admission: at most one launch per tick across every campaign this instance holds (ADAPTIVE_SCHEDULER 4.1).
     if (this.sched) {
-      try { await this.admit(); }
+      try { await this.timed('admission', () => this.admit()); }
       catch (error) {
         if (error instanceof FencedError || error instanceof ConflictError) this.log(`admission retried next tick: ${error.message}`);
         else this.log(`admission failed: ${error.stack || error}`);
@@ -714,13 +765,13 @@ export class Controller {
     }
     // The owner's coordinator inbox is its own single-slot lane with its own lease; it never takes a campaign slot.
     try {
-      await coordinatorTick(this);
+      await this.timed('coordinator', () => coordinatorTick(this));
     } catch (error) {
       if (error instanceof FencedError) { this.held.delete(COORDINATOR_LANE); this.log(`fenced: ${error.message}`); }
       else if (!(error instanceof ConflictError)) this.log(`coordinator step failed: ${error.stack || error}`);
     }
-    await this.drainOutbox();
-    await this.drainOwnerNotifications();
+    await this.timed('outbox', () => this.drainOutbox());
+    await this.timed('owner notifications', () => this.drainOwnerNotifications());
   }
 
   /** Graceful shutdown: expire held leases so a restarted instance takes over at once. */
@@ -772,8 +823,15 @@ export class Controller {
   /**
    * The serve timer's renewal. It renews only while the current tick is younger than max(10 leases, 15 min): a tick that
    * hangs on an await then lets its leases lapse, so the dashboard and a rebuild see a stopped supervisor, not a running one.
+   * A run more than a lease after the one before shows the event loop was blocked meanwhile (aiworks#119): no lease could
+   * be renewed, so it is logged with the step that was running.
    */
   renewOnTimer() {
+    const at = performance.now(), gap = this.timerAt === null ? 0 : at - this.timerAt;
+    this.timerAt = at;
+    if (gap > this.config.leaseMs) {
+      this.log(`event loop blocked: no lease renewal for ${Math.round(gap / 1000)} s, longer than the ${Math.round(this.config.leaseMs / 1000)} s lease, during ${this.stepName ?? 'no tick step'}`);
+    }
     const bound = this.renewalBound();
     if (this.tickStartedAt != null && this.now() - this.tickStartedAt > bound) {
       if (!this.renewalHeldBack) this.log(`tick running for more than ${Math.round(bound / 60_000)} min: leases are no longer renewed until it ends`);
@@ -871,25 +929,25 @@ export class Controller {
     const ctx = { id, generation: lease.generation };
     // An open integration repair round whose PR was merged by someone else ends (aiworks#207). Checked before a finished
     // campaign's rounds reopen below, so a round opened by this pass is dispatched without a GitHub read.
-    if (this.store.campaign(id).control === 'registered' && !this.unmergedRevision()) await this.endMergedRepairs(ctx);
+    if (this.store.campaign(id).control === 'registered' && !this.unmergedRevision()) await this.timed('merged repairs', () => this.endMergedRepairs(ctx));
     // A step ended as not done whose head was merged outside AIWorks settles its open follow-up.
-    if (['registered', 'finished'].includes(this.store.campaign(id).control) && !this.unmergedRevision()) await this.settleMergedNotDoneSteps(ctx);
+    if (['registered', 'finished'].includes(this.store.campaign(id).control) && !this.unmergedRevision()) await this.timed('merged not-done steps', () => this.settleMergedNotDoneSteps(ctx));
     // A conflicting published PR reopens its task and with it the finished campaign (aiworks#27).
-    if (this.ir && this.store.campaign(id).control === 'finished') await this.checkPublishedIntegration(ctx);
+    if (this.ir && this.store.campaign(id).control === 'finished') await this.timed('published integration', () => this.checkPublishedIntegration(ctx));
     // A published head whose CI fails reopens its task the same way (aiworks#42).
-    if (this.ci && this.store.campaign(id).control === 'finished') this.checkPublishedCi(ctx);
+    if (this.ci && this.store.campaign(id).control === 'finished') await this.timed('published CI', () => this.checkPublishedCi(ctx));
     // The owner's request for changes reopens its finished step the same way (OWNER_UI_V2 WP4).
     this.requestedChanges(ctx);
     // AW-016: a published result without an independent check on record is checked again by AIWorks, once per version.
-    this.recheckUnchecked(ctx);
+    await this.timed('unchecked results', () => this.recheckUnchecked(ctx));
     if (['finished', 'cancelled'].includes(this.store.campaign(id).control)) return;
 
     this.processEvents(ctx);
     // AW-016: a reversible decision with a suggestion is answered by AIWorks with that suggestion, as the owner allows.
     this.answerSuggested(ctx);
-    if (this.oi) this.ownerInterventionTick(ctx);
-    if (this.oi) this.providerStallTick(ctx);
-    for (const op of this.store.openOperations(id)) await this.reconcile(ctx, op);
+    if (this.oi) await this.timed('owner intervention', () => this.ownerInterventionTick(ctx));
+    if (this.oi) await this.timed('provider stall', () => this.providerStallTick(ctx));
+    for (const op of this.store.openOperations(id)) await this.timed(`operation ${op.id}`, () => this.reconcile(ctx, op));
     const campaign = this.store.campaign(id);
     if (campaign.control === 'cancel-requested') {
       if (!this.store.openOperations(id).length) {
@@ -906,12 +964,12 @@ export class Controller {
       if (unmerged) this.holdForUnmergedCode(ctx, unmerged);
       else {
         this.releaseUnmergedHold(ctx);
-        this.recoverExecutorAvailability(ctx);
-        if (this.ir) await this.checkPublishedIntegration(ctx);
-        if (this.ci) this.checkPublishedCi(ctx);
-        await this.reconcileIntegration(ctx);
+        await this.timed('executor availability', () => this.recoverExecutorAvailability(ctx));
+        if (this.ir) await this.timed('published integration', () => this.checkPublishedIntegration(ctx));
+        if (this.ci) await this.timed('published CI', () => this.checkPublishedCi(ctx));
+        await this.timed('dependency integration', () => this.reconcileIntegration(ctx));
         if (this.ap) this.ensureClosingCheck(ctx);
-        await this.schedule(ctx);
+        await this.timed('schedule', () => this.schedule(ctx));
       }
     }
     this.refreshStatus(ctx);
@@ -1315,14 +1373,15 @@ export class Controller {
    * or is not to be read yet: the caller waits and decides on a later pass. GitHub is read at most once per pollMs per
    * head; a rate-limit refusal waits for its reset, as checkPublishedCi does.
    */
-  uncheckedGone(ctx, decl, task) {
+  async uncheckedGone(ctx, decl, task) {
     if (this.inBase(decl, task.head_sha)) return 'already in the base branch';
     if (isLocalTarget(decl) || this.selfHosted(decl.target.repository)) return null;
     const key = `${ctx.id}:${task.task_id}:${task.head_sha}`, now = this.now();
-    if ((this.recheckReadAt.get(key) ?? -Infinity) > now) return undefined;
+    // A GitHub that did not answer this tick is not asked again before the next one; this head is then due at once.
+    if ((this.recheckReadAt.get(key) ?? -Infinity) > now || this.githubSilent()) return undefined;
     this.recheckReadAt.set(key, now + this.config.pollMs);
     let pr;
-    try { pr = github.findOpenPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, branch: gitA.branchName(ctx.id, task.task_id) }); } catch (error) {
+    try { pr = await github.findOpenPullRequestAsync({ ...this.githubReads(), repository: decl.target.repository, branch: gitA.branchName(ctx.id, task.task_id) }); } catch (error) {
       if (error instanceof github.RateLimitError && Number.isFinite(error.resetAt)) {
         this.recheckReadAt.set(key, Math.min(Math.max(error.resetAt, now), now + RATE_LIMIT_MAX_WAIT_MS) + this.config.rateLimitMarginMs);
       }
@@ -1338,10 +1397,12 @@ export class Controller {
    * so the next run is a verification; a pass publishes the same head again (publishing looks for its pull request
    * first), a rejection is an ordinary repair round. Paused, cancelled, merged or non-commit steps are left alone.
    */
-  recheckUnchecked(ctx) {
+  async recheckUnchecked(ctx) {
     if (!this.takesRepair(ctx.id)) return;
     const c = this.store.campaign(ctx.id), decl = c.declaration;
     for (const task of this.store.tasks(ctx.id)) {
+      // Its reads await GitHub: once the lease is gone, nothing more is read for it (the fence would refuse the write).
+      if (!this.leaseHeld(ctx)) return;
       // Only a step with no check on record at all: a recorded check that is merely unreadable is a record problem for
       // AIWorks's maintainers, never a reason for another paid run.
       if (task.state !== 'done' || task.blocked || !task.pr_url || !/^[0-9a-f]{40}$/.test(task.head_sha ?? '') || task.verified_sha || task.verification) continue;
@@ -1351,7 +1412,7 @@ export class Controller {
       if (this.store.get('SELECT 1 AS seen FROM events WHERE dedup_key IN (?, ?)', skipKey, `unchecked-recheck:${ctx.id}:${task.task_id}:${task.head_sha}`)) continue;
       // Like an owner's request for changes and CI repair: a head merged, closed or pushed by someone else since it was
       // published is no longer AIWorks's to check. It is recorded once and left for the owner; a read that fails waits.
-      const reason = this.uncheckedGone(ctx, decl, task);
+      const reason = await this.uncheckedGone(ctx, decl, task);
       if (reason === undefined) continue;
       if (reason) {
         this.fenced(ctx, () => {
@@ -2271,7 +2332,8 @@ export class Controller {
     }, this.now(), { identity: op.id, subject: op.id }));
   }
 
-  missingIntegratedDependencies(decl, spec, tasks, revision, path) {
+  /** `mergedAt(url, headSha)` is the merge receipt (integratedAt); a caller in the tick passes receipts read before its fence. */
+  missingIntegratedDependencies(decl, spec, tasks, revision, path, mergedAt = (url, headSha) => this.integratedAt(decl, url, headSha)) {
     const specs = specsOf(this.store, decl.campaignId, decl);
     const inRevision = (sha) => /^[0-9a-f]{40}$/.test(revision ?? '') &&
       gitA.exec(this.cmd.git, ['merge-base', '--is-ancestor', sha, revision], { cwd: path }).ok;
@@ -2281,7 +2343,7 @@ export class Controller {
       if (specs.get(id).deliverable === 'report') return false;
       if (!dep.verified_sha) return true;
       if (inRevision(dep.verified_sha)) return false;
-      const mergedSha = this.integratedAt(decl, dep.pr_url, dep.verified_sha);
+      const mergedSha = mergedAt(dep.pr_url, dep.verified_sha);
       return !mergedSha || !inRevision(mergedSha);
     });
   }
@@ -2292,6 +2354,26 @@ export class Controller {
     const mergedSha = github.integratedPullRequest({ gh: this.cmd.gh, repository: decl.target.repository,
       url, headSha, baseBranch: decl.target.baseBranch });
     return mergedSha;
+  }
+
+  /**
+   * The merge receipts (integratedAt) a fenced decision will ask for, read before its fence without blocking the event
+   * loop (aiworks#119). `ask(mergedAt)` makes the decision's own reads with a `mergedAt(url, headSha)` that only notes what
+   * it is asked and answers null; each receipt noted is then read once, until the lease of `ctx` is gone. The answer is a
+   * `mergedAt` for the fence: a receipt that failed, was skipped or was not read is null there, as a read failing inside
+   * the fence was, so the decision waits. A merge GitHub reports never changes, so a receipt read before the fence can only
+   * be missing one made meanwhile, and that waits a pass. A self-hosted repository's receipts come from its own ledger,
+   * read in the fence as before.
+   */
+  async readReceipts(ctx, decl, ask) {
+    if (this.selfHosted(decl.target.repository)) return (url, headSha) => this.ledgerMerge(decl.target.repository, headSha);
+    const wanted = new Map(), receipts = new Map(), key = (url, headSha) => `${url}\u0000${headSha}`;
+    ask((url, headSha) => { wanted.set(key(url, headSha), [url, headSha]); return null; });
+    for (const [at, [url, headSha]] of wanted) {
+      if (!this.leaseHeld(ctx)) break;
+      receipts.set(at, await github.integratedPullRequestAsync({ ...this.githubReads(), repository: decl.target.repository, url, headSha, baseBranch: decl.target.baseBranch }));
+    }
+    return (url, headSha) => receipts.get(key(url, headSha)) ?? null;
   }
 
   /**
@@ -2409,12 +2491,16 @@ export class Controller {
     // so a task that changed while the read ran is left to the next pass (ConflictError), never judged on the old read.
     const repo = this.repo(c.declaration), base = c.declaration.target.baseBranch;
     const fetched = await this.fetchBase(repo.path, base, c.declaration.target.repository);
+    // The merge receipts the fence decides by are read before it, asynchronously (aiworks#119), for the same dependencies.
+    const mergedAt = !fetched.ok ? null : await this.readReceipts(ctx, c.declaration, (ask) => {
+      for (const task of due) this.missingIntegratedDependencies(c.declaration, specs.get(task.task_id), tasks, fetched.sha, repo.path, ask);
+    });
     this.fenced(ctx, () => {
       if (!this.authorityHolds(ctx.id, c, specs)) return;
       const fetchedSha = fetched.sha;
       for (const task of due) {
         const missing = !fetched.ok ? specs.get(task.task_id).dependsOn
-          : this.missingIntegratedDependencies(c.declaration, specs.get(task.task_id), tasks, fetchedSha, repo.path);
+          : this.missingIntegratedDependencies(c.declaration, specs.get(task.task_id), tasks, fetchedSha, repo.path, mergedAt);
         const reason = missing.length ? `dependency-integration: waiting for ${missing.join(', ')} in ${base}${fetched.ok ? '' : ' (remote refresh unavailable)'}` : null;
         if (!reason && !String(task.last_error ?? '').startsWith('dependency-integration:')) continue;
         this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
@@ -2577,10 +2663,31 @@ export class Controller {
     if (resolveCheckout(this.store, this.config, decl.target.repository)?.conflict) return;
     // Read before the fence (aiworks#140); endMergedRepair ends nothing on a failed read and writes at the task's version.
     const repo = this.repo(decl), baseSha = (await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository)).sha;
+    // Its merge receipts too, asynchronously (aiworks#119): the heads mergedRepairHead asks about, before the fence.
+    const mergedAt = await this.readReceipts(ctx, decl, (ask) => {
+      for (const task of open) this.mergedRepairHead(this.store.task(ctx.id, task.task_id), repo.path, baseSha, ask);
+    });
     this.fenced(ctx, () => {
       if (!this.authorityHolds(ctx.id, c)) { this.repairCheckedAt.delete(ctx.id); return; }
-      for (const task of open) this.endMergedRepair(ctx, decl, task, repo.path, baseSha);
+      for (const task of open) this.endMergedRepair(ctx, decl, task, repo.path, baseSha, { mergedAt });
     });
+  }
+
+  /**
+   * The head of an integration repair round merged into `baseSha`, as { sha, mergeCommit }, or null (endMergedRepair).
+   * Reads only: `mergedAt(url, headSha)` gives the PR's merge receipt, and null reads none.
+   */
+  mergedRepairHead(fresh, repoPath, baseSha, mergedAt) {
+    const finding = this.integrationFinding(fresh), repaired = fresh.verified_sha;
+    const valid = (commit) => /^[0-9a-f]{40}$/.test(commit ?? '');
+    if (!finding || fresh.state === 'done' || !fresh.pr_url || !valid(repaired) || !valid(baseSha)) return null;
+    const inBase = (commit) => valid(commit) &&
+      gitA.isAncestor({ git: this.cmd.git, path: repoPath, ancestor: commit, descendant: baseSha });
+    for (const head of new Set([repaired, ...(valid(finding.verified) ? [finding.verified] : [])])) {
+      const merged = mergedAt ? mergedAt(fresh.pr_url, head) : null;
+      if (inBase(head) || inBase(merged)) return { sha: head, mergeCommit: merged };
+    }
+    return null;
   }
 
   /**
@@ -2594,19 +2701,15 @@ export class Controller {
    * been merged at the head the round started from (the finding's `verified`, the head the PR carried) while the repair
    * was being verified. That head is checked too: the task is then done at the merged head, and the verified repair,
    * never published, goes to a follow-up item instead of ending the merged step as not done.
+   *
+   * The receipts come from `mergedAt` (readReceipts, read before the fence) when given, else are read here.
    */
-  endMergedRepair(ctx, decl, task, repoPath, baseSha, { read = true } = {}) {
-    const fresh = this.store.task(ctx.id, task.task_id), finding = this.integrationFinding(fresh), repaired = fresh.verified_sha;
-    const valid = (commit) => /^[0-9a-f]{40}$/.test(commit ?? '');
-    if (!finding || fresh.state === 'done' || !fresh.pr_url || !valid(repaired) || !valid(baseSha)) return false;
-    const inBase = (commit) => valid(commit) &&
-      gitA.isAncestor({ git: this.cmd.git, path: repoPath, ancestor: commit, descendant: baseSha });
-    let sha = null, mergeCommit = null;
-    for (const head of new Set([repaired, ...(valid(finding.verified) ? [finding.verified] : [])])) {
-      const merged = read ? this.integratedAt(decl, fresh.pr_url, head) : null;
-      if (inBase(head) || inBase(merged)) { sha = head; mergeCommit = merged; break; }
-    }
-    if (!sha) return false;
+  endMergedRepair(ctx, decl, task, repoPath, baseSha, { read = true, mergedAt = null } = {}) {
+    const fresh = this.store.task(ctx.id, task.task_id), repaired = fresh.verified_sha;
+    const found = this.mergedRepairHead(fresh, repoPath, baseSha,
+      !read ? null : mergedAt ?? ((url, headSha) => this.integratedAt(decl, url, headSha)));
+    if (!found) return false;
+    const { sha, mergeCommit } = found;
     const now = this.now();
     this.store.patch('tasks', { campaign_id: ctx.id, task_id: fresh.task_id }, fresh.version,
       { state: 'done', verified_sha: sha, findings: [], failures: {}, retry_at: null, last_error: null }, now);
@@ -2708,7 +2811,7 @@ export class Controller {
    * a repair round on the same branch and PR, carrying the failing check names, unless its PR is no longer open at that
    * head. Every result is journaled; status reads it from there, so a published head never shows green before CI does.
    */
-  checkPublishedCi(ctx) {
+  async checkPublishedCi(ctx) {
     const now = this.now();
     if ((this.ciNextAt.get(ctx.id) ?? -Infinity) > now) return;
     const c = this.store.campaign(ctx.id);
@@ -2724,13 +2827,15 @@ export class Controller {
       const key = `${ctx.id}:${task.task_id}:${task.verified_sha}`;
       const due = (this.ciPolledAt.get(key) ?? -Infinity) + this.config.ciPollMs;
       if (due > now) { next = Math.min(next, due); continue; }
+      // A GitHub that did not answer this tick, or a lease lost while reading: the heads not read yet are due at once.
+      if (this.githubSilent() || !this.leaseHeld(ctx)) { next = Math.min(next, now); break; }
       this.ciPolledAt.set(key, now);
       let read;
       try {
-        read = github.commitChecks({ gh: this.cmd.gh, repository: decl.target.repository, sha: task.verified_sha,
+        read = await github.commitChecksAsync({ ...this.githubReads(), repository: decl.target.repository, sha: task.verified_sha,
           baseBranch: decl.target.baseBranch, noHostedChecks: this.noHostedChecks.has(String(decl.target.repository).toLowerCase()) });
         // A PR merged, closed or pushed by someone else since publication is not repaired: its head is no longer ours to fix.
-        if (read.state === 'failure') read.pr = github.findOpenPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, branch: gitA.branchName(ctx.id, task.task_id) });
+        if (read.state === 'failure') read.pr = await github.findOpenPullRequestAsync({ ...this.githubReads(), repository: decl.target.repository, branch: gitA.branchName(ctx.id, task.task_id) });
       } catch (error) {
         // A rate-limit refusal waits for its reset; any other failure is read again after ciPollMs. CI stays unknown.
         if (error instanceof github.RateLimitError && Number.isFinite(error.resetAt)) {
@@ -2936,7 +3041,12 @@ export class Controller {
         if (!row?.pr_url || !row.verified_sha || this.inBase(decl, row.verified_sha)) continue;
         // The self-hosted repository has no PR to read: admissionInputs already counts its recorded gate merges.
         if (this.selfHosted(decl.target.repository)) continue;
-        const merged = github.integratedPullRequest({ gh: this.cmd.gh, repository: decl.target.repository, url: row.pr_url,
+        // Each read awaits GitHub without blocking the event loop (aiworks#119). A GitHub that did not answer this tick leaves
+        // the other holders of this base for its next check; a lease gone meanwhile has the base checked again next tick,
+        // as a fence that refused above.
+        if (this.githubSilent()) break;
+        if (!this.leaseHeld(ctx)) { this.baseCheckedAt.delete(key); break; }
+        const merged = await github.integratedPullRequestAsync({ ...this.githubReads(), repository: decl.target.repository, url: row.pr_url,
           headSha: row.verified_sha, baseBranch: decl.target.baseBranch });
         if (merged && this.inBase(decl, merged)) this.mergedHeads.add(`${row.pr_url}#${row.verified_sha}`);
       }

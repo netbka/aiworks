@@ -455,6 +455,23 @@ export function wait(controller, item, reason) {
 }
 
 /**
+ * The read of the pull request inspect() is about to make, made without blocking the event loop (aiworks#119) and kept in
+ * this pass's reads (controller.mergePassReads), where inspect takes it: under inspect's own conditions, so never a read
+ * inspect would not make. A failed read is kept as { failed } for inspect, which handles it as its own failure. A GitHub
+ * that did not answer an earlier read of this tick fails it at once (github.restAsync).
+ */
+export async function readPull(controller, item, settings, repoPath, baseSha) {
+  const reads = controller.mergePassReads, { campaignId, decl, task, number } = item;
+  const key = `${campaignId}:${task.task_id}:${task.verified_sha}`;
+  if (!reads || reads.has(key) || settings.held.has(task.pr_url.toLowerCase())) return;
+  if ((controller.mergeMissingUntil.get(key) ?? -Infinity) > controller.now()) return;
+  if (!journaled(controller.store, campaignId, 'merge-requested').has(`${task.task_id}:${task.verified_sha}`) &&
+    gitA.isAncestor({ git: controller.cmd.git, path: repoPath, ancestor: task.verified_sha, descendant: baseSha })) return;
+  try { reads.set(key, await github.pullRequestAsync({ ...controller.githubReads(), repository: decl.target.repository, number })); }
+  catch (error) { reads.set(key, { failed: error }); }
+}
+
+/**
  * Read and judge one published pull request on everything but the tree it would put on the base. Returns { pr } when it
  * is open at the verified head on the declared branches, or { acted } after recording why not (acted: a merge done
  * elsewhere was reconciled). Shared by mergeOne and the group merge (merge-batch.mjs).
@@ -473,11 +490,14 @@ export function inspect(controller, item, settings, repoPath, baseSha) {
   // A pull request GitHub reports missing cannot merge; reading it every pass spends the account's shared REST quota.
   const key = `${campaignId}:${task.task_id}:${sha}`;
   if ((controller.mergeMissingUntil.get(key) ?? -Infinity) > controller.now()) return not();
-  // Every attempt starts by reading the pull request, so an unknown outcome is settled before any retry. One read per pass.
+  // Every attempt starts by reading the pull request, so an unknown outcome is settled before any retry. One read per pass:
+  // readPull may have made it already, without blocking the event loop; a failed one is taken from there once, as here.
   let pr = controller.mergePassReads?.get(key);
-  if (!pr) {
-    try { pr = github.pullRequest({ gh, repository, number }); }
-    catch (error) {
+  if (!pr || pr.failed) {
+    try {
+      if (pr?.failed) { controller.mergePassReads.delete(key); throw pr.failed; }
+      pr = github.pullRequest({ gh, repository, number });
+    } catch (error) {
       if (error.status === 404) {
         controller.mergeMissingUntil.set(key, controller.now() + MISSING_RECHECK_MS);
         return not(wait(controller, item, 'GitHub reports the pull request does not exist; it is read again hourly'));
@@ -623,6 +643,7 @@ const commitTree = (git, repoPath, sha) => {
 async function mergeOne(controller, item, settings, repoPath, baseSha) {
   if (authorityBlocked(controller, item, repoPath, baseSha)) return false;
   const git = controller.cmd.git, sha = item.task.verified_sha;
+  await readPull(controller, item, settings, repoPath, baseSha);
   const { pr, acted } = inspect(controller, item, settings, repoPath, baseSha);
   if (!pr) return acted;
   const priority = Boolean(settings.refresh) && refreshedOnBase(controller.store, item, baseSha, settings.refresh);

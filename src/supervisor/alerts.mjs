@@ -20,7 +20,8 @@ import { containsKnownSecretValue } from '../shared/credential-metadata.mjs';
 import { telegramTransport } from './alert-telegram.mjs';
 import { isAbsolute } from 'node:path';
 import { envFileTokenStore } from './token-store.mjs';
-import { commandCredentialStore, validCredentialRef, windowsCredentialStore } from './release/credential.mjs';
+import { validCredentialRef, windowsCredentialStore } from './release/credential.mjs';
+import { execBounded } from './adapters/git.mjs';
 
 export class AlertRulesError extends Error {
   constructor(code, message) { super(message); this.name = 'AlertRulesError'; this.code = code; }
@@ -177,16 +178,31 @@ export function transportSetup(config) {
 
 /**
  * Resolve one secret store reference to its value, for the one send that needs it. Never called outside a send; the
- * value goes to the caller only. Absent is null; a store that cannot tell throws.
+ * value goes to the caller only. Absent is null; a store that cannot tell rejects. Asynchronous: the credential helper,
+ * which may reach a network (an Infisical wrapper), is awaited without blocking the controller tick (helperStore).
  */
-export function referenceResolver(config, { windows = windowsCredentialStore, command = commandCredentialStore, env = envFileTokenStore } = {}) {
-  return (reference) => {
+export function referenceResolver(config, { windows = windowsCredentialStore, command = helperStore, env = envFileTokenStore } = {}) {
+  return async (reference) => {
     if (!safeReference(reference) || !readableReference(reference, config)) throw new Error('not a readable secret store reference');
     const [store, name] = splitReference(reference);
-    const value = (store === 'windows' ? windows() : store === 'env' ? env(envFilePath(config)) : command(helperCommand(config))).get(name);
+    const value = await (store === 'windows' ? windows() : store === 'env' ? env(envFilePath(config)) : command(helperCommand(config))).get(name);
     return typeof value === 'string' && value.length ? value : null;
   };
 }
+
+/**
+ * The operator's credential helper asked `get <name>` as commandCredentialStore asks it (exit 0 the value, exit 1 absent,
+ * anything else cannot tell), without blocking the event loop (aiworks#119): past 30 s the helper and every process it
+ * started are stopped. Its output is read trimmed.
+ */
+const helperStore = (command) => ({
+  async get(name) {
+    const out = await execBounded(command, ['get', name], { timeoutMs: 30_000 });
+    if (out.status === 1) return null;
+    if (!out.ok) throw new Error(`the credential helper could not answer get (${out.error ?? `exit ${out.status}`})`);
+    return out.stdout;
+  },
+});
 
 /**
  * The transport config.json chooses: the synthetic rehearsal one, Telegram when it is ready, or null (nothing leaves
