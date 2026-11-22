@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { BROWSER_SERVER, BUILD_RETRY_NOTE, CODE_PERMISSION_MODE, DENY, TOOLS, deniedCommand, webScope } from '../../src/supervisor/adapters/agy.mjs';
+import { BROWSER_SERVER, BUILD_RETRY_NOTE, CODE_PERMISSION_MODE, DENY, RUN_COMMAND_LIMIT, TOOLS, deniedCommand, webScope } from '../../src/supervisor/adapters/agy.mjs';
 import { validResult } from '../../src/supervisor/adapters/claude.mjs';
 import { passedCheck } from '../../src/supervisor/result-review.mjs';
 import { agyCodeRoles, buildPrompt, classify, prepare, roleUnavailableReason, unavailableReason, webFlag } from '../../src/supervisor/adapters/executors.mjs';
@@ -493,7 +493,8 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
   const shell = (CommandLine) => ({ state: 'DONE', tool_name: 'run_command', tool_info: { parameters: { CommandLine } } });
   const allowed = [{ state: 'DONE', tool_name: 'read_file', tool_info: { parameters: { Path: 'app.js' } } }, shell('git status --short'),
     shell('git log --grep=push --oneline'), shell('grep -rn "git push" docs'), { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'status' } } },
-    ...['rg -c alias. src', 'wc -c alias.txt', 'grep -rn GIT_CONFIG_COUNT src', 'gh auth status'].map(shell)];
+    ...['rg -c alias. src', 'wc -c alias.txt', 'grep -rn GIT_CONFIG_COUNT src', 'gh auth status', 'echo cmd a b c d e f g & dir /k',
+      'rg -l cmd src tests docs scripts site lib bin | findstr /c:"spawn"', 'rg -n "powershell" a b c d e f g h i j k l m | rg -e Encoded'].map(shell)];
   assert.equal(read(allowed).class, 'result');
   const voided = [
     ...['git push origin HEAD', 'git -C . push', 'cmd /c "git push origin x"', 'git status; git commit -am x', '& "git" push', 'gh pr create --fill',
@@ -501,6 +502,15 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
       'git -c alias.p=push p origin main', 'bash -lc "git push origin x"', 'git subtree push --prefix=docs origin pages', 'git send-pack origin main',
       'gh gist create notes.md', 'git config alias.p push', 'GIT_CONFIG_COUNT=1 git p', 'gh auth token', 'gh auth status --show-token', 'gh auth status ""-t',
       'git "push"', 'git --attr-source HEAD push', 'npx vercel --prod', 'pnpm dlx netlify-cli deploy', 'yarn dlx npm publish',
+      'npx "netlify-cli" deploy --prod', 'pnpm dlx "netlify" deploy', 'npx "npm@10" publish', 'pnpm --silent dlx vercel',
+      String.raw`C:\Windows\System32\cmd.exe /c "git push origin x"`, String.raw`"C:\Program Files\Git\bin\bash.exe" -c "git push origin x"`,
+      '/usr/bin/bash -c "git push origin x"', 'cmd/c "git push origin x"', 'gh "auth" token', "gh 'pr' merge 1",
+      // Git's config variables set in ways no assignment pattern lists, on a line that runs git.
+      ...[String.raw`Set-Item -Path Env:\GIT_CONFIG_COUNT -Value 1; Set-Item -Path Env:\GIT_CONFIG_KEY_0 -Value alias.x; Set-Item -Path Env:\GIT_CONFIG_VALUE_0 -Value push; git x origin main`,
+        'GIT_CONFIG_COUNT+=1 GIT_CONFIG_KEY_0+=alias.x GIT_CONFIG_VALUE_0=push git x origin main',
+        'printf -v GIT_CONFIG_COUNT 1; printf -v GIT_CONFIG_KEY_0 alias.x; export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0=push; git x origin main']
+        .flatMap((line) => [line, `powershell -Command "${line}"`, `bash -c '${line}'`]),
+      "$n='GIT_CONFIG_COUNT'; [Environment]::SetEnvironmentVariable($n,'1'); git x",
       // Past what the audit reads: the 33rd Git option, a cmd switch beyond the window, a line over 64 KB.
       `git ${'-c a=b '.repeat(33)}push`, 'cmd /d /e:on /v:off /q /a /u /t:0 /c "git push"', `git status ${'a'.repeat(64 * 1024)}`].map(shell),
     { state: 'DONE', tool_name: 'run_command', tool_info: { parameters: {} } },
@@ -508,6 +518,9 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
     { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'send_input' } } },
   ];
   for (const step of voided) assert.equal(read([step]).violation, true, JSON.stringify(step));
+  // One run's audit reads a bounded amount of distinct command text; past it a command line is denied unread.
+  const many = Array.from({ length: Math.ceil(RUN_COMMAND_LIMIT / (60 * 1024)) + 1 }, (_, index) => shell(`git status ${index} ${'a'.repeat(60 * 1024)}`));
+  assert.equal(read(many).violation, true, 'command text past the run limit');
   // The worker writes the command line and the supervisor reads it: a line built to make a pattern backtrack is still read
   // at once (with nested option patterns, 25 Git options took seconds, and each one more doubled it), and so is a line
   // just under the size limit that holds a command name at every word.

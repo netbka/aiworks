@@ -111,6 +111,8 @@ const TOKEN_END = String.raw`(?=$|[\s;&|)"'\x60])`;
 // It fails closed: a line that goes past a bound is denied (the `past the audit limit` rules and WINDOWS), and so is a
 // command line longer than COMMAND_LIMIT bytes.
 export const COMMAND_LIMIT = 64 * 1024;
+// The distinct command text one run's audit reads (classify); a command line past it is denied unread.
+export const RUN_COMMAND_LIMIT = 4 * 1024 * 1024;
 // One shell word: plain characters and quoted runs, so `-c core.sshCommand="ssh -v"` is one option and its value.
 const WORD = String.raw`(?:"[^"]*"|'[^']*'|[^\s;&|"'])+`;
 const ARGS = (count) => String.raw`(?:${WORD}\s+){0,${count}}`;
@@ -122,9 +124,10 @@ const SHELLS = '(?:powershell|pwsh|bash|sh|zsh|dash|ksh|wsl)';
 const CMD_SWITCH = String.raw`["']?\/[ck]`;
 const SHELL_SWITCH = String.raw`-(?=[a-z]*c)[a-z]+`;
 const ENCODED_SWITCH = String.raw`-e(?:c|n[a-z]*)?`;
-// cmd /c or /k (other switches may come first); a shell with an option holding c (-c, -lc, -Command, -NoProfile
-// -Command); a PowerShell evaluator or launcher.
-const WRAPPER = new RegExp(String.raw`(?:^|[\s;&|("'])(?:cmd(?:\.exe)?["']?\s+${ARGS(6)}${CMD_SWITCH}|${SHELLS}(?:\.exe)?["']?\s+${ARGS(12)}${SHELL_SWITCH}\s`
+// cmd /c or /k (other switches may come first, and cmd/c needs no space); a shell with an option holding c (-c, -lc,
+// -Command, -NoProfile -Command); a PowerShell evaluator or launcher. A wrapper may be named by its path.
+const WRAPPER_AT = String.raw`(?:^|[\s;&|("'\\/])`;
+const WRAPPER = new RegExp(String.raw`${WRAPPER_AT}(?:cmd(?:\.exe)?["']?(?:\s+${ARGS(6)})?${CMD_SWITCH}|${SHELLS}(?:\.exe)?["']?\s+${ARGS(12)}${SHELL_SWITCH}\s`
   + String.raw`|iex\s|invoke-expression\s|invoke-command\s|start-process\s|start-job\s)`, 'i');
 const nameAt = (name, wrapped) => String.raw`(?:(?:^|[\s;&|({\x60\\/=]${wrapped ? `|["']` : ''})${name}(?:\.exe|\.cmd)?["']?|["']${name}(?:\.exe|\.cmd)?["'])`;
 // The options before a subcommand: a word that starts with -, maybe quoted. One of `values` (-C dir) takes the next word
@@ -140,15 +143,28 @@ const GIT_VALUES = String.raw`-c|--(?:git-dir|work-tree|namespace|super-prefix|c
 const GIT_OPTIONS = 32;
 const gitAt = (wrapped) => String.raw`${nameAt('git', wrapped)}${options(GIT_VALUES, GIT_OPTIONS)}\s+`;
 const GIT_CONFIG_VARS = String.raw`GIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+)`;
+// Git's config variables named anywhere on a line that also names git (a second, separate test in deniedCommand): they
+// can be set in more ways than any pattern lists (+=, printf -v, Set-Item Env:\, a variable holding the name).
+const GIT_CONFIG_NAMED = new RegExp(String.raw`\b${GIT_CONFIG_VARS}\b`, 'i');
+const GIT_NAMED = { plain: new RegExp(`${nameAt('git', false)}${TOKEN_END}`, 'i'), wrapped: new RegExp(`${nameAt('git', true)}${TOKEN_END}`, 'i') };
+// npm, pnpm and yarn options before their command; -C, --dir, --prefix, --cwd, --filter and the like take a value.
+const PM_VALUES = String.raw`-C|-F|--(?:dir|prefix|cwd|filter|workspace|registry|userconfig|loglevel|reporter)`;
+const PM_OPTIONS = 8;
+const pmAt = (names, wrapped) => String.raw`${nameAt(names, wrapped)}${options(PM_VALUES, PM_OPTIONS)}\s+`;
 // npx, pnpm dlx and yarn dlx run a package's CLI; -p and --package name the package.
-const RUNNER = (wrapped) => String.raw`(?:${nameAt('npx', wrapped)}|${nameAt('(?:pnpm|yarn)', wrapped)}\s+${quoted('dlx')})`;
+const RUNNER = (wrapped) => String.raw`(?:${nameAt('npx', wrapped)}|${pmAt('(?:pnpm|yarn)', wrapped)}${quoted('dlx')})`;
 const RUNNER_VALUES = '-p|--package';
 const RUNNER_OPTIONS = 8;
 const VERSION = String.raw`(?:@[^\s;&|"']*)?`;
+// The deploy and publish CLIs a runner may start, each word maybe quoted: vercel, netlify-cli's netlify deploy, and npm
+// publish.
+const RUNNER_DEPLOY = String.raw`(?:${quoted(`vercel${VERSION}`)}|${quoted(`netlify(?:-cli)?${VERSION}`)}\s+${quoted('deploy')}`
+  + String.raw`|${quoted(`npm${VERSION}`)}\s+${quoted('publish')})`;
 // gh auth status, with at most 8 more plain words (no quotes, escapes or variables) up to the end of its command, or of a
 // wrapper's quoted string, and none of them -t, --show-token or --json, only reads the login state. Every other gh auth
 // command can print or change the token.
 const GH_AUTH_STATUS = String.raw`\s+${quoted('status')}(?:\s+(?!--show-token|--json|-[a-z]*t)[\w.:/=>-]+){0,8}\s*(?:["'\x60]\s*)?(?:$|[;&|)])`;
+const GH_AUTH = String.raw`["']?auth(?!["']?${GH_AUTH_STATUS})["']?`;
 const RULES = [
   ['git push', (w) => String.raw`${gitAt(w)}(?:${quoted('push|send-pack|http-push')}|${quoted('subtree')}\s+${quoted('push')})${TOKEN_END}`],
   ['git history write', (w) => String.raw`${gitAt(w)}${quoted('commit|merge|rebase|cherry-pick|revert|am|update-ref|filter-branch|subtree|fast-import')}${TOKEN_END}`],
@@ -156,43 +172,78 @@ const RULES = [
   ['git remote change', (w) => String.raw`${gitAt(w)}${quoted('remote')}\s+${quoted('add|set-url|remove|rm|rename')}${TOKEN_END}`],
   ['git lfs transfer', (w) => String.raw`${gitAt(w)}${quoted('lfs')}\s+${quoted('push|fetch|pull')}${TOKEN_END}`],
   // An alias can rename any subcommand: git -c alias.p=push or --config-env, git config alias.p, or Git's config variables
-  // set for a command (NAME=, PowerShell's env: drive, SetEnvironmentVariable).
+  // set for a later command (NAME= or +=, PowerShell's env: drive, SetEnvironmentVariable). On a line that names git, any
+  // mention of those variables is denied as well (GIT_CONFIG_NAMED, in deniedCommand).
   ['git alias', (w) => String.raw`${nameAt('git', w)}${options(GIT_VALUES, GIT_OPTIONS - 1)}\s+["']?(?:-c["']?\s*|--config-env(?:["']?\s+|=))["']?alias\.`
     + String.raw`|${gitAt(w)}${quoted('config')}\s+${ARGS(8)}["']?alias\.`
-    + String.raw`|(?:^|[\s;&|(\x60{"'])${GIT_CONFIG_VARS}["']?\s*=|env:${GIT_CONFIG_VARS}|SetEnvironmentVariable\(\s*["']${GIT_CONFIG_VARS}`],
+    + String.raw`|(?:^|[\s;&|(\x60{"'])${GIT_CONFIG_VARS}["']?\s*\+?=|env:[\\/]?${GIT_CONFIG_VARS}|SetEnvironmentVariable\(\s*["']${GIT_CONFIG_VARS}`],
   ['git options past the audit limit', (w) => `${nameAt('git', w)}${pastOptions(GIT_VALUES, GIT_OPTIONS)}`],
-  ['gh write', (w) => String.raw`${nameAt('gh', w)}\s+(?:pr\s+(?:create|merge|close|edit|comment|review|ready|reopen)|release|issue\s+(?:create|comment|close|edit|delete|reopen)`
-    + String.raw`|workflow|run|actions|codespaces?|cs|repo\s+(?:create|delete|edit|fork|rename|archive)|secret|variable|api|gist|alias|extensions?|ext`
-    + String.raw`|label\s+(?:create|edit|delete|clone)|ssh-key|gpg-key|auth(?!${GH_AUTH_STATUS}))${TOKEN_END}`],
-  ['package publish or deploy', (w) => String.raw`${nameAt('(?:npm|pnpm|yarn)', w)}\s+(?:publish|unpublish|deprecate|dist-tag|owner|access|run(?:-script)?\s+(?:update|deploy))${TOKEN_END}`
-    + String.raw`|${RUNNER(w)}${options(RUNNER_VALUES, RUNNER_OPTIONS)}\s+`
-    + String.raw`${quoted(String.raw`vercel${VERSION}|netlify(?:-cli)?${VERSION}\s+["']?deploy|npm${VERSION}\s+["']?publish`)}${TOKEN_END}`],
-  ['package runner options past the audit limit', (w) => `${RUNNER(w)}${pastOptions(RUNNER_VALUES, RUNNER_OPTIONS)}`],
+  ['gh write', (w) => String.raw`${nameAt('gh', w)}\s+(?:${quoted('pr')}\s+${quoted('create|merge|close|edit|comment|review|ready|reopen')}`
+    + String.raw`|${quoted('issue')}\s+${quoted('create|comment|close|edit|delete|reopen')}|${quoted('repo')}\s+${quoted('create|delete|edit|fork|rename|archive')}`
+    + String.raw`|${quoted('label')}\s+${quoted('create|edit|delete|clone')}`
+    + String.raw`|${quoted('release|workflow|run|actions|codespaces?|cs|secret|variable|api|gist|alias|extensions?|ext|ssh-key|gpg-key')}|${GH_AUTH})${TOKEN_END}`],
+  ['package publish or deploy', (w) => String.raw`${pmAt('(?:npm|pnpm|yarn)', w)}(?:${quoted('publish|unpublish|deprecate|dist-tag|owner|access')}`
+    + String.raw`|${quoted('run(?:-script)?')}\s+${quoted('update|deploy')})${TOKEN_END}`
+    + String.raw`|${RUNNER(w)}${options(RUNNER_VALUES, RUNNER_OPTIONS)}\s+${RUNNER_DEPLOY}${TOKEN_END}`],
+  ['package options past the audit limit', (w) => `${nameAt('(?:npm|pnpm|yarn)', w)}${pastOptions(PM_VALUES, PM_OPTIONS)}`
+    + `|${RUNNER(w)}${pastOptions(RUNNER_VALUES, RUNNER_OPTIONS)}`],
   ['remote shell', (w) => `${nameAt('(?:ssh|scp|sftp|rsync)', w)}${TOKEN_END}`],
   // A command the audit cannot read.
   ['encoded command', () => String.raw`(?:^|[\s;&|(\\/"'])(?:powershell|pwsh)(?:\.exe)?["']?\s+${ARGS(12)}${ENCODED_SWITCH}\s`],
 ];
 export const DENIED_COMMANDS = RULES.map(([name, pattern]) => ({ name, plain: new RegExp(pattern(false), 'i'), wrapped: new RegExp(pattern(true), 'i') }));
 // The windows of WRAPPER, the git config alias rule and the encoded-command rule: the words after a name that are read
-// for its switch (`head`, one word more than the window, none of them the switch). Past them a switch (`token`) is not
-// read as one, so a line that has one there is denied.
+// for its switch (`head`, one word more than the window, none of them the switch). Past them a switch (`token`) of the
+// same command (before the next unquoted ;, &, | or line break) is not read as one, so a line that has one there is denied.
 const WINDOWS = [
-  ['cmd switch past the audit limit', () => String.raw`(?:^|[\s;&|("'])cmd(?:\.exe)?["']?(?:\s+(?!${CMD_SWITCH})${WORD}){7}`, String.raw`\s${CMD_SWITCH}`],
-  ['shell switch past the audit limit', () => String.raw`(?:^|[\s;&|("'])${SHELLS}(?:\.exe)?["']?(?:\s+(?!${SHELL_SWITCH}\s)${WORD}){13}`,
+  ['cmd switch past the audit limit', () => String.raw`${WRAPPER_AT}cmd(?:\.exe)?["']?(?:\s+(?!${CMD_SWITCH})${WORD}){7}`, String.raw`\s${CMD_SWITCH}`],
+  ['shell switch past the audit limit', () => String.raw`${WRAPPER_AT}${SHELLS}(?:\.exe)?["']?(?:\s+(?!${SHELL_SWITCH}\s)${WORD}){13}`,
     String.raw`\s${SHELL_SWITCH}(?=\s)`],
-  ['encoded command past the audit limit', () => String.raw`(?:^|[\s;&|(\\/"'])(?:powershell|pwsh)(?:\.exe)?["']?(?:\s+(?!${ENCODED_SWITCH}\s)${WORD}){13}`,
+  ['encoded command past the audit limit', () => String.raw`${WRAPPER_AT}(?:powershell|pwsh)(?:\.exe)?["']?(?:\s+(?!${ENCODED_SWITCH}\s)${WORD}){13}`,
     String.raw`\s${ENCODED_SWITCH}(?=\s)`],
   ['git config past the audit limit', (w) => String.raw`${gitAt(w)}${quoted('config')}(?:\s+(?!["']?alias\.)${WORD}){9}`, String.raw`\s["']?alias\.`],
 ].map(([name, head, token]) => ({ name, plain: new RegExp(head(false), 'gi'), wrapped: new RegExp(head(true), 'gi'), token: new RegExp(token, 'gi') }));
 
-/** Whether a match of `head` ends before a match of `token`; each is read once, in linear time. */
-function pastWindow(text, head, token) {
-  let last = -1;
+/**
+ * For each position of `text`, the first unquoted ;, &, |, or line break at or after it (text.length if none): one
+ * forward scan. Quotes and escapes (\, ^ and the backtick) are read only approximately as each shell reads them; a quote
+ * read as still open hides the separators after it, which widens what the windows read.
+ */
+function separators(text) {
+  const separator = new Uint8Array(text.length);
+  for (let i = 0, quote = ''; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote) quote = '';
+      else if (quote === '"' && (c === '\\' || c === '\x60')) i++;
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === '\\' || c === '^' || c === '\x60') i++;
+    else if (c === ';' || c === '&' || c === '|' || c === '\n' || c === '\r') separator[i] = 1;
+  }
+  const next = new Int32Array(text.length + 1);
+  next[text.length] = text.length;
+  for (let i = text.length - 1; i >= 0; i--) next[i] = separator[i] ? i : next[i + 1];
+  return next;
+}
+
+/** Whether a match of `head` is followed by a match of `token` in the same command; each is read once. */
+function pastWindow(text, head, token, next) {
+  const tokens = [];
   token.lastIndex = 0;
-  for (let found = token.exec(text); found; found = token.exec(text)) last = found.index;
+  for (let found = token.exec(text); found; found = token.exec(text)) tokens.push(found.index);
+  if (!tokens.length) return false;
+  const last = tokens.at(-1);
   head.lastIndex = 0;
-  for (let found = last < 0 ? null : head.exec(text); found && found.index < last; found = head.exec(text)) {
-    if (found.index + found[0].length <= last) return true;
+  for (let found = head.exec(text); found && found.index < last; found = head.exec(text)) {
+    const end = found.index + found[0].length;
+    // The first token at or after the window's end, by binary search.
+    let low = 0;
+    for (let high = tokens.length; low < high;) {
+      const middle = (low + high) >> 1;
+      if (tokens[middle] < end) low = middle + 1; else high = middle;
+    }
+    // The head's first character may be the separator before its name; its own command starts after it.
+    if (low < tokens.length && tokens[low] < next[found.index + 1]) return true;
     head.lastIndex = found.index + 1;
   }
   return false;
@@ -203,8 +254,11 @@ export function deniedCommand(line) {
   const text = String(line);
   if (Buffer.byteLength(text, 'utf8') > COMMAND_LIMIT) return 'command line too long to audit';
   const key = WRAPPER.test(text) ? 'wrapped' : 'plain';
-  return DENIED_COMMANDS.find((rule) => rule[key].test(text))?.name ??
-    WINDOWS.find((window) => pastWindow(text, window[key], window.token))?.name ?? null;
+  const rule = DENIED_COMMANDS.find((item) => item[key].test(text))?.name;
+  if (rule) return rule;
+  if (GIT_CONFIG_NAMED.test(text) && GIT_NAMED[key].test(text)) return 'git alias';
+  let next = null;
+  return WINDOWS.find((window) => pastWindow(text, window[key], window.token, next ??= separators(text)))?.name ?? null;
 }
 
 const origin = (url) => new URL(url).origin;
@@ -508,29 +562,43 @@ export function classify({ role, run, stdoutText, stderrText, expect, now, logBy
   // the stricter browser audit, so a caller that omits `web` never loosens it.
   const code = expect.web === false;
   const stepTypes = code ? CODE_STEP_TYPES : STEP_TYPES;
+  // Each distinct command line is audited once per run (every update of a step repeats it), and only up to
+  // RUN_COMMAND_LIMIT bytes of distinct command text: past it a command line is denied unread, so a log of hostile lines
+  // cannot hold the supervisor for long.
+  const audited = new Map();
+  let auditedBytes = 0;
+  const denied = (line) => {
+    if (audited.has(line)) return audited.get(line);
+    auditedBytes += Buffer.byteLength(line, 'utf8');
+    const name = auditedBytes > RUN_COMMAND_LIMIT ? 'command lines past the run audit limit' : deniedCommand(line);
+    audited.set(line, name);
+    return name;
+  };
   const codePermitted = (name, parameters) => CODE_TOOLS.includes(name) &&
-    (name !== 'run_command' || (typeof parameters?.CommandLine === 'string' && !deniedCommand(parameters.CommandLine))) &&
+    (name !== 'run_command' || (typeof parameters?.CommandLine === 'string' && !denied(parameters.CommandLine))) &&
     (name !== 'manage_task' || MANAGE_TASK_ACTIONS.includes(parameters?.Action));
   const permitted = (update, parameters) => update.tool_name === undefined ? update.step_type !== 'tool'
     : code ? codePermitted(update.tool_name, parameters)
     : update.tool_name === 'finish' || (update.tool_name === 'call_mcp_tool' && parameters?.ServerName === BROWSER_SERVER &&
       TOOLS.includes(parameters?.ToolName));
-  const unexpected = [];
+  // The first step update that is not permitted, in a step that ran; the audit stops there.
+  let unexpected = null;
   for (const updates of steps.values()) {
     let parameters = null;
-    const judged = updates.map((update) => {
+    let refused = null;
+    for (const update of updates) {
       parameters = update.tool_info?.parameters ?? parameters;
-      return { update, parameters, ok: stepTypes.includes(update.step_type) && permitted(update, parameters) };
-    });
-    if (judged.every((item) => item.ok)) continue;
+      if (!stepTypes.includes(update.step_type) || !permitted(update, parameters)) { refused = { update, parameters }; break; }
+    }
+    if (!refused) continue;
     const last = updates.at(-1);
-    const neverRan = judged.every((item) => stepTypes.includes(item.update.step_type)) && !updates.some((update) => update.state === 'DONE') &&
+    const neverRan = updates.every((update) => stepTypes.includes(update.step_type)) && !updates.some((update) => update.state === 'DONE') &&
       last.state === 'ERROR' && NOT_RUN.test(String(last.tool_info?.error?.message ?? ''));
-    if (!neverRan) unexpected.push(judged.find((item) => !item.ok));
+    if (!neverRan) { unexpected = refused; break; }
   }
   // A denied command is named by its rule, never by its text, which may hold anything.
   const named = ({ update, parameters }) => update.tool_name === 'call_mcp_tool' ? `${parameters?.ServerName}/${parameters?.ToolName}`
-    : code && update.tool_name === 'run_command' ? `run_command (${typeof parameters?.CommandLine === 'string' ? deniedCommand(parameters.CommandLine) : 'no command line'})`
+    : code && update.tool_name === 'run_command' ? `run_command (${typeof parameters?.CommandLine === 'string' ? denied(parameters.CommandLine) : 'no command line'})`
     : code && update.tool_name === 'manage_task' ? `manage_task (${String(parameters?.Action ?? 'no action').replace(/[^\w-]/g, '').slice(0, 20)})`
     : update.tool_name ?? `step ${update.step_type}`;
   const tokens = providerTokens({ ...final, model: final?.model ?? init?.model }, 'agy-cli');
@@ -542,7 +610,7 @@ export function classify({ role, run, stdoutText, stderrText, expect, now, logBy
   if (inits.length > 1 || (init && init.permission_mode !== mode)) {
     return violation(`agy did not run in ${mode} permission mode (${String(init?.permission_mode ?? 'several sessions').slice(0, 40)})`);
   }
-  if (unexpected.length) return violation(`${code ? 'code' : 'browser'} worker used an unexpected tool (${[...new Set(unexpected.map(named))].join(', ').slice(0, 200)})`);
+  if (unexpected) return violation(`${code ? 'code' : 'browser'} worker used an unexpected tool (${named(unexpected).slice(0, 200)})`);
   if (Array.isArray(final?.denied_actions) && final.denied_actions.length) {
     return violation(`agy stopped on a tool that needs approval (${final.denied_actions.map((item) => item?.action).join(', ').slice(0, 200)})`);
   }

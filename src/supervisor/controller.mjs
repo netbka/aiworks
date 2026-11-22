@@ -3287,9 +3287,18 @@ export class Controller {
       { retry_at: choice.retryAt, last_error: 'waiting for executor availability: an authorized provider is unavailable or cooling down' }, this.now());
     else if (account) this.store.patch('tasks', { campaign_id: ctx.id, task_id: task.task_id }, task.version,
       { retry_at: this.now() + 15 * 60_000, last_error: `waiting for executor availability: the ${account.account} account waits for a recheck (${account.reason})` }, this.now());
-    else this.raiseBlocker(ctx, decl, { kind: 'executors', class: 'B2', reason: 'No configured executor supports this task role',
-      requestedAction: 'Configure an authorized native CLI command and scoped role support, then recheck the campaign.' }, this.now(),
-    { identity: 'no-role-support' });
+    else {
+      // When this choice left AGY out because the task's checkout was refused for its code mode (agy-cli's host fact in the
+      // receipt, AW-024), that refusal is what stops the task, and removing the folder is the fix.
+      const inputs = choice.receipt?.inputs;
+      const refusal = inputs?.agyCodeRoles && !inputs.task?.web
+        ? inputs.hostFacts?.find((fact) => fact.kind === 'agy-cli' && fact.hostUnavailable)?.hostUnavailable : null;
+      this.raiseBlocker(ctx, decl, refusal ? { kind: 'executors', class: 'B2', reason: `AGY code mode refused this task's checkout: ${refusal}`,
+        requestedAction: `Remove the AGY extension folder (${agy.PROJECT_EXTENSION_DIRS.join(', ')}) from the checkout and every folder above it, then recheck the campaign.` }
+        : { kind: 'executors', class: 'B2', reason: 'No configured executor supports this task role',
+          requestedAction: 'Configure an authorized native CLI command and scoped role support, then recheck the campaign.' }, this.now(),
+      { identity: refusal ? 'agy-code-refused' : 'no-role-support' });
+    }
   }
 
   /** The automatic routing policy choice of executorChoice: the facts observed here once, routeAuto deciding from them alone. */
