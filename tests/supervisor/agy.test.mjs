@@ -494,7 +494,9 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
   const allowed = [{ state: 'DONE', tool_name: 'read_file', tool_info: { parameters: { Path: 'app.js' } } }, shell('git status --short'),
     shell('git log --grep=push --oneline'), shell('grep -rn "git push" docs'), { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'status' } } },
     ...['rg -c alias. src', 'wc -c alias.txt', 'grep -rn GIT_CONFIG_COUNT src', 'gh auth status', 'echo cmd a b c d e f g & dir /k',
-      'rg -l cmd src tests docs scripts site lib bin | findstr /c:"spawn"', 'rg -n "powershell" a b c d e f g h i j k l m | rg -e Encoded'].map(shell)];
+      'rg -l cmd src tests docs scripts site lib bin | findstr /c:"spawn"', 'rg -n "powershell" a b c d e f g h i j k l m | rg -e Encoded',
+      'rg -n "git push" cmd/cli', 'grep -rn "git commit" src/cmd/client.go', 'cat cmd/kubectl/main.go | grep "gh pr merge"',
+      'rg "gh auth token" internal/cmd/config'].map(shell)];
   assert.equal(read(allowed).class, 'result');
   const voided = [
     ...['git push origin HEAD', 'git -C . push', 'cmd /c "git push origin x"', 'git status; git commit -am x', '& "git" push', 'gh pr create --fill',
@@ -511,8 +513,14 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
         'printf -v GIT_CONFIG_COUNT 1; printf -v GIT_CONFIG_KEY_0 alias.x; export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0=push; git x origin main']
         .flatMap((line) => [line, `powershell -Command "${line}"`, `bash -c '${line}'`]),
       "$n='GIT_CONFIG_COUNT'; [Environment]::SetEnvironmentVariable($n,'1'); git x",
-      // Past what the audit reads: the 33rd Git option, a cmd switch beyond the window, a line over 64 KB.
-      `git ${'-c a=b '.repeat(33)}push`, 'cmd /d /e:on /v:off /q /a /u /t:0 /c "git push"', `git status ${'a'.repeat(64 * 1024)}`].map(shell),
+      // PowerShell runs a bare quoted argument as a command.
+      'powershell "git push origin x"', `$n='GIT_CONFIG_COUNT'; [Environment]::SetEnvironmentVariable($n,'1'); powershell "git x origin main"`,
+      // Past what the audit reads: the 33rd Git option, a cmd switch beyond the window, a line over 64 KiB.
+      `git ${'-c a=b '.repeat(33)}push`, 'cmd /d /e:on /v:off /q /a /u /t:0 /c "git push"', `git status ${'a'.repeat(64 * 1024)}`,
+      // A separator inside a substitution, a group or backticks, or a continued line, does not end the wrapper's command.
+      ...['$(true;)', '`true;`', '$(:|:)'].map((part) => `bash ${'-x '.repeat(13)}${part} -c "git push origin x"`),
+      'cmd /d /e:on /v:off /q /a /u /t:0 (x;) /c "git push origin x"', `powershell ${'-NoProfile '.repeat(13)}$(1;2) -EncodedCommand ZQB=`,
+      `powershell ${'-NoProfile '.repeat(13)}\`\r\n-EncodedCommand ZQB=`].map(shell),
     { state: 'DONE', tool_name: 'run_command', tool_info: { parameters: {} } },
     { state: 'DONE', tool_name: 'write_file' }, { state: 'DONE', tool_name: 'search_web' }, browserTool('DONE'),
     { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'send_input' } } },

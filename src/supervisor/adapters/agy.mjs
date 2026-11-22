@@ -124,10 +124,15 @@ const SHELLS = '(?:powershell|pwsh|bash|sh|zsh|dash|ksh|wsl)';
 const CMD_SWITCH = String.raw`["']?\/[ck]`;
 const SHELL_SWITCH = String.raw`-(?=[a-z]*c)[a-z]+`;
 const ENCODED_SWITCH = String.raw`-e(?:c|n[a-z]*)?`;
-// cmd /c or /k (other switches may come first, and cmd/c needs no space); a shell with an option holding c (-c, -lc,
-// -Command, -NoProfile -Command); a PowerShell evaluator or launcher. A wrapper may be named by its path.
+// cmd /c or /k (other switches may come first; cmd/c needs no space, but then a space or quote follows, so a path such as
+// cmd/cli is no wrapper); a shell with an option holding c (-c, -lc, -Command, -NoProfile -Command); PowerShell with a
+// quoted word among its first 13, which it may run as a command, as in powershell "git push" (an unquoted command is
+// read as any command name is); a PowerShell evaluator or launcher. A wrapper may be named by its path.
 const WRAPPER_AT = String.raw`(?:^|[\s;&|("'\\/])`;
-const WRAPPER = new RegExp(String.raw`${WRAPPER_AT}(?:cmd(?:\.exe)?["']?(?:\s+${ARGS(6)})?${CMD_SWITCH}|${SHELLS}(?:\.exe)?["']?\s+${ARGS(12)}${SHELL_SWITCH}\s`
+const POWERSHELL = String.raw`(?:powershell|pwsh)(?:\.exe)?["']?`;
+const QUOTED_WORD = String.raw`@?["']`;
+const WRAPPER = new RegExp(String.raw`${WRAPPER_AT}(?:cmd(?:\.exe)?["']?(?:\s+${ARGS(6)}${CMD_SWITCH}|\/[ck](?=[\s"']))`
+  + String.raw`|${SHELLS}(?:\.exe)?["']?\s+${ARGS(12)}${SHELL_SWITCH}\s|${POWERSHELL}\s+${ARGS(12)}${QUOTED_WORD}`
   + String.raw`|iex\s|invoke-expression\s|invoke-command\s|start-process\s|start-job\s)`, 'i');
 const nameAt = (name, wrapped) => String.raw`(?:(?:^|[\s;&|({\x60\\/=]${wrapped ? `|["']` : ''})${name}(?:\.exe|\.cmd)?["']?|["']${name}(?:\.exe|\.cmd)?["'])`;
 // The options before a subcommand: a word that starts with -, maybe quoted. One of `values` (-C dir) takes the next word
@@ -194,31 +199,39 @@ const RULES = [
 export const DENIED_COMMANDS = RULES.map(([name, pattern]) => ({ name, plain: new RegExp(pattern(false), 'i'), wrapped: new RegExp(pattern(true), 'i') }));
 // The windows of WRAPPER, the git config alias rule and the encoded-command rule: the words after a name that are read
 // for its switch (`head`, one word more than the window, none of them the switch). Past them a switch (`token`) of the
-// same command (before the next unquoted ;, &, | or line break) is not read as one, so a line that has one there is denied.
+// same command (before the next separator that ends it, see separators) is not read as one, so a line that has one
+// there is denied.
 const WINDOWS = [
   ['cmd switch past the audit limit', () => String.raw`${WRAPPER_AT}cmd(?:\.exe)?["']?(?:\s+(?!${CMD_SWITCH})${WORD}){7}`, String.raw`\s${CMD_SWITCH}`],
   ['shell switch past the audit limit', () => String.raw`${WRAPPER_AT}${SHELLS}(?:\.exe)?["']?(?:\s+(?!${SHELL_SWITCH}\s)${WORD}){13}`,
     String.raw`\s${SHELL_SWITCH}(?=\s)`],
-  ['encoded command past the audit limit', () => String.raw`${WRAPPER_AT}(?:powershell|pwsh)(?:\.exe)?["']?(?:\s+(?!${ENCODED_SWITCH}\s)${WORD}){13}`,
+  ['encoded command past the audit limit', () => String.raw`${WRAPPER_AT}${POWERSHELL}(?:\s+(?!${ENCODED_SWITCH}\s)${WORD}){13}`,
     String.raw`\s${ENCODED_SWITCH}(?=\s)`],
+  ['powershell command past the audit limit', () => String.raw`${WRAPPER_AT}${POWERSHELL}(?:\s+(?!${QUOTED_WORD})${WORD}){13}`, String.raw`\s${QUOTED_WORD}`],
   ['git config past the audit limit', (w) => String.raw`${gitAt(w)}${quoted('config')}(?:\s+(?!["']?alias\.)${WORD}){9}`, String.raw`\s["']?alias\.`],
 ].map(([name, head, token]) => ({ name, plain: new RegExp(head(false), 'gi'), wrapped: new RegExp(head(true), 'gi'), token: new RegExp(token, 'gi') }));
 
 /**
- * For each position of `text`, the first unquoted ;, &, |, or line break at or after it (text.length if none): one
- * forward scan. Quotes and escapes (\, ^ and the backtick) are read only approximately as each shell reads them; a quote
- * read as still open hides the separators after it, which widens what the windows read.
+ * For each position of `text`, the first ;, &, |, or line break at or after it that ends a command (text.length if
+ * none): one forward scan. Only a separator outside quotes, backticks and brackets ends one: a quote or backtick hides
+ * everything up to its closing one, and ( or { hides everything up to its ) or } (an unclosed one, the rest of the line),
+ * as in $(a; b), `a; b`, (a; b) or { a; b }. An escape (\ or ^, and \ or the backtick inside double quotes) hides the next
+ * character, or a CRLF pair. This reads each shell only approximately, and errs toward hiding a separator, which widens
+ * what the windows read.
  */
 function separators(text) {
   const separator = new Uint8Array(text.length);
-  for (let i = 0, quote = ''; i < text.length; i++) {
+  const escaped = (i) => (text[i + 1] === '\r' && text[i + 2] === '\n' ? i + 2 : i + 1);
+  for (let i = 0, quote = '', depth = 0; i < text.length; i++) {
     const c = text[i];
     if (quote) {
       if (c === quote) quote = '';
-      else if (quote === '"' && (c === '\\' || c === '\x60')) i++;
-    } else if (c === '"' || c === "'") quote = c;
-    else if (c === '\\' || c === '^' || c === '\x60') i++;
-    else if (c === ';' || c === '&' || c === '|' || c === '\n' || c === '\r') separator[i] = 1;
+      else if (quote === '"' && (c === '\\' || c === '\x60')) i = escaped(i);
+    } else if (c === '"' || c === "'" || c === '\x60') quote = c;
+    else if (c === '\\' || c === '^') i = escaped(i);
+    else if (c === '(' || c === '{') depth++;
+    else if (c === ')' || c === '}') depth = Math.max(0, depth - 1);
+    else if (depth === 0 && (c === ';' || c === '&' || c === '|' || c === '\n' || c === '\r')) separator[i] = 1;
   }
   const next = new Int32Array(text.length + 1);
   next[text.length] = text.length;
