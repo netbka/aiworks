@@ -31,7 +31,11 @@ $script = @"
 exit `$dash.ExitCode
 "@
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded" -WorkingDirectory $Checkout
+# conhost.exe --headless gives PowerShell a console that has no window; started directly, powershell.exe briefly shows
+# a Windows Terminal window on Windows 11 at every start (see install-windows-task.ps1).
+$powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
+$action = New-ScheduledTaskAction -Execute $conhost -Argument "--headless `"$powershell`" -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded" -WorkingDirectory $Checkout
 $logon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 # No repetition duration means indefinitely; never stop the running dashboard when a repetition ends.
 $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
