@@ -78,6 +78,8 @@ export async function restAsync(gh, what, args, { timeoutMs = READ_MS, gate = nu
   if (gate?.silent) throw Object.assign(new Error(`${what} skipped: GitHub did not answer an earlier read of this pass in time`), { status: null, code: 'GITHUB_SILENT' });
   const out = await execBounded(gh, ['api', '--include', ...args], { timeoutMs, maxBytes: MAX_ANSWER });
   if (out.error === 'ETIMEDOUT' && gate) gate.silent = true;
+  // A tree not shown stopped (execBounded `contained: false`) is noted on the gate for its pass to log.
+  if (out.contained === false && gate) gate.uncontained = true;
   return answer(what, out);
 }
 

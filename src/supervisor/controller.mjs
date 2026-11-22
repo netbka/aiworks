@@ -576,6 +576,8 @@ export class Controller {
     this.mergeMissingUntil = new Map();
     // aiworks#207: when each campaign's open integration repair rounds were last checked for an out-of-band merge (memory only).
     this.repairCheckedAt = new Map();
+    // aiworks#119: per campaign, the repair rounds whose merge receipt its step could not read; schedule leaves them out.
+    this.repairUnread = new Map();
     // When each campaign's not-done steps were last checked for a head merged outside AIWorks (memory only).
     this.notDoneCheckedAt = new Map();
     // The base commit and items each campaign's not-done steps were last checked against: an unmoved base is not read again.
@@ -634,6 +636,7 @@ export class Controller {
     this.githubGate = { silent: false };
     try { return await run(); } finally {
       if (this.githubGate.silent) this.log(`GitHub did not answer a read within ${Math.round(this.config.githubReadMs / 1000)} s: the other GitHub reads of this tick were skipped until the next tick`);
+      if (this.githubGate.uncontained) this.log('a stopped GitHub read may have left gh processes running: its process tree was not shown ended');
       this.githubGate = null;
     }
   }
@@ -927,6 +930,7 @@ export class Controller {
     if (!lease.renewed) this.log(`campaign ${id}: holding lease generation ${lease.generation}${lease.takeover ? ' after expiry of the previous holder' : ''}`);
     this.held.set(id, lease.generation);
     const ctx = { id, generation: lease.generation };
+    this.repairUnread.delete(id);
     // An open integration repair round whose PR was merged by someone else ends (aiworks#207). Checked before a finished
     // campaign's rounds reopen below, so a round opened by this pass is dispatched without a GitHub read.
     if (this.store.campaign(id).control === 'registered' && !this.unmergedRevision()) await this.timed('merged repairs', () => this.endMergedRepairs(ctx));
@@ -2359,21 +2363,25 @@ export class Controller {
   /**
    * The merge receipts (integratedAt) a fenced decision will ask for, read before its fence without blocking the event
    * loop (aiworks#119). `ask(mergedAt)` makes the decision's own reads with a `mergedAt(url, headSha)` that only notes what
-   * it is asked and answers null; each receipt noted is then read once, until the lease of `ctx` is gone. The answer is a
-   * `mergedAt` for the fence: a receipt that failed, was skipped or was not read is null there, as a read failing inside
-   * the fence was, so the decision waits. A merge GitHub reports never changes, so a receipt read before the fence can only
-   * be missing one made meanwhile, and that waits a pass. A self-hosted repository's receipts come from its own ledger,
-   * read in the fence as before.
+   * it is asked and answers null; each receipt noted is then read once, until GitHub stops answering this tick or the lease
+   * of `ctx` is gone. The answer is a `mergedAt` for the fence: the merge commit, null when the read showed none or failed
+   * (as a read failing inside the fence was), or undefined when it was not read: skipped, out of time (GitHub silent) or
+   * after the lease was gone. Either way the decision waits; a caller that must not act on an unread receipt tells the two
+   * apart (endMergedRepairs). A merge GitHub reports never changes, so a receipt read before the fence can only be missing
+   * one made meanwhile, and that waits a pass. A self-hosted repository's receipts come from its own ledger, read in the
+   * fence as before.
    */
   async readReceipts(ctx, decl, ask) {
     if (this.selfHosted(decl.target.repository)) return (url, headSha) => this.ledgerMerge(decl.target.repository, headSha);
     const wanted = new Map(), receipts = new Map(), key = (url, headSha) => `${url}\u0000${headSha}`;
     ask((url, headSha) => { wanted.set(key(url, headSha), [url, headSha]); return null; });
     for (const [at, [url, headSha]] of wanted) {
-      if (!this.leaseHeld(ctx)) break;
-      receipts.set(at, await github.integratedPullRequestAsync({ ...this.githubReads(), repository: decl.target.repository, url, headSha, baseBranch: decl.target.baseBranch }));
+      if (this.githubSilent() || !this.leaseHeld(ctx)) break;
+      const merged = await github.integratedPullRequestAsync({ ...this.githubReads(), repository: decl.target.repository, url, headSha, baseBranch: decl.target.baseBranch });
+      // A read that ran out of time made GitHub silent for this tick: its null is no receipt.
+      if (!this.githubSilent()) receipts.set(at, merged);
     }
-    return (url, headSha) => receipts.get(key(url, headSha)) ?? null;
+    return (url, headSha) => { const at = key(url, headSha); return receipts.has(at) ? receipts.get(at) : undefined; };
   }
 
   /**
@@ -2664,9 +2672,22 @@ export class Controller {
     // Read before the fence (aiworks#140); endMergedRepair ends nothing on a failed read and writes at the task's version.
     const repo = this.repo(decl), baseSha = (await this.fetchBase(repo.path, decl.target.baseBranch, decl.target.repository)).sha;
     // Its merge receipts too, asynchronously (aiworks#119): the heads mergedRepairHead asks about, before the fence.
+    const asked = new Map();
     const mergedAt = await this.readReceipts(ctx, decl, (ask) => {
-      for (const task of open) this.mergedRepairHead(this.store.task(ctx.id, task.task_id), repo.path, baseSha, ask);
+      for (const task of open) {
+        this.mergedRepairHead(this.store.task(ctx.id, task.task_id), repo.path, baseSha, (url, headSha) => {
+          asked.set(task.task_id, [...(asked.get(task.task_id) ?? []), [url, headSha]]);
+          return ask(url, headSha);
+        });
+      }
     });
+    // A round whose receipt was not read may already be merged elsewhere: it neither ends nor runs this tick (schedule
+    // leaves it out), and the next tick checks it again instead of waiting integrationPollMs.
+    const unread = [...asked].filter(([, heads]) => heads.some(([url, headSha]) => mergedAt(url, headSha) === undefined)).map(([id]) => id);
+    if (unread.length) {
+      this.repairUnread.set(ctx.id, new Set(unread));
+      this.repairCheckedAt.delete(ctx.id);
+    }
     this.fenced(ctx, () => {
       if (!this.authorityHolds(ctx.id, c)) { this.repairCheckedAt.delete(ctx.id); return; }
       for (const task of open) this.endMergedRepair(ctx, decl, task, repo.path, baseSha, { mergedAt });
@@ -2925,8 +2946,8 @@ export class Controller {
     const done = new Set(tasks.filter((task) => task.state === 'done').map((task) => task.task_id));
     const spec = specsOf(this.store, ctx.id, decl);
     const hold = decl.executor.kind === 'cli-chain' ? 0 : Math.max(quotaHoldUntil(tasks, now), this.accountHoldUntil(decl.executor.kind, now)); // a chain holds only the exhausted account
-    const held = this.heldTasks(ctx.id);
-    const runnable = tasks.filter((task) => RUNNABLE.includes(task.state) && !task.blocked && !held.has(task.task_id) && (!task.retry_at || task.retry_at <= now) &&
+    const held = this.heldTasks(ctx.id), unread = this.repairUnread.get(ctx.id);
+    const runnable = tasks.filter((task) => RUNNABLE.includes(task.state) && !task.blocked && !held.has(task.task_id) && !unread?.has(task.task_id) && (!task.retry_at || task.retry_at <= now) &&
       (!hold || task.state === 'verified') && (spec.get(task.task_id)?.dependsOn ?? []).every((dep) => done.has(dep)));
     // Publication is not a worker and takes no capacity: every verified task publishes this tick, whatever else is
     // running (ADAPTIVE_SCHEDULER row 2). Dependents see the new state on the next tick.
@@ -3018,6 +3039,9 @@ export class Controller {
       }
     }
     for (const [key, { ctx, decl, holders }] of due) {
+      // Once GitHub did not answer this tick, a base whose holders it would read is neither fetched nor marked checked:
+      // it is due again next tick (aiworks#119). The self-hosted repository reads no GitHub here.
+      if (this.githubSilent() && !this.selfHosted(decl.target.repository)) continue;
       this.baseCheckedAt.set(key, now);
       const repo = this.checkout(decl);
       if (!repo?.path) continue;

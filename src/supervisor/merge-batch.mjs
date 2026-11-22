@@ -106,7 +106,8 @@ async function startGroup(controller, all, items, settings, repoPath, baseSha, n
         && privateMessages({ git, repoPath, trusted: baseSha, sha: item.task.verified_sha }) === 0) ready.push(item);
       continue;
     }
-    await readPull(controller, item, settings, repoPath, baseSha);
+    // A GitHub that did not answer an earlier read of this tick (aiworks#119): no group starts from a partial read.
+    if (!await readPull(controller, item, settings, repoPath, baseSha)) return false;
     const { pr, acted } = inspect(controller, item, settings, repoPath, baseSha);
     if (acted) return true;
     if (!pr) continue;
@@ -193,11 +194,14 @@ async function continueGroup(controller, open, items, settings, repoPath, baseSh
   const since = open.started.seq, passedAt = open.passed?.at ?? controller.now();
   const itemOf = (member) => items.find((entry) => entry.campaignId === member.campaignId && entry.task.task_id === member.task && entry.task.verified_sha === member.sha);
   /** Whether a member may merge onto `base` now: {} yes, { acted } or { waiting } keep the group, { stop } ends it. */
-  const check = (member, item, base) => {
+  const check = async (member, item, base) => {
     if (local) {
       const blocker = localBlocker(controller, item, settings, repoPath);
       return blocker ? { stop: `${member.campaignId}/${member.task}: ${blocker}` } : {};
     }
+    // Its pull request is read without blocking the event loop, behind the tick's GitHub gate (aiworks#119). A GitHub that
+    // did not answer an earlier read of this tick keeps the group as it is until the next tick.
+    if (!await readPull(controller, item, settings, repoPath, base)) return { waiting: true };
     const { pr, acted } = inspect(controller, item, settings, repoPath, base);
     if (acted) return { acted: true };
     if (!pr) return { stop: `${member.campaignId}/${member.task} cannot merge now` };
@@ -219,7 +223,7 @@ async function continueGroup(controller, open, items, settings, repoPath, baseSh
     for (const member of detail.members) {
       const item = itemOf(member);
       if (!item) { end('merge-batch-stopped', `${member.campaignId}/${member.task} no longer waits to merge at ${member.sha}`); return false; }
-      const result = check(member, item, baseSha);
+      const result = await check(member, item, baseSha);
       if (result.acted) return true;
       if (result.stop) { end('merge-batch-stopped', result.stop); return false; }
       waiting ||= Boolean(result.waiting);
@@ -249,6 +253,7 @@ async function continueGroup(controller, open, items, settings, repoPath, baseSh
       const refused = memberRow(store, member, 'merge-refused', since);
       if (refused) { end('merge-batch-stopped', `${member.campaignId}/${member.task} was not merged: ${refused.detail}`); return false; }
     } else if (requested) {
+      if (!await readPull(controller, item, settings, repoPath, base)) return true;
       if (inspect(controller, item, settings, repoPath, base).acted) return true;
       end('merge-batch-stopped', `${member.campaignId}/${member.task} was not merged: ${memberRow(store, member, 'merge-refused', since)?.detail ?? 'unknown'}`);
       return false;
@@ -257,7 +262,7 @@ async function continueGroup(controller, open, items, settings, repoPath, baseSh
     const recovering = Boolean(requested) && local && base !== parent;
     const moved = () => { end('merge-batch-stopped', `the base is ${base}, not the checked step ${parent}`); return false; };
     if (base !== parent && !recovering) return moved();
-    const result = check(member, item, base);
+    const result = await check(member, item, base);
     if (result.acted || result.waiting) return true;
     if (result.stop) { end('merge-batch-stopped', result.stop); return false; }
     // A merge that did not happen (a lost lease, a changed task) is judged again next pass.
