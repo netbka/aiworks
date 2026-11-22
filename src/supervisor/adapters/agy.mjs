@@ -99,52 +99,112 @@ export const PROJECT_EXTENSION_DIRS = ['.agents', '.agent', '_agents', '_agent']
 
 // What ALWAYS_DENIED and VERIFIER_DENIED deny a Claude worker (claude.mjs), as patterns over a whole command line: a
 // command name may follow a quote, a path separator, a shell operator or a wrapper such as `cmd /c`, `bash -lc` or `&`,
-// and Git's global options (-C dir, -c key="a value", --git-dir=...) may stand before its subcommand. Every code run is
-// write-less, so commands that write Git history are denied too, and so is any Git alias definition, which could rename
-// a denied subcommand. This is a second check over the command text, not a lock: a command assembled at run time
-// escapes it, and the sandbox is what holds then.
+// Git's global options (-C dir, -c key="a value", --git-dir=...) may stand before its subcommand, and the subcommand may
+// be quoted. Every code run is write-less, so commands that write Git history are denied too, and so is any Git alias
+// definition, which could rename a denied subcommand. This is a second check over the command text, not a lock: a
+// command assembled at run time escapes it, and the sandbox is what holds then.
 // A quote opens a command only inside a wrapper (`bash -lc "git push"`); elsewhere `grep "git push" docs` is a search.
 const TOKEN_END = String.raw`(?=$|[\s;&|)"'\x60])`;
 // A worker writes the command line and the audit runs in the supervisor, so its time must grow only linearly with the
 // line: every pattern reads a line in one way only (no exponential backtracking), and after a command name it looks at
-// a bounded number of words (ARGS, and at most 32 Git options), never at the rest of the line.
+// a bounded number of words (ARGS, and at most GIT_OPTIONS and RUNNER_OPTIONS options), never at the rest of the line.
+// It fails closed: a line that goes past a bound is denied (the `past the audit limit` rules and WINDOWS), and so is a
+// command line longer than COMMAND_LIMIT bytes.
+export const COMMAND_LIMIT = 64 * 1024;
 // One shell word: plain characters and quoted runs, so `-c core.sshCommand="ssh -v"` is one option and its value.
 const WORD = String.raw`(?:"[^"]*"|'[^']*'|[^\s;&|"'])+`;
 const ARGS = (count) => String.raw`(?:${WORD}\s+){0,${count}}`;
+// Names that may stand quoted: `git "push"` runs git push.
+const quoted = (names) => String.raw`["']?(?:${names})["']?`;
 const SHELLS = '(?:powershell|pwsh|bash|sh|zsh|dash|ksh|wsl)';
+// What makes a wrapper run its command string: cmd's /c or /k, a shell option holding c (-c, -lc, -Command), and
+// PowerShell's -EncodedCommand (-e, -ec, -en...).
+const CMD_SWITCH = String.raw`["']?\/[ck]`;
+const SHELL_SWITCH = String.raw`-(?=[a-z]*c)[a-z]+`;
+const ENCODED_SWITCH = String.raw`-e(?:c|n[a-z]*)?`;
 // cmd /c or /k (other switches may come first); a shell with an option holding c (-c, -lc, -Command, -NoProfile
 // -Command); a PowerShell evaluator or launcher.
-const WRAPPER = new RegExp(String.raw`(?:^|[\s;&|("'])(?:cmd(?:\.exe)?\s+${ARGS(6)}\/[ck]|${SHELLS}(?:\.exe)?["']?\s+${ARGS(12)}-(?=[a-z]*c)[a-z]+\s`
+const WRAPPER = new RegExp(String.raw`(?:^|[\s;&|("'])(?:cmd(?:\.exe)?["']?\s+${ARGS(6)}${CMD_SWITCH}|${SHELLS}(?:\.exe)?["']?\s+${ARGS(12)}${SHELL_SWITCH}\s`
   + String.raw`|iex\s|invoke-expression\s|invoke-command\s|start-process\s|start-job\s)`, 'i');
 const nameAt = (name, wrapped) => String.raw`(?:(?:^|[\s;&|({\x60\\/=]${wrapped ? `|["']` : ''})${name}(?:\.exe|\.cmd)?["']?|["']${name}(?:\.exe|\.cmd)?["'])`;
-// Git's global options before the subcommand: one that takes the next word as its value (-C dir, -c key=value,
-// --git-dir dir, ...), or any other option, with its value after = if it has one. A value is never read as an option.
-const VALUE_OPTION = String.raw`(?:-[Cc]|--(?:git-dir|work-tree|namespace|super-prefix|config-env))`;
-const GIT_OPTION = String.raw`(?:${VALUE_OPTION}\s+${WORD}|(?!${VALUE_OPTION}\s)-[\w.-]+(?:=${WORD})?)`;
-const gitAt = (wrapped) => String.raw`${nameAt('git', wrapped)}(?:\s+${GIT_OPTION}){0,32}\s+`;
+// The options before a subcommand: a word that starts with -, maybe quoted. One of `values` (-C dir) takes the next word
+// as its value, and a value is never read as an option, so each option has one reading.
+const option = (values) => {
+  const value = String.raw`["']?(?:${values})["']?\s`;
+  return String.raw`(?:(?=${value})${WORD}\s+${WORD}|(?!${value})(?=["']?-)${WORD})`;
+};
+const options = (values, max) => String.raw`(?:\s+${option(values)}){0,${max}}`;
+// One more option than `max`: the subcommand lies beyond what the audit reads.
+const pastOptions = (values, max) => String.raw`(?:\s+${option(values)}){${max}}\s+["']?-`;
+const GIT_VALUES = String.raw`-c|--(?:git-dir|work-tree|namespace|super-prefix|config-env|attr-source)`;
+const GIT_OPTIONS = 32;
+const gitAt = (wrapped) => String.raw`${nameAt('git', wrapped)}${options(GIT_VALUES, GIT_OPTIONS)}\s+`;
+const GIT_CONFIG_VARS = String.raw`GIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+)`;
+// npx, pnpm dlx and yarn dlx run a package's CLI; -p and --package name the package.
+const RUNNER = (wrapped) => String.raw`(?:${nameAt('npx', wrapped)}|${nameAt('(?:pnpm|yarn)', wrapped)}\s+${quoted('dlx')})`;
+const RUNNER_VALUES = '-p|--package';
+const RUNNER_OPTIONS = 8;
+const VERSION = String.raw`(?:@[^\s;&|"']*)?`;
+// gh auth status, with at most 8 more plain words (no quotes, escapes or variables) up to the end of its command, or of a
+// wrapper's quoted string, and none of them -t, --show-token or --json, only reads the login state. Every other gh auth
+// command can print or change the token.
+const GH_AUTH_STATUS = String.raw`\s+${quoted('status')}(?:\s+(?!--show-token|--json|-[a-z]*t)[\w.:/=>-]+){0,8}\s*(?:["'\x60]\s*)?(?:$|[;&|)])`;
 const RULES = [
-  ['git push', (w) => String.raw`${gitAt(w)}(?:push|send-pack|http-push|subtree\s+push)${TOKEN_END}`],
-  ['git history write', (w) => String.raw`${gitAt(w)}(?:commit|merge|rebase|cherry-pick|revert|am|update-ref|filter-branch|subtree|fast-import)${TOKEN_END}`],
-  ['git worktree', (w) => String.raw`${gitAt(w)}worktree\s+(?:add|remove|move|prune)${TOKEN_END}`],
-  ['git remote change', (w) => String.raw`${gitAt(w)}remote\s+(?:add|set-url|remove|rm|rename)${TOKEN_END}`],
-  ['git lfs transfer', (w) => String.raw`${gitAt(w)}lfs\s+(?:push|fetch|pull)${TOKEN_END}`],
-  // An alias can rename any subcommand: -c alias.p=push, --config-env, git config alias.p, or Git's config variables.
-  ['git alias', (w) => String.raw`(?:^|[\s"'])(?:-c\s*|--config-env[= ])["']?alias\.|${gitAt(w)}config\s+${ARGS(8)}["']?alias\.`
-    + String.raw`|\bGIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+)\b`],
+  ['git push', (w) => String.raw`${gitAt(w)}(?:${quoted('push|send-pack|http-push')}|${quoted('subtree')}\s+${quoted('push')})${TOKEN_END}`],
+  ['git history write', (w) => String.raw`${gitAt(w)}${quoted('commit|merge|rebase|cherry-pick|revert|am|update-ref|filter-branch|subtree|fast-import')}${TOKEN_END}`],
+  ['git worktree', (w) => String.raw`${gitAt(w)}${quoted('worktree')}\s+${quoted('add|remove|move|prune')}${TOKEN_END}`],
+  ['git remote change', (w) => String.raw`${gitAt(w)}${quoted('remote')}\s+${quoted('add|set-url|remove|rm|rename')}${TOKEN_END}`],
+  ['git lfs transfer', (w) => String.raw`${gitAt(w)}${quoted('lfs')}\s+${quoted('push|fetch|pull')}${TOKEN_END}`],
+  // An alias can rename any subcommand: git -c alias.p=push or --config-env, git config alias.p, or Git's config variables
+  // set for a command (NAME=, PowerShell's env: drive, SetEnvironmentVariable).
+  ['git alias', (w) => String.raw`${nameAt('git', w)}${options(GIT_VALUES, GIT_OPTIONS - 1)}\s+["']?(?:-c["']?\s*|--config-env(?:["']?\s+|=))["']?alias\.`
+    + String.raw`|${gitAt(w)}${quoted('config')}\s+${ARGS(8)}["']?alias\.`
+    + String.raw`|(?:^|[\s;&|(\x60{"'])${GIT_CONFIG_VARS}["']?\s*=|env:${GIT_CONFIG_VARS}|SetEnvironmentVariable\(\s*["']${GIT_CONFIG_VARS}`],
+  ['git options past the audit limit', (w) => `${nameAt('git', w)}${pastOptions(GIT_VALUES, GIT_OPTIONS)}`],
   ['gh write', (w) => String.raw`${nameAt('gh', w)}\s+(?:pr\s+(?:create|merge|close|edit|comment|review|ready|reopen)|release|issue\s+(?:create|comment|close|edit|delete|reopen)`
     + String.raw`|workflow|run|actions|codespaces?|cs|repo\s+(?:create|delete|edit|fork|rename|archive)|secret|variable|api|gist|alias|extensions?|ext`
-    + String.raw`|label\s+(?:create|edit|delete|clone)|ssh-key|gpg-key|auth)${TOKEN_END}`],
-  ['package publish or deploy', (w) => String.raw`${nameAt('(?:npm|pnpm|yarn)', w)}\s+(?:publish|unpublish|deprecate|dist-tag|owner|access|run(?:-script)?\s+(?:update|deploy))${TOKEN_END}`],
+    + String.raw`|label\s+(?:create|edit|delete|clone)|ssh-key|gpg-key|auth(?!${GH_AUTH_STATUS}))${TOKEN_END}`],
+  ['package publish or deploy', (w) => String.raw`${nameAt('(?:npm|pnpm|yarn)', w)}\s+(?:publish|unpublish|deprecate|dist-tag|owner|access|run(?:-script)?\s+(?:update|deploy))${TOKEN_END}`
+    + String.raw`|${RUNNER(w)}${options(RUNNER_VALUES, RUNNER_OPTIONS)}\s+`
+    + String.raw`${quoted(String.raw`vercel${VERSION}|netlify(?:-cli)?${VERSION}\s+["']?deploy|npm${VERSION}\s+["']?publish`)}${TOKEN_END}`],
+  ['package runner options past the audit limit', (w) => `${RUNNER(w)}${pastOptions(RUNNER_VALUES, RUNNER_OPTIONS)}`],
   ['remote shell', (w) => `${nameAt('(?:ssh|scp|sftp|rsync)', w)}${TOKEN_END}`],
   // A command the audit cannot read.
-  ['encoded command', () => String.raw`(?:^|[\s;&|(\\/"'])(?:powershell|pwsh)(?:\.exe)?["']?\s+${ARGS(12)}-e(?:c|n[a-z]*)?\s`],
+  ['encoded command', () => String.raw`(?:^|[\s;&|(\\/"'])(?:powershell|pwsh)(?:\.exe)?["']?\s+${ARGS(12)}${ENCODED_SWITCH}\s`],
 ];
 export const DENIED_COMMANDS = RULES.map(([name, pattern]) => ({ name, plain: new RegExp(pattern(false), 'i'), wrapped: new RegExp(pattern(true), 'i') }));
+// The windows of WRAPPER, the git config alias rule and the encoded-command rule: the words after a name that are read
+// for its switch (`head`, one word more than the window, none of them the switch). Past them a switch (`token`) is not
+// read as one, so a line that has one there is denied.
+const WINDOWS = [
+  ['cmd switch past the audit limit', () => String.raw`(?:^|[\s;&|("'])cmd(?:\.exe)?["']?(?:\s+(?!${CMD_SWITCH})${WORD}){7}`, String.raw`\s${CMD_SWITCH}`],
+  ['shell switch past the audit limit', () => String.raw`(?:^|[\s;&|("'])${SHELLS}(?:\.exe)?["']?(?:\s+(?!${SHELL_SWITCH}\s)${WORD}){13}`,
+    String.raw`\s${SHELL_SWITCH}(?=\s)`],
+  ['encoded command past the audit limit', () => String.raw`(?:^|[\s;&|(\\/"'])(?:powershell|pwsh)(?:\.exe)?["']?(?:\s+(?!${ENCODED_SWITCH}\s)${WORD}){13}`,
+    String.raw`\s${ENCODED_SWITCH}(?=\s)`],
+  ['git config past the audit limit', (w) => String.raw`${gitAt(w)}${quoted('config')}(?:\s+(?!["']?alias\.)${WORD}){9}`, String.raw`\s["']?alias\.`],
+].map(([name, head, token]) => ({ name, plain: new RegExp(head(false), 'gi'), wrapped: new RegExp(head(true), 'gi'), token: new RegExp(token, 'gi') }));
+
+/** Whether a match of `head` ends before a match of `token`; each is read once, in linear time. */
+function pastWindow(text, head, token) {
+  let last = -1;
+  token.lastIndex = 0;
+  for (let found = token.exec(text); found; found = token.exec(text)) last = found.index;
+  head.lastIndex = 0;
+  for (let found = last < 0 ? null : head.exec(text); found && found.index < last; found = head.exec(text)) {
+    if (found.index + found[0].length <= last) return true;
+    head.lastIndex = found.index + 1;
+  }
+  return false;
+}
+
 /** The name of the first denied command a command line contains, or null. */
 export function deniedCommand(line) {
   const text = String(line);
+  if (Buffer.byteLength(text, 'utf8') > COMMAND_LIMIT) return 'command line too long to audit';
   const key = WRAPPER.test(text) ? 'wrapped' : 'plain';
-  return DENIED_COMMANDS.find((rule) => rule[key].test(text))?.name ?? null;
+  return DENIED_COMMANDS.find((rule) => rule[key].test(text))?.name ??
+    WINDOWS.find((window) => pastWindow(text, window[key], window.token))?.name ?? null;
 }
 
 const origin = (url) => new URL(url).origin;

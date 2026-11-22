@@ -381,6 +381,9 @@ const HISTORY_MS = 90 * 24 * 60 * 60_000;
 const NOT_QUALITY = new Set(['quota', 'auth', 'spawn-failed', 'unavailable', 'admission-blocked', 'lost']);
 // A candidate whose model the provider refused waits alone (MODEL_ROUTING 9): its executor_waits row names kind and model.
 const modelWaitKey = (kind, model) => `${kind}/${model}`;
+// A checkout refused for AGY code mode (AW-024) holds AGY off that one task: its executor_waits row names agy-cli and the
+// task, has no retry time and ends with a recheck of the campaign. Nothing waits on the provider itself.
+const agyCodeKey = (taskId) => `agy-cli#code:${taskId}`;
 
 // ---- Generated tasks of an envelope (WORK_ENVELOPE 6.2 and 6.6, slice E5). ----
 // With adaptive planning on, an envelope campaign gets two task rows no declaration holds: the planning step PLAN and the
@@ -3239,18 +3242,22 @@ export class Controller {
    */
   executorChoice(decl, task, now = this.now(), { session = null, history = false, hostUnavailable = null } = {}) {
     const waits = this.store.all('SELECT * FROM executor_waits WHERE campaign_id = ?', decl.campaignId);
+    // This task's refused AGY code-mode checkout (agyCodeKey), read only while agy.codeRoles is on: agy-cli's host fact,
+    // so routing leaves AGY out of this task alone and the receipt records why.
+    const refused = executors.agyCodeRoles(this.config) ? waits.find((item) => item.executor_kind === agyCodeKey(task.task_id))?.reason ?? null : null;
     const facts = (kind) => {
       const own = waits.find((item) => item.executor_kind === kind);
       if (!this.cmd[kind.replace('-cli', '')]?.length) {
         return { cliConfigured: false, cliRecheckAt: own?.retry_at > now ? own.retry_at : now + 15 * 60_000, hostUnavailable: null, wait: null };
       }
+      const hostUnavailable = kind === 'agy-cli' ? refused : null;
       // The later of this campaign's own wait and the account's wait (ADAPTIVE_SCHEDULER 4.5); an elapsed timed wait is none.
       const wait = laterWait(own, accountWait(this.store, this.config, kind));
       const active = wait && (wait.retry_at === null || wait.retry_at > now);
-      if (active) return { cliConfigured: true, hostUnavailable: null, wait: { retryAt: wait.retry_at, reason: wait.reason } };
+      if (active) return { cliConfigured: true, hostUnavailable, wait: { retryAt: wait.retry_at, reason: wait.reason } };
       // With profile selection, a kind waits when none of its profiles may run, until the earliest reset among them.
       const profile = this.profileChoice(kind, now);
-      return { cliConfigured: true, hostUnavailable: null, wait: profile && !profile.account ? { retryAt: profile.retryAt, reason: profile.reason } : null };
+      return { cliConfigured: true, hostUnavailable, wait: profile && !profile.account ? { retryAt: profile.retryAt, reason: profile.reason } : null };
     };
     // A pending worker fallback (#39) leaves out the provider that stopped the step: while it is pending, the step waits
     // for another provider rather than running again on that one.
@@ -3450,10 +3457,12 @@ export class Controller {
       });
       const failed = judged.filter((item) => item.reason);
       if (!failed.length) continue;
-      // Every model the role could run fails: the provider waits, as before. Otherwise only the failing models are left out
-      // of this choice (host facts per model), and the provider's eligible models stay available without a wait.
+      // Every model the role could run fails: the provider waits, as before, except that a checkout refused for AGY code
+      // mode holds AGY off this task only. Otherwise only the failing models are left out of this choice (host facts per
+      // model), and the provider's eligible models stay available without a wait.
       if (failed.length === judged.length) {
-        this.recordUnavailable(ctx, kind, failed[0].reason);
+        if (this.agyCodeRefusal(kind, web)) this.refuseAgyCode(ctx, task.task_id, failed[0].reason);
+        else this.recordUnavailable(ctx, kind, failed[0].reason);
         found.set(kind, failed[0].reason);
       } else for (const { model, reason } of failed) found.set(modelWaitKey(kind, model), reason);
     }
@@ -3471,6 +3480,23 @@ export class Controller {
     return { executor: marked, judged: policy ? { ...marked, researchOnly: true } : marked,
       options: { command: this.cmd[executor.kind.replace('-cli', '')] ?? null,
         includedOnly: policy ? { ...policy.includedOnly, models: policy.models } : includedOnlyRecord(this.config, executor.kind) } };
+  }
+
+  /** Whether a pre-launch finding on `kind` refuses an AGY code-mode run (agy.codeRoles on, a task without `web`). */
+  agyCodeRefusal(kind, web) {
+    return kind === 'agy-cli' && !web && executors.agyCodeRoles(this.config);
+  }
+
+  /**
+   * A checkout refused for AGY code mode (an agy extension folder in or above it, AW-024): AGY stays off this one task
+   * until a recheck of the campaign, and routing moves the task to the next provider. Its other tasks, web acceptance
+   * included, keep AGY: nothing waits on the provider.
+   */
+  refuseAgyCode(ctx, taskId, reason) {
+    const key = agyCodeKey(taskId);
+    if (this.store.get('SELECT 1 AS held FROM executor_waits WHERE campaign_id = ? AND executor_kind = ?', ctx.id, key)) return;
+    this.store.run('INSERT INTO executor_waits (campaign_id, executor_kind, retry_at, reason) VALUES (?, ?, NULL, ?)', ctx.id, key, reason);
+    this.store.journal(ctx.id, 'agy-code-refused', { task: taskId, reason }, this.now());
   }
 
   /** Pre-launch host/project findings are timed; dispatch rechecks them before any worker starts. */
@@ -3951,7 +3977,8 @@ export class Controller {
         includedOnly: codePolicy ? { ...codePolicy.includedOnly, models: codePolicy.models } : includedOnlyRecord(this.config, executor.kind),
       });
       if (unavailable) {
-        this.recordUnavailable(ctx, executor.kind, unavailable);
+        if (this.agyCodeRefusal(executor.kind, spec.web)) this.refuseAgyCode(ctx, task.task_id, unavailable);
+        else this.recordUnavailable(ctx, executor.kind, unavailable);
         return null;
       }
       const cacheEnv = this.offerTestCache(decl, local ? null : repo, !proof && kind === 'verify' && spec.deliverable === 'commit' ? targetSha : null, runDir);

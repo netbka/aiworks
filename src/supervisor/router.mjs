@@ -5,7 +5,9 @@
 // route(inputs) is a pure function of its one argument: no clock, store, host check or other input. The controller
 // collects the facts (receiptInputs) once, at choice time, so replaying a stored receipt gives the same decision.
 // Static mode keeps today's order of checks: the host and project check (unavailableReason) still runs after the choice,
-// inside dispatch, so each host fact's hostUnavailable is null here and the static policy does not read it.
+// inside dispatch, so each host fact's hostUnavailable is null here. The one exception is AGY code mode (agy.codeRoles on,
+// AW-024): once dispatch refused a task's checkout for it, agy-cli's fact for that task carries the refusal, and the
+// static policy leaves AGY out of that task's choice.
 import { createHash } from 'node:crypto';
 import { BROWSER_KINDS, roleUnavailableReason, webFlag } from './adapters/executors.mjs';
 import { canonicalJson } from './campaign.mjs';
@@ -85,6 +87,8 @@ export function route(inputs) {
     if (task.web ? !BROWSER_KINDS.includes(candidate.kind) : candidate.kind === 'agy-cli' && !agyCodeRoles) continue;
     if (!own.cliConfigured) { earliest(own.cliRecheckAt); continue; }
     if (roleUnavailableReason(candidate, role, task.deliverable, platform, task.web, { agyCodeRoles })) continue;
+    // A refused checkout clears only with a recheck, so it bounds no retry.
+    if (own.hostUnavailable) continue;
     if (own.wait) { if (own.wait.retryAt !== null) earliest(own.wait.retryAt); continue; }
     if (candidate.kind === avoid) { fallback ??= candidate; continue; }
     return pick(candidate, avoid ? 'failed-provider-last' : 'declared-order',

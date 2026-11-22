@@ -11,7 +11,7 @@ import { BROWSER_SERVER, BUILD_RETRY_NOTE, CODE_PERMISSION_MODE, DENY, TOOLS, de
 import { validResult } from '../../src/supervisor/adapters/claude.mjs';
 import { passedCheck } from '../../src/supervisor/result-review.mjs';
 import { agyCodeRoles, buildPrompt, classify, prepare, roleUnavailableReason, unavailableReason, webFlag } from '../../src/supervisor/adapters/executors.mjs';
-import { route } from '../../src/supervisor/router.mjs';
+import { replay, route } from '../../src/supervisor/router.mjs';
 import { validateDeclaration } from '../../src/supervisor/campaign.mjs';
 import { declaration, environment, GOVERNANCE, runUntil, skipWithoutSqlite } from './helpers.mjs';
 
@@ -265,15 +265,19 @@ test('an accepted build verification needs every criterion passed', () => {
   assert.equal(passedCheck({ verification: full, verified_sha: 'b'.repeat(40), result: { report } }, ['C1', 'C2']), true, 'its report is released');
 });
 
-test('a campaign routes its web task to agy for acceptance and verification, and its code task elsewhere', { skip: skipWithoutSqlite }, async (t) => {
+// Refused: with agy.codeRoles on, an agy extension folder above every checkout refuses the code task's AGY run. That task
+// alone moves on, once and without a wait on AGY, so the web task still runs on AGY.
+for (const refused of [false, true]) test(`a campaign routes its web task to agy for acceptance and verification, and its code task elsewhere${refused ? ' (checkout refused for AGY code mode)' : ''}`, { skip: skipWithoutSqlite }, async (t) => {
   const { Store } = await import('../../src/supervisor/store.mjs');
   const { Controller } = await import('../../src/supervisor/controller.mjs');
   const { campaignStart } = await import('../../src/supervisor/api.mjs');
   const env = environment();
   const agyState = join(env.tmp, 'agy');
   mkdirSync(agyState);
+  if (refused) mkdirSync(join(env.tmp, '.agents'));
   process.env.FAKE_AGY_STATE = agyState;
-  const config = { ...env.config, commands: { ...env.config.commands, agy: [process.execPath, FAKE_AGY], chrome: fakeChrome(t, '155.0.8059.39') } };
+  const config = { ...env.config, ...(refused ? { agy: { codeRoles: true } } : {}),
+    commands: { ...env.config.commands, agy: [process.execPath, FAKE_AGY], chrome: fakeChrome(t, '155.0.8059.39') } };
   const store = new Store(join(env.dataDir, 'supervisor.db'));
   const d = declaration({ tasks: [{ ...declaration().tasks[0], deliverable: 'report' }, { ...webTask, dependsOn: ['T1'] }] });
   d.executor = chain(agy, claudeProvider);
@@ -281,10 +285,15 @@ test('a campaign routes its web task to agy for acceptance and verification, and
   const controller = new Controller({ store, config, dataDir: env.dataDir, fault: null });
   t.after(() => { controller.release(); store.close(); env.cleanup(); delete process.env.FAKE_AGY_STATE; });
   await runUntil(controller, store, d.campaignId, (c) => c.control === 'finished');
-  const ops = store.all('SELECT task_id, kind, executor_kind, run_dir, outcome FROM operations WHERE campaign_id = ? ORDER BY created_at', d.campaignId);
+  const ops = store.all('SELECT task_id, kind, executor_kind, run_dir, outcome, routing FROM operations WHERE campaign_id = ? ORDER BY created_at', d.campaignId);
   assert.deepEqual(ops.map((op) => `${op.task_id}.${op.kind}:${op.executor_kind}`),
     ['T1.implement:claude-cli', 'T1.verify:claude-cli', 'W1.implement:agy-cli', 'W1.verify:agy-cli']);
   assert.ok(ops.every((op) => op.outcome.class === 'result'));
+  if (refused) {
+    assert.equal(store.all("SELECT seq FROM journal WHERE campaign_id = ? AND kind = 'agy-code-refused'", d.campaignId).length, 1, 'AGY is never picked again for that task');
+    assert.ok(ops[0].routing.inputs.hostFacts.find((fact) => fact.kind === 'agy-cli').hostUnavailable, 'the receipt records the refusal');
+    assert.deepEqual(replay(ops[0].routing), ops[0].routing.decision, 'and replays to the same choice');
+  }
   const calls = readFileSync(join(agyState, 'calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
   assert.deepEqual(calls.map((call) => call.role), ['implement', 'verify']);
   for (const [index, call] of calls.entries()) {
@@ -441,6 +450,9 @@ test('agy code mode takes only report tasks, only under agy.codeRoles, in a sand
   assert.equal(route(inputs('report', { agyCodeRoles: 'yes' })).chosen.kind, 'claude-cli', 'only the exact true counts');
   assert.equal(route(inputs('report', { agyCodeRoles: true })).chosen.kind, 'agy-cli');
   assert.equal(route(inputs('commit', { agyCodeRoles: true })).chosen.kind, 'claude-cli');
+  // A checkout refused for this task (agy-cli's recorded host fact) moves the task to the next provider.
+  assert.equal(route(inputs('report', { agyCodeRoles: true, hostFacts: [{ kind: 'agy-cli', cliConfigured: true, hostUnavailable: 'refused', wait: null },
+    { kind: 'claude-cli', cliConfigured: true, hostUnavailable: false, wait: null }] })).chosen.kind, 'claude-cli');
   const runDir = mkdtempSync(join(tmpdir(), 'aiworks-agy-code-'));
   const above = mkdtempSync(join(tmpdir(), 'aiworks-agy-tree-'));
   const workspace = join(above, 'checkout');
@@ -480,22 +492,28 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
   };
   const shell = (CommandLine) => ({ state: 'DONE', tool_name: 'run_command', tool_info: { parameters: { CommandLine } } });
   const allowed = [{ state: 'DONE', tool_name: 'read_file', tool_info: { parameters: { Path: 'app.js' } } }, shell('git status --short'),
-    shell('git log --grep=push --oneline'), shell('grep -rn "git push" docs'), { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'status' } } }];
+    shell('git log --grep=push --oneline'), shell('grep -rn "git push" docs'), { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'status' } } },
+    ...['rg -c alias. src', 'wc -c alias.txt', 'grep -rn GIT_CONFIG_COUNT src', 'gh auth status'].map(shell)];
   assert.equal(read(allowed).class, 'result');
   const voided = [
     ...['git push origin HEAD', 'git -C . push', 'cmd /c "git push origin x"', 'git status; git commit -am x', '& "git" push', 'gh pr create --fill',
       'gh workflow run ci', 'npm run deploy', 'ssh host', 'powershell -EncodedCommand ZQB=', 'git -c core.sshCommand="ssh -v" push',
       'git -c alias.p=push p origin main', 'bash -lc "git push origin x"', 'git subtree push --prefix=docs origin pages', 'git send-pack origin main',
-      'gh gist create notes.md'].map(shell),
+      'gh gist create notes.md', 'git config alias.p push', 'GIT_CONFIG_COUNT=1 git p', 'gh auth token', 'gh auth status --show-token', 'gh auth status ""-t',
+      'git "push"', 'git --attr-source HEAD push', 'npx vercel --prod', 'pnpm dlx netlify-cli deploy', 'yarn dlx npm publish',
+      // Past what the audit reads: the 33rd Git option, a cmd switch beyond the window, a line over 64 KB.
+      `git ${'-c a=b '.repeat(33)}push`, 'cmd /d /e:on /v:off /q /a /u /t:0 /c "git push"', `git status ${'a'.repeat(64 * 1024)}`].map(shell),
     { state: 'DONE', tool_name: 'run_command', tool_info: { parameters: {} } },
     { state: 'DONE', tool_name: 'write_file' }, { state: 'DONE', tool_name: 'search_web' }, browserTool('DONE'),
     { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'send_input' } } },
   ];
   for (const step of voided) assert.equal(read([step]).violation, true, JSON.stringify(step));
   // The worker writes the command line and the supervisor reads it: a line built to make a pattern backtrack is still read
-  // at once (with nested option patterns, 25 Git options took seconds, and each one more doubled it).
+  // at once (with nested option patterns, 25 Git options took seconds, and each one more doubled it), and so is a line
+  // just under the size limit that holds a command name at every word.
   const started = performance.now();
   assert.equal(deniedCommand(`git ${'--x=y '.repeat(25)}status`), null);
+  for (const unit of ['-a=git ', 'cmd /x ', 'bash -x ']) deniedCommand(unit.repeat(Math.floor((64 * 1024 - 1) / unit.length)));
   assert.ok(performance.now() - started < 1000, 'the audit cannot stall the supervisor');
   assert.equal(read(allowed, { mode: 'request-review' }).violation, true, 'only the sandboxed permission mode');
   assert.equal(read(allowed, { extra: { denied_actions: [{ action: 'command' }] } }).violation, true, 'a refused bypass voids the run');
