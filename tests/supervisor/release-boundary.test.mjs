@@ -33,6 +33,7 @@ const ALLOWED = [
   ['src/supervisor/adapters/claude.mjs', "'Bash(gh pr merge:*)'", 'the worker deny list: it forbids the call'],
   ['src/supervisor/check-services.mjs', "git(['update-ref', 'refs/heads/aiworks-source', sha], own)",
     'the one head of a self-contained bundle, in a temporary repository fullBundleOf creates and deletes; no project ref'],
+  ['src/supervisor/adapters/agy.mjs', 'update-ref|filter-branch', 'the AGY code-mode audit: a worker command naming it voids the run'],
 ];
 
 /** Every match of a rule in one file's text: [{ file, line, rule, text }]. Matches under release/ are allowed. */

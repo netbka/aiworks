@@ -32,7 +32,7 @@ Every plugin below has the same passport: **why** it exists, **when** to turn it
 
 **When to turn it on.** If you have a Codex subscription and often hit Claude's limits.
 
-**Good to know.** Work moves to another agent only because of a provider problem: a limit, a sign-in or unavailability. Denied access or a failed check is never "worked around" with another agent. On Windows, Codex can check a result but cannot change code. Cursor as a builder is not yet supported on Windows. Which agent suits which role is in the [agent comparison](../AGENTS_COMPARISON.md).
+**Good to know.** Work moves to another agent only because of a provider problem: a limit, a sign-in or unavailability. Denied access or a failed check is never "worked around" with another agent. On Windows, Codex can check a result but cannot change code. Cursor as a builder is not yet supported on Windows. With the switch `"agy": { "codeRoles": true }` AGY can also take plans and reports, and check reports, in a sandbox without network or write access; it never makes or checks commits. The switch is off by default, and AGY then only checks websites. Turn it on after the comparison has run on your computer. Which agent suits which role is in the [agent comparison](../AGENTS_COMPARISON.md).
 
 **config.json** holds the path to the program:
 
@@ -56,6 +56,14 @@ with npm run rebuild. If Codex is not installed, tell me how to install it.
 ```
 
 **Turn off:** `Remove Codex from the AIWorks config.json and restart the supervisor.`
+
+**AGY for plans and reports:**
+
+```text
+Let AGY take plans and reports in AIWorks: set "agy": { "codeRoles": true } in config.json
+and the path to agy.exe in commands.agy, then restart the supervisor with npm run rebuild.
+First run scripts/provider-benchmark.mjs and show me whether AGY coped.
+```
 
 **How to check.** `codex --version` answers. In the dashboard, under **Settings › Usage**, Codex runs appear after the next Claude limit.
 

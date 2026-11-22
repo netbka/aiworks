@@ -5,7 +5,10 @@
 // Permissions stay scoped (edits plus git/npm/node); nothing here bypasses a provider's sandbox. Not part of npm run check.
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { classify as classifyRun, prepare as prepareRun } from '../src/supervisor/adapters/executors.mjs';
+import { workerEnv } from '../src/supervisor/proc.mjs';
 import http from 'node:http';
 const ROOT = process.argv[2]; const OUT = join(ROOT, 'results.jsonl');
 const CODEX = process.env.CODEX_BIN ?? 'codex';
@@ -24,15 +27,41 @@ const CONFIGS = [
 function cmd(c, prompt, dir) {
   if (c.p === 'claude') return [CLAUDE, ['-p', prompt, '--model', c.m, '--effort', c.e, '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash(git:*)', 'Bash(npm:*)', 'Bash(node:*)', 'Read', 'Edit', 'Write', 'Glob', 'Grep', '--output-format', 'json']];
   if (c.p === 'codex') return [CODEX, ['exec', '-m', c.m, '-c', `model_reasoning_effort="${c.e}"`, '-c', 'forced_login_method="chatgpt"', '-c', 'model_provider="openai"', '--skip-git-repo-check', '-s', 'workspace-write', '-C', dir, prompt]];
+  // The web run only: an AGY code task runs through agyRun below.
   return [AGY, ['--settings', '{"useG1Credits":false}', '--model', c.m, '--mode', 'accept-edits', '-p', prompt]];
 }
 function run(c, prompt, dir, timeout = 420000) {
   return new Promise((res) => {
     const [x, a] = cmd(c, prompt, dir); const t0 = Date.now(); let out = '', err = '';
-    const ch = spawn(x, a, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
+    // AGY's web run, like every production AGY run, keeps auto-update off, so the CLI cannot change mid-benchmark.
+    const ch = spawn(x, a, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], env: c.p === 'agy' ? { ...process.env, AGY_CLI_DISABLE_AUTO_UPDATE: '1' } : process.env });
     const to = setTimeout(() => { ch.kill(); }, timeout);
     ch.stdout.on('data', (d) => out += d); ch.stderr.on('data', (d) => err += d);
     ch.on('close', (code) => { clearTimeout(to); res({ code, out, err: err.slice(-300), ms: Date.now() - t0 }); });
+  });
+}
+// AGY runs a code task exactly as production runs a report task in code mode (AW-024): executors.prepare (run-local profile,
+// sandboxed commands, no command allow rule, the role's terminal schema) and executors.classify (the code-mode audit). Its
+// reply is the report of its terminal result; toolsSeen and audit record what the production audit saw and decided.
+function agyRun(c, prompt, dir, timeout = 420000) {
+  const runDir = join(ROOT, 'runs', basename(dir)); rmSync(runDir, { recursive: true, force: true }); mkdirSync(runDir, { recursive: true });
+  const sessionId = randomUUID(); const packetDigest = createHash('sha256').update(prompt).digest('hex');
+  const inv = prepareRun({ executor: { kind: 'agy-cli', model: c.m }, command: [AGY], role: 'implementer', deliverable: 'report', sessionId, digest: packetDigest,
+    runDir, workspace: dir, timeoutMs: timeout, prompt: prompt + '\nReturn the terminal result with result "resolved", a one-line summary, and your reply as report.' });
+  return new Promise((res) => {
+    const t0 = Date.now(); let out = '', err = '';
+    const ch = spawn(inv.argv[0], inv.argv.slice(1), { cwd: inv.cwd, env: workerEnv(process.env, inv.env), stdio: ['pipe', 'pipe', 'pipe'] });
+    const to = setTimeout(() => { ch.kill(); }, timeout);
+    ch.stdout.on('data', (d) => out += d); ch.stderr.on('data', (d) => err += d);
+    ch.stdin.end(inv.prompt);
+    ch.on('close', (code, signal) => {
+      clearTimeout(to);
+      const outcome = classifyRun({ executorKind: 'agy-cli', role: 'implementer', run: { exitCode: code, signal }, stdoutText: out, stderrText: err,
+        expect: { deliverable: 'report', sessionId, packetDigest, web: false }, now: Date.now() });
+      const toolsSeen = [...new Set(out.split(/\r?\n/).flatMap((line) => { try { return [JSON.parse(line)?.step_update?.tool_name]; } catch { return []; } }).filter(Boolean))].sort();
+      res({ code, out: outcome.value?.report ?? '', err: err.slice(-300), ms: Date.now() - t0, toolsSeen,
+        audit: outcome.class === 'result' ? 'result' : outcome.class + (outcome.violation ? ' (violation)' : '') + ': ' + outcome.detail });
+    });
   });
 }
 const text = (c, r) => { if (c.p === 'claude') { try { return JSON.parse(r.out).result ?? r.out; } catch { return r.out; } } return r.out; };
@@ -43,7 +72,7 @@ function fixImpl(d) {
   write(d, 'duration.mjs', `export function parseDuration(s){\n  const m = /^(\\d+)([smh])$/.exec(s);\n  if(!m) throw new Error('bad');\n  return Number(m[1]) * {s:1,m:60,h:3600}[m[2]];\n}\n`);
   write(d, 'duration.test.mjs', `import test from 'node:test';import assert from 'node:assert';import {parseDuration as p} from './duration.mjs';\ntest('simple',()=>{assert.equal(p('90s'),90);assert.equal(p('2m'),120)});\ntest('compound',()=>{assert.equal(p('1h30m'),5400);assert.equal(p('2m10s'),130)});\ntest('invalid',()=>{assert.throws(()=>p('abc'));assert.throws(()=>p(''));assert.throws(()=>p('5x'))});\n`);
 }
-const impl = { prompt: 'In this directory the tests in duration.test.mjs fail. Fix duration.mjs so `npm test` passes. Do not edit the test file. Reply with one line when done.',
+const impl = { commit: true, prompt: 'In this directory the tests in duration.test.mjs fail. Fix duration.mjs so `npm test` passes. Do not edit the test file. Reply with one line when done.',
   setup: fixImpl, score: (d) => { const ok = sh(d, 'npm', ['test']).status === 0; const same = readFileSync(join(d, 'duration.test.mjs'), 'utf8').includes("assert.equal(p('1h30m'),5400)"); return { pass: ok && same, note: ok ? '' : 'tests fail' }; } };
 
 function fixMerge(d) {
@@ -56,7 +85,7 @@ function fixMerge(d) {
   git(d, 'checkout', '-q', 'main');
   write(d, 'cfg.mjs', `export const config = {\n  timeout: 30,\n  retries: 1,\n  cache: true,\n};\n`); git(d, 'commit', '-qam', 'main: cache');
 }
-const merge = { prompt: 'This git repo has branch main checked out and a branch "feature". Merge feature into main, resolving the conflict so the changes of both branches are kept, make sure `npm test` passes, and finish with a merge commit (two parents). Reply with one line when done.',
+const merge = { commit: true, prompt: 'This git repo has branch main checked out and a branch "feature". Merge feature into main, resolving the conflict so the changes of both branches are kept, make sure `npm test` passes, and finish with a merge commit (two parents). Reply with one line when done.',
   setup: fixMerge, score: (d) => { const t = sh(d, 'npm', ['test']).status === 0; const par = git(d, 'rev-list', '--parents', '-n', '1', 'HEAD').stdout.trim().split(' ').length - 1; const clean = !readFileSync(join(d, 'cfg.mjs'), 'utf8').includes('<<<<<<<'); return { pass: t && par === 2 && clean, note: `tests=${t} parents=${par}` }; } };
 
 const PAGER_OK = `export function page(items, n, size){\n  const start = (n - 1) * size;\n  return items.slice(start, start + size);\n}\n`;
@@ -79,8 +108,10 @@ const plan = { prompt: 'You are a delivery planner. Brief: "Add per-user rate li
 const TASKS = { plan, implement: impl, merge, verifyBug: verifyBad, verifyClean: verifyOk };
 async function one(c, name, t) {
   const dir = join(ROOT, 'w', `${c.p}-${c.m}-${c.e}-${name}`.replace(/[^\w.-]/g, '_')); rmSync(dir, { recursive: true, force: true }); mkdirSync(dir, { recursive: true });
-  t.setup(dir); const r = await run(c, t.prompt, dir); const o = text(c, r); let s; try { s = t.score(dir, o); } catch (e) { s = { pass: false, note: 'score error ' + e.message }; }
-  const row = { ...c, task: name, pass: s.pass, note: s.note, ms: r.ms, exit: r.code, ...tokens(c, r) }; writeFileSync(OUT, JSON.stringify(row) + '\n', { flag: 'a' }); console.log(JSON.stringify(row));
+  // Production never gives AGY a commit task (executors.roleUnavailableReason), so the benchmark does not either.
+  if (c.p === 'agy' && t.commit) { const row = { ...c, task: name, pass: null, note: 'not run: AGY takes only report tasks outside the browser' }; writeFileSync(OUT, JSON.stringify(row) + '\n', { flag: 'a' }); console.log(JSON.stringify(row)); return; }
+  t.setup(dir); const r = c.p === 'agy' ? await agyRun(c, t.prompt, dir) : await run(c, t.prompt, dir); const o = c.p === 'agy' ? r.out : text(c, r); let s; try { s = t.score(dir, o); } catch (e) { s = { pass: false, note: 'score error ' + e.message }; }
+  const row = { ...c, task: name, pass: s.pass, note: s.note, ms: r.ms, exit: r.code, ...tokens(c, r), ...(c.p === 'agy' ? { toolsSeen: r.toolsSeen, audit: r.audit } : {}) }; writeFileSync(OUT, JSON.stringify(row) + '\n', { flag: 'a' }); console.log(JSON.stringify(row));
 }
 async function webRun(c) {
   const srv = http.createServer((q, s) => { s.setHeader('content-type', 'text/html'); s.end('<html><body><h1>Status</h1><div id="v"></div><script>setTimeout(()=>{document.getElementById("v").textContent="code:7413"},800)</script></body></html>'); }).listen(0);

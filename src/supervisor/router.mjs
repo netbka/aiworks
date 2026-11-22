@@ -35,12 +35,14 @@ export function priorAttempt(op) {
  * The complete argument of route(). `providers` is the declared order (executorOrder), `facts(kind)` the host facts of one
  * provider kind observed now, `priorAttempts` the task's finished attempts of this stage, newest first.
  */
-export function receiptInputs({ stage, chain, spec, providers, platform, facts, priorAttempts }) {
+export function receiptInputs({ stage, chain, spec, providers, platform, facts, priorAttempts, agyCodeRoles = false }) {
   const candidates = providers.map((provider) => ({ kind: provider.kind, model: provider.model ?? null, tier: null,
     researchOnly: provider.researchOnly === true, ...(provider.brokeredCode === true ? { brokeredCode: true } : {}) }));
   return {
     stage, chain,
     task: { deliverable: spec.deliverable, web: webFlag(spec.web) },
+    // Recorded (so replay decides the same) only when the owner switched agy.codeRoles on; absent keeps every receipt as before.
+    ...(agyCodeRoles ? { agyCodeRoles: true } : {}),
     candidates, candidatesDigest: sha256(candidates), platform,
     hostFacts: candidates.map(({ kind }) => ({ kind, ...facts(kind) })),
     escalation: { priorAttempts },
@@ -48,12 +50,12 @@ export function receiptInputs({ stage, chain, spec, providers, platform, facts, 
 }
 
 /** Every failing filter of one candidate for one role (section 4.2), not only the first. */
-function reasons(candidate, fact, role, { deliverable, web }, platform) {
+function reasons(candidate, fact, role, { deliverable, web }, platform, agyCodeRoles = false) {
   const out = [];
   if (candidate.researchOnly && deliverable !== 'report') out.push('research-only');
-  if (web ? !BROWSER_KINDS.includes(candidate.kind) : candidate.kind === 'agy-cli') out.push('web-mismatch');
+  if (web ? !BROWSER_KINDS.includes(candidate.kind) : candidate.kind === 'agy-cli' && !agyCodeRoles) out.push('web-mismatch');
   if (!fact.cliConfigured) out.push('cli-not-configured');
-  if (roleUnavailableReason(candidate, role, deliverable, platform, web)) out.push('role-unsupported');
+  if (roleUnavailableReason(candidate, role, deliverable, platform, web, { agyCodeRoles })) out.push('role-unsupported');
   if (fact.hostUnavailable) out.push('host-unavailable');
   if (fact.wait) out.push('account-wait');
   return out;
@@ -62,10 +64,11 @@ function reasons(candidate, fact, role, { deliverable, web }, platform) {
 /** The static decision for `inputs`, exactly as executorChoice chose before slice R2. */
 export function route(inputs) {
   const { stage, chain, task, candidates, platform, hostFacts, escalation } = inputs;
+  const agyCodeRoles = inputs.agyCodeRoles === true;
   const role = stage === 'verify' ? 'verification' : 'implementer';
   const fact = (kind) => hostFacts.find((item) => item.kind === kind);
   const eligibility = candidates.flatMap((candidate) => ROLES.map((r) => ({ kind: candidate.kind, model: candidate.model, role: r,
-    reasons: reasons(candidate, fact(candidate.kind), r, task, platform) })));
+    reasons: reasons(candidate, fact(candidate.kind), r, task, platform, agyCodeRoles) })));
   const last = chain ? escalation.priorAttempts[0] ?? null : null;
   const failed = last && last.class !== null && !AVAILABILITY.has(last.class) && !last.denied &&
     (last.class !== 'result' || last.terminal === 'evidence-unavailable');
@@ -79,9 +82,9 @@ export function route(inputs) {
   for (const candidate of candidates) {
     const own = fact(candidate.kind);
     if (candidate.researchOnly && task.deliverable !== 'report') continue;
-    if (task.web ? !BROWSER_KINDS.includes(candidate.kind) : candidate.kind === 'agy-cli') continue;
+    if (task.web ? !BROWSER_KINDS.includes(candidate.kind) : candidate.kind === 'agy-cli' && !agyCodeRoles) continue;
     if (!own.cliConfigured) { earliest(own.cliRecheckAt); continue; }
-    if (roleUnavailableReason(candidate, role, task.deliverable, platform, task.web)) continue;
+    if (roleUnavailableReason(candidate, role, task.deliverable, platform, task.web, { agyCodeRoles })) continue;
     if (own.wait) { if (own.wait.retryAt !== null) earliest(own.wait.retryAt); continue; }
     if (candidate.kind === avoid) { fallback ??= candidate; continue; }
     return pick(candidate, avoid ? 'failed-provider-last' : 'declared-order',
@@ -255,6 +258,7 @@ function catalogIndependence(risk, taskRole, catalog) {
  */
 export function routeAuto(inputs) {
   const { stage, task, candidates, platform, hostFacts, history = [], pin = null, catalog = null } = inputs;
+  const agyCodeRoles = inputs.agyCodeRoles === true;
   const priorAttempts = inputs.escalation?.priorAttempts ?? [];
   const role = stage === 'verify' ? 'verification' : 'implementer';
   // Verifier rule 1 (section 4.3): the verifier's session is new. A receipt that says otherwise gets no decision.
@@ -277,7 +281,7 @@ export function routeAuto(inputs) {
   const fact = (candidate) => hostFacts.find((item) => item.kind === candidate.kind && item.model === candidate.model) ??
     hostFacts.find((item) => item.kind === candidate.kind && item.model === undefined);
   const eligibility = candidates.flatMap((candidate) => ROLES.map((r) => {
-    const out = reasons(candidate, fact(candidate), r, task, platform);
+    const out = reasons(candidate, fact(candidate), r, task, platform, agyCodeRoles);
     if (floors[r].value !== null && candidate.tier < floors[r].value) out.push('below-floor');
     if (!pinAdmits(pins[r], candidate)) out.push('pin-excluded');
     return { kind: candidate.kind, model: candidate.model, role: r, reasons: out };
@@ -344,7 +348,7 @@ export function routeAuto(inputs) {
  * verify class. An implement attempt whose head the verifier rejected is listed with terminal "rejected".
  */
 export function policyInputs({ stage, spec, routing, providers, platform, facts, history = [], priorAttempts = [], catalog = null,
-  session = null, implementerSessions = [], headImplementer = null }) {
+  session = null, implementerSessions = [], headImplementer = null, agyCodeRoles = false }) {
   // A code broker grant (code-broker.mjs) reaches only the candidate whose exact (kind, model) it was judged for: the
   // caller passes one provider entry per candidate model. Without it a Cursor candidate never commits on Windows.
   const candidates = routing.candidates.map(({ kind, model, tier }) => {
@@ -358,6 +362,7 @@ export function policyInputs({ stage, spec, routing, providers, platform, facts,
       acceptance: spec.acceptance?.length ?? 0, dependsOn: spec.dependsOn?.length ?? 0,
       requiresMergedDependencies: spec.requiresMergedDependencies === true, writes: spec.writes ?? null,
       declared: { risk: spec.routing?.risk ?? null, complexity: spec.routing?.complexity ?? null } },
+    ...(agyCodeRoles ? { agyCodeRoles: true } : {}),
     sensitivePaths: routing.sensitivePaths ?? [], catalog, candidates, candidatesDigest: sha256(candidates), platform,
     hostFacts: [...new Set(candidates.map((candidate) => candidate.kind))].map((kind) => ({ kind, ...facts(kind) })),
     history, escalation: { priorAttempts }, pin: routing.pin ?? null, session, implementerSessions, headImplementer,

@@ -3265,6 +3265,7 @@ export class Controller {
       stage: task.state === 'implemented' ? 'verify' : 'implement', chain: decl.executor.kind === 'cli-chain',
       spec: specOf(this.store, decl.campaignId, task.task_id, decl), providers,
       platform: process.platform, facts, priorAttempts: this.priorAttempts(decl, task),
+      agyCodeRoles: executors.agyCodeRoles(this.config),
     }));
     const chosen = receipt.decision.chosen;
     const matched = chosen ? providers.find((provider) => provider.kind === chosen.kind) : null;
@@ -3300,7 +3301,8 @@ export class Controller {
     const inputs = policyInputs({ stage, spec, routing: decl.routing, providers: candidateProviders, platform: process.platform,
       facts: (kind) => ({ ...facts(kind), ...(hostUnavailable?.has(kind) ? { hostUnavailable: hostUnavailable.get(kind) } : {}) }),
       priorAttempts: this.routedAttempts(ops, stage), catalog: spec.role ? this.routingCatalog() : null,
-      session: stage === 'verify' ? session ?? randomUUID() : null, ...this.reviewedHead(ops, task, stage) });
+      session: stage === 'verify' ? session ?? randomUUID() : null, ...this.reviewedHead(ops, task, stage),
+      agyCodeRoles: executors.agyCodeRoles(this.config) });
     // A candidate whose model the provider refused waits alone: its own host fact, with the later of both waits. A model
     // the pre-choice host check found unavailable (routedHostChecks) is left out alone the same way, for this choice only.
     for (const candidate of inputs.candidates) {
@@ -3442,7 +3444,7 @@ export class Controller {
       // finding cannot hold the provider's other models or a later step of another role.
       const judged = decl.routing.candidates.filter((candidate) => candidate.kind === kind).flatMap(({ model }) => {
         const check = this.hostCheck(decl, { ...declared, model }, role);
-        if (executors.roleUnavailableReason(check.executor, role, spec.deliverable, process.platform, executors.webFlag(spec.web))) return [];
+        if (executors.roleUnavailableReason(check.executor, role, spec.deliverable, process.platform, executors.webFlag(spec.web), { agyCodeRoles: executors.agyCodeRoles(this.config) })) return [];
         return [{ model, reason: executors.unavailableReason(check.judged, checkout, this.cmd.gh,
           { probe, chromeCommand: this.cmd.chrome, web, ...check.options }) }];
       });
