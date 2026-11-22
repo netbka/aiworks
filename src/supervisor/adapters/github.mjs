@@ -4,8 +4,12 @@
 // Every call is REST (gh api), never GraphQL: the account's GraphQL quota is shared with the
 // dashboard and other tools, and a spent quota must not stall publication (AIWorks).
 import { writeFileSync } from 'node:fs';
-import { assertNoWorkflowChange, exec } from './git.mjs';
+import { assertNoWorkflowChange, exec, execBounded } from './git.mjs';
 import { assertPublishable } from '../../shared/public-text.mjs';
+
+// The bound of one asynchronous read (restAsync) when its caller gives none, as the blocking reads have.
+const READ_MS = 30_000;
+const MAX_ANSWER = 64 * 1024 * 1024;
 
 /** GitHub refused a call for a rate limit. `resetAt` (epoch ms) is when it allows calls again, or null if it did not say. */
 export class RateLimitError extends Error {
@@ -59,16 +63,61 @@ export function rest(gh, what, args, { timeoutMs, local } = {}) {
     // A pull request or merge publishes code: it must not add or change a workflow file (comments and issue updates need no check).
     if (method === 'PUT' || method === 'POST' && /\/pulls$/.test(route)) assertNoWorkflowChange(local ?? {});
   }
-  const out = exec(gh, ['api', '--include', ...args], { timeoutMs });
+  return answer(what, exec(gh, ['api', '--include', ...args], { timeoutMs }));
+}
+
+/**
+ * One REST read that never blocks the event loop (aiworks#119): rest's request rules, answer and errors, run through
+ * execBounded, so the lease timer keeps running while GitHub answers, and past `timeoutMs` gh and every process it
+ * started are stopped and the read fails with code ETIMEDOUT. Only GET and HEAD: every write stays blocking (rest), inside
+ * its caller's fence. With `gate` ({ silent }), one read that ran out of time marks GitHub silent, and each later read
+ * through the same gate fails at once with code GITHUB_SILENT, without starting gh: a pass waits on a silent GitHub once.
+ */
+export async function restAsync(gh, what, args, { timeoutMs = READ_MS, gate = null } = {}) {
+  if (!['GET', 'HEAD'].includes(requestScope(args).method)) throw developmentRefusal('an asynchronous GitHub call only reads');
+  if (gate?.silent) throw Object.assign(new Error(`${what} skipped: GitHub did not answer an earlier read of this pass in time`), { status: null, code: 'GITHUB_SILENT' });
+  const out = await execBounded(gh, ['api', '--include', ...args], { timeoutMs, maxBytes: MAX_ANSWER });
+  if (out.error === 'ETIMEDOUT' && gate) gate.silent = true;
+  // A tree not shown stopped (execBounded `contained: false`) is noted on the gate for its pass to log.
+  if (out.contained === false && gate) gate.uncontained = true;
+  return answer(what, out);
+}
+
+/** The parsed JSON body of one gh api call, or the error it reports (RateLimitError for a rate-limit refusal). */
+function answer(what, out) {
   const response = parseResponse(out.stdout);
   if (!out.ok) {
     const message = `${what} failed: ${out.stderr || out.error || response.body}`.slice(0, 500);
     const resetAt = rateLimitReset(response, out.stderr);
     if (resetAt !== undefined) throw new RateLimitError(message, resetAt);
     const status = response.status ?? Number(/\(HTTP (\d{3})\)/.exec(out.stderr ?? '')?.[1] ?? NaN);
-    throw Object.assign(new Error(message), { status: Number.isInteger(status) ? status : null });
+    throw Object.assign(new Error(message), { status: Number.isInteger(status) ? status : null, ...(out.error ? { code: out.error } : {}) });
   }
   return JSON.parse(response.body || 'null');
+}
+
+/**
+ * A read written once as a generator that yields each REST call as [what, args, options] and receives its body, or has
+ * the call's error thrown in at that point. readBlocking runs it with rest (publication, the merge gate's checks, the CLI),
+ * readBounded with restAsync (the controller tick's polling reads, aiworks#119): the same calls, answers and errors.
+ */
+function readBlocking(steps, gh) {
+  for (let step = steps.next(); ;) {
+    if (step.done) return step.value;
+    let body, failure, failed = false;
+    try { body = rest(gh, ...step.value); } catch (error) { failure = error; failed = true; }
+    step = failed ? steps.throw(failure) : steps.next(body);
+  }
+}
+
+async function readBounded(steps, { gh, timeoutMs = READ_MS, gate = null }) {
+  for (let step = steps.next(); ;) {
+    if (step.done) return step.value;
+    const [what, args] = step.value;
+    let body, failure, failed = false;
+    try { body = await restAsync(gh, what, args, { timeoutMs, gate }); } catch (error) { failure = error; failed = true; }
+    step = failed ? steps.throw(failure) : steps.next(body);
+  }
 }
 
 const developmentRefusal = (message) => Object.assign(new Error(`LOCAL_DEVELOPMENT_ONLY: ${message}`), { code: 'LOCAL_DEVELOPMENT_ONLY' });
@@ -98,37 +147,46 @@ function requestScope(args) {
   return { method: method ?? (fields ? 'POST' : 'GET'), route };
 }
 
-export function findOpenPullRequest({ gh, repository, branch }) {
+function* openPullSteps({ repository, branch }) {
   const owner = repository.split('/')[0];
-  const list = rest(gh, 'GET pulls', ['--method', 'GET', `repos/${repository}/pulls`,
-    '-f', `head=${owner}:${branch}`, '-f', 'state=open']) ?? [];
+  const list = (yield ['GET pulls', ['--method', 'GET', `repos/${repository}/pulls`,
+    '-f', `head=${owner}:${branch}`, '-f', 'state=open']]) ?? [];
   const pr = list[0];
   return pr ? { url: pr.html_url, headRefOid: pr.head?.sha ?? null } : null;
 }
+export const findOpenPullRequest = (input) => readBlocking(openPullSteps(input), input.gh);
+/** findOpenPullRequest without blocking the event loop ({ gh, timeoutMs, gate }, restAsync); the controller tick's reads. */
+export const findOpenPullRequestAsync = (input) => readBounded(openPullSteps(input), input);
 
 /** Read-only merge receipt, bound to the exact published PR, reviewed head and base. */
-export function integratedPullRequest({ gh, repository, url, headSha, baseBranch }) {
+function* integratedSteps({ repository, url, headSha, baseBranch }) {
   const prefix = `https://github.com/${repository}/pull/`;
   if (!url?.startsWith(prefix) || !/^[1-9]\d*$/.test(url.slice(prefix.length))) return null;
   try {
-    const receipt = rest(gh, 'GET pull', ['--method', 'GET', `repos/${repository}/pulls/${url.slice(prefix.length)}`], { timeoutMs: 30_000 });
+    const receipt = yield ['GET pull', ['--method', 'GET', `repos/${repository}/pulls/${url.slice(prefix.length)}`], { timeoutMs: 30_000 }];
     return receipt?.html_url === url && receipt.merged === true && receipt.head?.sha === headSha &&
       receipt.base?.ref === baseBranch && /^[0-9a-f]{40}$/.test(receipt.merge_commit_sha ?? '') ? receipt.merge_commit_sha : null;
   } catch { return null; }
 }
+export const integratedPullRequest = (input) => readBlocking(integratedSteps(input), input.gh);
+/** integratedPullRequest without blocking the event loop (restAsync); a read that fails or is skipped is null, as there. */
+export const integratedPullRequestAsync = (input) => readBounded(integratedSteps(input), input);
 
 /**
  * One pull request as the merge gate reads it (aiworks#138): GET repos/{repo}/pulls/{n}. `mergeable` is GitHub's own
  * answer: true, false, or null while GitHub is still computing it. Throws when the read fails.
  */
-export function pullRequest({ gh, repository, number }) {
-  const pr = rest(gh, 'GET pull', ['--method', 'GET', `repos/${repository}/pulls/${number}`], { timeoutMs: 30_000 });
+function* pullSteps({ repository, number }) {
+  const pr = yield ['GET pull', ['--method', 'GET', `repos/${repository}/pulls/${number}`], { timeoutMs: 30_000 }];
   // mergeable_state carries what branch protection says (blocked: required checks or reviews are missing; behind, dirty,
   // draft); it is read, never changed, and a protected branch holds a merge back as a wait instead of a refused call.
   return { url: pr?.html_url ?? null, state: pr?.state ?? null, merged: pr?.merged === true, mergeable: pr?.mergeable ?? null,
     mergeableState: typeof pr?.mergeable_state === 'string' ? pr.mergeable_state : null, draft: pr?.draft === true,
     headRef: pr?.head?.ref ?? null, headSha: pr?.head?.sha ?? null, baseRef: pr?.base?.ref ?? null, mergeCommit: pr?.merge_commit_sha ?? null };
 }
+export const pullRequest = (input) => readBlocking(pullSteps(input), input.gh);
+/** pullRequest without blocking the event loop (restAsync): the merge pass's read of one pull request. */
+export const pullRequestAsync = (input) => readBounded(pullSteps(input), input);
 
 const CI_PASSED = new Set(['success', 'neutral', 'skipped']);
 const CI_FAILED = new Set(['failure', 'timed_out', 'startup_failure', 'error']);
@@ -166,11 +224,11 @@ export function ciState(body, statusBody, { noneExpected = false } = {}) {
  * is not protected or requires no status checks. Any other failure (no access, a bare 404, a rate limit) throws, so it is
  * never read as "none required".
  */
-export function requiredStatusChecks({ gh, repository, branch }) {
+function* requiredSteps({ repository, branch }) {
   let body;
   try {
-    body = rest(gh, 'GET required status checks', ['--method', 'GET',
-      `repos/${repository}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`], { timeoutMs: 30_000 });
+    body = yield ['GET required status checks', ['--method', 'GET',
+      `repos/${repository}/branches/${encodeURIComponent(branch)}/protection/required_status_checks`], { timeoutMs: 30_000 }];
   } catch (error) {
     if (error.status === 404 && /branch not protected|required status checks not enabled/i.test(error.message)) return [];
     throw error;
@@ -178,6 +236,7 @@ export function requiredStatusChecks({ gh, repository, branch }) {
   if (!Array.isArray(body?.contexts) && !Array.isArray(body?.checks)) throw new Error('GET required status checks returned neither contexts nor checks');
   return [...new Set([...(body.contexts ?? []), ...(body.checks ?? []).map((check) => check?.context)].map(String))];
 }
+export const requiredStatusChecks = (input) => readBlocking(requiredSteps(input), input.gh);
 
 /**
  * Read-only CI result of a pushed commit: GET repos/{repo}/commits/{sha}/check-runs and GET .../status (REST, one page of
@@ -185,15 +244,18 @@ export function requiredStatusChecks({ gh, repository, branch }) {
  * complete and empty, it reads the required status checks of `baseBranch`: with none required the result is `none`; a
  * required check that has not reported keeps the head `pending` under its name.
  */
-export function commitChecks({ gh, repository, sha, baseBranch = null, noHostedChecks = false }) {
-  const runs = rest(gh, 'GET check-runs', ['--method', 'GET', `repos/${repository}/commits/${sha}/check-runs`, '-f', 'per_page=100'], { timeoutMs: 30_000 });
-  const status = rest(gh, 'GET status', ['--method', 'GET', `repos/${repository}/commits/${sha}/status`, '-f', 'per_page=100'], { timeoutMs: 30_000 });
+function* checksSteps({ repository, sha, baseBranch = null, noHostedChecks = false }) {
+  const runs = yield ['GET check-runs', ['--method', 'GET', `repos/${repository}/commits/${sha}/check-runs`, '-f', 'per_page=100'], { timeoutMs: 30_000 }];
+  const status = yield ['GET status', ['--method', 'GET', `repos/${repository}/commits/${sha}/status`, '-f', 'per_page=100'], { timeoutMs: 30_000 }];
   const none = ciState(runs, status, { noneExpected: true });
   if (!noHostedChecks || !baseBranch || none.state !== 'none') return ciState(runs, status);
-  const required = requiredStatusChecks({ gh, repository, branch: baseBranch });
+  const required = yield* requiredSteps({ repository, branch: baseBranch });
   if (!required.length) return none;
   return { state: 'pending', checks: required.map((name) => ({ name: name.slice(0, 200), status: 'expected', conclusion: null, url: null })) };
 }
+export const commitChecks = (input) => readBlocking(checksSteps(input), input.gh);
+/** commitChecks without blocking the event loop (restAsync): the controller tick's CI reads. */
+export const commitChecksAsync = (input) => readBounded(checksSteps(input), input);
 
 /**
  * A campaign declaration is private installation data and is never published (docs/design/WORK_ENVELOPE.md section 5,

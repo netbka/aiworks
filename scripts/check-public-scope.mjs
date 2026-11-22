@@ -95,7 +95,15 @@ export function checkPublicHistory(root, revisions, tip = revisions.at(-1).split
   const terms = publicTerms(root);
   const listed = spawnSync('git', ['cat-file', 'blob', `${tip}:${BINARY_LIST}`], { cwd: root, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
   const binaries = allowedBinaries(listed.status === 0 ? listed.stdout.toString() : '');
-  const commits = git(root, ['rev-list', ...revisions]).toString().trim().split('\n').filter(Boolean);
+  // On standard input, so a destination serving many tips never runs past a command-line limit; `--not` becomes a `^`.
+  let negated = false;
+  const lines = [];
+  for (const revision of revisions) {
+    if (revision === '--not') { negated = !negated; continue; }
+    if (revision.startsWith('-') || (negated && (revision.includes('..') || revision.startsWith('^')))) throw new Error('Cannot inspect the public commit scope.');
+    lines.push(negated ? `^${revision}` : revision);
+  }
+  const commits = git(root, ['rev-list', '--stdin'], `${lines.join('\n')}\n`).toString().trim().split('\n').filter(Boolean);
   const memo = { blobs: new Map(), paths: new Map() };
   for (const commit of commits) {
     const message = git(root, ['show', '-s', '--format=%B', commit]).toString();
@@ -124,6 +132,10 @@ export function checkPublicHistory(root, revisions, tip = revisions.at(-1).split
  */
 export function publishedTips(root, remote) {
   if (!remote || remote.startsWith('-')) return null;
+  // ls-remote applies url.<base>.insteadOf, so with a fetch mirror and pushInsteadOf it would list the mirror, not the
+  // destination; a listing from anywhere but the push URL itself is not trusted.
+  const expanded = spawnSync('git', ['ls-remote', '--get-url', '--', remote], { cwd: root, encoding: 'utf8', windowsHide: true });
+  if (expanded.error || expanded.status !== 0 || expanded.stdout.trim() !== remote) return null;
   // A hidden credential prompt would only stall; no prompt, and a failure falls back to the whole history.
   const listed = spawnSync('git', ['ls-remote', '--heads', '--tags', '--', remote], {
     cwd: root, encoding: 'utf8', windowsHide: true, timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'],
@@ -138,7 +150,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   try {
     if (process.argv[2] === '--pre-push') {
       // The hook passes the URL the push goes to, never the remote's name: a name answers ls-remote from its fetch URL,
-      // which a pushurl or pushInsteadOf can point elsewhere. A new branch skips only what that push URL already serves.
+      // which a pushurl or pushInsteadOf can point elsewhere. A push skips only what that push URL already serves: for an
+      // existing branch its old tip and, say, the main it merged (commits that reached main without this hook publish
+      // nothing new). When the push URL cannot be listed, an existing branch checks `<old tip>..<new tip>` as before.
       let published;
       for (const line of readFileSync(0, 'utf8').trim().split('\n').filter(Boolean)) {
         const [localRef, local, remoteRef, remote] = line.split(/\s+/);
@@ -154,8 +168,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
           if (!object) throw new Error('Cannot inspect a proposed tag.');
         }
         if (git(process.cwd(), ['cat-file', '-t', object]).toString().trim() !== 'commit') throw new Error('A public branch or tag must resolve to a commit.');
-        if (!/^0+$/.test(remote)) { checkPublicHistory(process.cwd(), [`${remote}..${local}`]); continue; }
         if (published === undefined) published = publishedTips(process.cwd(), process.argv[3]);
+        if (!/^0+$/.test(remote)) {
+          checkPublicHistory(process.cwd(), published?.length ? [local, '--not', remote, ...published] : [`${remote}..${local}`], local);
+          continue;
+        }
         checkPublicHistory(process.cwd(), published?.length ? [local, '--not', ...published] : [local], local);
       }
     } else checkPublicScope();
