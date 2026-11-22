@@ -138,7 +138,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   try {
     if (process.argv[2] === '--pre-push') {
       // The hook passes the URL the push goes to, never the remote's name: a name answers ls-remote from its fetch URL,
-      // which a pushurl or pushInsteadOf can point elsewhere. A new branch skips only what that push URL already serves.
+      // which a pushurl or pushInsteadOf can point elsewhere. A push skips only what that push URL already serves: for an
+      // existing branch its old tip and, say, the main it merged (commits that reached main without this hook publish
+      // nothing new). When the push URL cannot be listed, an existing branch checks `<old tip>..<new tip>` as before.
       let published;
       for (const line of readFileSync(0, 'utf8').trim().split('\n').filter(Boolean)) {
         const [localRef, local, remoteRef, remote] = line.split(/\s+/);
@@ -154,8 +156,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
           if (!object) throw new Error('Cannot inspect a proposed tag.');
         }
         if (git(process.cwd(), ['cat-file', '-t', object]).toString().trim() !== 'commit') throw new Error('A public branch or tag must resolve to a commit.');
-        if (!/^0+$/.test(remote)) { checkPublicHistory(process.cwd(), [`${remote}..${local}`]); continue; }
         if (published === undefined) published = publishedTips(process.cwd(), process.argv[3]);
+        if (!/^0+$/.test(remote)) {
+          checkPublicHistory(process.cwd(), published?.length ? [local, '--not', remote, ...published] : [`${remote}..${local}`], local);
+          continue;
+        }
         checkPublicHistory(process.cwd(), published?.length ? [local, '--not', ...published] : [local], local);
       }
     } else checkPublicScope();

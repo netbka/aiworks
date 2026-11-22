@@ -205,7 +205,7 @@ test('a local merge counts every commit message a push of main would refuse, and
   assert.equal(count([['ghp', 'E'.repeat(36)].join('_')]), 1, 'the built-in checks still apply');
 });
 
-test('a new branch skips only the history its real push URL already serves, never what the fetch URL holds', t => {
+test('a push skips only the history its real push URL already serves, never what the fetch URL holds', t => {
   const base = mkdtempSync(join(tmpdir(), 'aiworks-push-remote-'));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const root = join(base, 'work'), fetched = join(base, 'fetch.git'), published = join(base, 'push.git'), hooks = join(base, 'hooks');
@@ -238,4 +238,13 @@ test('a new branch skips only the history its real push URL already serves, neve
   writeFileSync(join(root, 'README.md'), 'Public source again');
   ok(root, 'add', '.'); ok(root, 'commit', '-qm', 'Hide it again');
   assert.notEqual(git(root, 'push', '-q', 'origin', 'HEAD:refs/heads/second').status, 0);
+  // The same holds for an existing branch: the unpublished private commit is refused there too.
+  assert.notEqual(git(root, 'push', '-q', 'origin', 'HEAD:refs/heads/feature').status, 0);
+  // An existing branch also skips what the push URL serves, such as a main it takes in whose message reached it unchecked.
+  ok(root, 'checkout', '-q', '-b', 'served', 'HEAD~2');
+  ok(root, 'commit', '--allow-empty', '-qm', ['ghp', 'F'.repeat(36)].join('_'));
+  ok(root, 'push', '-q', '--no-verify', published, 'HEAD:refs/heads/main');
+  ok(root, 'commit', '--allow-empty', '-qm', 'Clean follow-up');
+  ok(root, 'push', '-q', 'origin', 'HEAD:refs/heads/feature');
+  assert.equal(ok(published, 'rev-parse', 'refs/heads/feature'), ok(root, 'rev-parse', 'HEAD'));
 });
