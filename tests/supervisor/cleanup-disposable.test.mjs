@@ -15,7 +15,7 @@ test('only relative paths listed for that repository are disposable', () => {
   assert.deepEqual(disposablePaths({ cleanup: { enabled: true } }, 'example/app'), []);
 });
 
-test('a finished run loses only its Chrome profile; an open run keeps it', (t) => {
+test('a finished run loses only its Chrome profile; an open run keeps it', async (t) => {
   const dataDir = mkdtempSync(join(tmpdir(), 'aiworks-profiles-'));
   t.after(() => rmSync(dataDir, { recursive: true, force: true }));
   const run = (id) => { const dir = join(dataDir, 'runs', id); mkdirSync(join(dir, 'chrome-profile', 'Default'), { recursive: true });
@@ -25,7 +25,7 @@ test('a finished run loses only its Chrome profile; an open run keeps it', (t) =
   const ops = [{ id: 'done', state: 'finished', run_dir: done }, { id: 'open', state: 'dispatched', run_dir: open }, { id: 'x', state: 'finished', run_dir: outside }];
   const journal = [];
   const ctl = { dataDir, now: () => 1, store: { all: (_sql, ...open) => ops.filter((op) => !open.includes(op.state)), journal: (...entry) => journal.push(entry) } };
-  assert.equal(removeBrowserProfiles(ctl), 1);
+  assert.equal(await removeBrowserProfiles(ctl), 1);
   assert.equal(existsSync(join(done, 'chrome-profile')), false);
   assert.equal(existsSync(join(done, 'stdout.json')), true, 'the run evidence stays');
   assert.equal(existsSync(join(open, 'chrome-profile', 'Default', 'Cache')), true, 'an open run keeps its browser');

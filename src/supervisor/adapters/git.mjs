@@ -615,6 +615,10 @@ export const pushVerifiedAsync = (options) => runAsync(pushSteps(options));
 export function isAncestor({ git, path, ancestor, descendant }) {
   return exec(git, ['merge-base', '--is-ancestor', ancestor, descendant], { cwd: path }).ok;
 }
+/** isAncestor without blocking the event loop (execAsync): the cleanup pass (aiworks#119). */
+export async function isAncestorAsync({ git, path, ancestor, descendant }) {
+  return (await execAsync(git, ['merge-base', '--is-ancestor', ancestor, descendant], { cwd: path })).ok;
+}
 
 /**
  * For each group of fixed strings, whether the tracked text files of commit `sha` hold one of them as a whole word,
@@ -701,7 +705,13 @@ export function siblingCommits({ git, repoPath, baseSha, sha, paths, limit = 10 
 
 /** The repository's registered worktrees ({ path, head, branch, locked }), the main checkout first; null when unreadable. */
 export function worktreeList({ git, repoPath }) {
-  const out = exec(git, ['worktree', 'list', '--porcelain', '-z'], { cwd: repoPath, timeoutMs: 30_000 });
+  return worktrees(exec(git, ['worktree', 'list', '--porcelain', '-z'], { cwd: repoPath, timeoutMs: 30_000 }));
+}
+/** worktreeList without blocking the event loop (execAsync): the cleanup pass (aiworks#119). */
+export async function worktreeListAsync({ git, repoPath }) {
+  return worktrees(await execAsync(git, ['worktree', 'list', '--porcelain', '-z'], { cwd: repoPath, timeoutMs: 30_000 }));
+}
+function worktrees(out) {
   if (!out.ok) return null;
   const list = [];
   for (const field of out.stdout.split('\0')) {
@@ -723,6 +733,11 @@ export function worktreeChanges({ git, path }) {
   const out = exec(git, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching'], { cwd: path, timeoutMs: 60_000 });
   return out.ok ? out.stdout.split('\0').filter(Boolean) : null;
 }
+/** worktreeChanges without blocking the event loop (execAsync): the cleanup pass (aiworks#119). */
+export async function worktreeChangesAsync({ git, path }) {
+  const out = await execAsync(git, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching'], { cwd: path, timeoutMs: 60_000 });
+  return out.ok ? out.stdout.split('\0').filter(Boolean) : null;
+}
 
 /** `git worktree remove` without --force: git itself refuses a checkout with changes, untracked files or a lock. */
 export function removeWorktree({ git, repoPath, path }) {
@@ -736,4 +751,28 @@ export function removeWorktreeAsync({ git, repoPath, path }) {
 /** `git branch -d`, never -D: git itself refuses a branch that is checked out or not merged. */
 export function deleteMergedBranch({ git, repoPath, branch }) {
   return exec(git, ['branch', '-d', branch], { cwd: repoPath, timeoutMs: 30_000 });
+}
+/** deleteMergedBranch without blocking the event loop (execAsync): the cleanup pass (aiworks#119). */
+export function deleteMergedBranchAsync({ git, repoPath, branch }) {
+  return execAsync(git, ['branch', '-d', branch], { cwd: repoPath, timeoutMs: 30_000 });
+}
+
+/**
+ * Every local branch under refs/heads/<prefix>/ that points at a commit, as `tips` (Map of branch name to commit), and
+ * `merged`, the names of those whose tip `mergedInto` contains (for-each-ref --merged: reachable from it, as isAncestor
+ * says). Two reads for a whole repository, however many branches it holds (aiworks#119: one rev-parse per finished task
+ * held the cleanup pass past the lease). Null when either read fails, so nothing is decided from a partial listing.
+ */
+export async function branchTipsAsync({ git, repoPath, prefix, mergedInto }) {
+  const pattern = `refs/heads/${prefix}`, name = (ref) => ref.slice('refs/heads/'.length);
+  const all = await execAsync(git, ['for-each-ref', '--format=%(objecttype) %(objectname) %(refname)', pattern], { cwd: repoPath, timeoutMs: 60_000 });
+  if (!all.ok) return null;
+  const merged = await execAsync(git, ['for-each-ref', `--merged=${mergedInto}`, '--format=%(refname)', pattern], { cwd: repoPath, timeoutMs: 60_000 });
+  if (!merged.ok) return null;
+  const tips = new Map();
+  for (const line of all.stdout.split('\n')) {
+    const [type, sha, ref] = line.split(' ');
+    if (type === 'commit' && /^[0-9a-f]{40}$/.test(sha ?? '') && ref?.startsWith(`${pattern}/`)) tips.set(name(ref), sha);
+  }
+  return { tips, merged: new Set(merged.stdout.split('\n').filter((ref) => ref.startsWith(`${pattern}/`)).map(name)) };
 }
