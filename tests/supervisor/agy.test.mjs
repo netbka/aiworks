@@ -494,7 +494,9 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
   const allowed = [{ state: 'DONE', tool_name: 'read_file', tool_info: { parameters: { Path: 'app.js' } } }, shell('git status --short'),
     shell('git log --grep=push --oneline'), shell('grep -rn "git push" docs'), { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'status' } } },
     ...['rg -c alias. src', 'wc -c alias.txt', 'grep -rn GIT_CONFIG_COUNT src', 'gh auth status', 'echo cmd a b c d e f g & dir /k',
-      'rg -l cmd src tests docs scripts site lib bin | findstr /c:"spawn"', 'rg -n "powershell" a b c d e f g h i j k l m | rg -e Encoded'].map(shell)];
+      'rg -l cmd src tests docs scripts site lib bin | findstr /c:"spawn"', 'rg -n "powershell" a b c d e f g h i j k l m | rg -e Encoded',
+      'rg -n "git push" cmd/cli', 'grep -rn "git commit" src/cmd/client.go', 'cat cmd/kubectl/main.go | grep "gh pr merge"',
+      'rg "gh auth token" internal/cmd/config', 'rg -n "git push" cmd/c/x.go', 'rg -n "git push" cmd/k.go', 'rg -n "git push" cmd/c-x'].map(shell)];
   assert.equal(read(allowed).class, 'result');
   const voided = [
     ...['git push origin HEAD', 'git -C . push', 'cmd /c "git push origin x"', 'git status; git commit -am x', '& "git" push', 'gh pr create --fill',
@@ -511,8 +513,31 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
         'printf -v GIT_CONFIG_COUNT 1; printf -v GIT_CONFIG_KEY_0 alias.x; export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0=push; git x origin main']
         .flatMap((line) => [line, `powershell -Command "${line}"`, `bash -c '${line}'`]),
       "$n='GIT_CONFIG_COUNT'; [Environment]::SetEnvironmentVariable($n,'1'); git x",
-      // Past what the audit reads: the 33rd Git option, a cmd switch beyond the window, a line over 64 KB.
-      `git ${'-c a=b '.repeat(33)}push`, 'cmd /d /e:on /v:off /q /a /u /t:0 /c "git push"', `git status ${'a'.repeat(64 * 1024)}`].map(shell),
+      // PowerShell runs a bare quoted argument as a command.
+      'powershell "git push origin x"', `$n='GIT_CONFIG_COUNT'; [Environment]::SetEnvironmentVariable($n,'1'); powershell "git x origin main"`,
+      // Past what the audit reads: the 33rd Git option, a cmd switch beyond the window, a line over 64 KiB.
+      `git ${'-c a=b '.repeat(33)}push`, 'cmd /d /e:on /v:off /q /a /u /t:0 /c "git push"', `git status ${'a'.repeat(64 * 1024)}`,
+      // A separator inside a substitution, a group or backticks, or a continued line, does not end the wrapper's command.
+      ...['$(true;)', '`true;`', '$(:|:)'].map((part) => `bash ${'-x '.repeat(13)}${part} -c "git push origin x"`),
+      'cmd /d /e:on /v:off /q /a /u /t:0 (x;) /c "git push origin x"', `powershell ${'-NoProfile '.repeat(13)}$(1;2) -EncodedCommand ZQB=`,
+      `powershell ${'-NoProfile '.repeat(13)}\`\r\n-EncodedCommand ZQB=`,
+      // PowerShell escapes a separator with a backtick; brackets that do not match leave no separator trusted.
+      ...['x`;`;', 'x`a`;'].map((part) => `cmd /d /e:on /v:off /q /a /u /t:0 ${part} /c "git push origin x"`),
+      ...['$(: }; :)', '$(case x in x) :;; esac)'].map((part) => `bash ${'-x '.repeat(13)}${part} -c "git push origin x"`),
+      // cmd/c with no break, cmd's own argument breaks (, ; = and a lone CR), and a name right after /c.
+      ...['cmd/c^ ', 'cmd/c^', 'cmd/k^ ', 'cmd.exe/c^ ', 'cmd""/c ', "cmd''/c "].map((head) => `${head}"git push origin x"`),
+      'cmd/c^ "gh pr merge 1"', 'cmd/c^ "npm publish"', 'cmd/c^ "git -c alias.p=push p origin x"',
+      ...['x;y', '\r'].map((part) => `cmd /d /e:on /v:off /q /a /u /t:0 ${part} /c "git push origin x"`),
+      ...['/d x;y /c', ',/c', '/d,/c', '=/c'].map((part) => `cmd ${part} "git push origin x"`), 'cmd /cgit push origin x',
+      // PowerShell runs a quoted command that a non-space character precedes (from bash: \; \& \( ), after such words too.
+      ...['\\;"git push origin x"', '\\&"git push origin x"', '\\("git push origin x"\\)'].map((part) => `powershell -NoProfile ${part}`),
+      'powershell \\; \\;"git push origin x"',
+      // cmd takes /c or /k anywhere in its arguments: after words no count reads (an unclosed ', ^&, or \", which opens a
+      // quote for cmd), and after another switch or word.
+      ...["/d = /e:on = /q = x'", "/d , /e:on , /q , x'", "= = = = = = = x'", '/d = /e:on = /q = ^&', '/d /e:on /v:off /q /a /u /t:0 \\" & \\"']
+        .map((part) => `cmd ${part} /c "git push origin x"`),
+      `cmd /d = /e:on = /q = x' /c "gh pr merge 1"`, `cmd /d = /e:on = /q = x' /c "git -c alias.p=push p"`,
+      'cmd /d/c "git push origin x"', 'cmd x/c "git push origin x"'].map(shell),
     { state: 'DONE', tool_name: 'run_command', tool_info: { parameters: {} } },
     { state: 'DONE', tool_name: 'write_file' }, { state: 'DONE', tool_name: 'search_web' }, browserTool('DONE'),
     { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'send_input' } } },
