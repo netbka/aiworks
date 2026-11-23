@@ -12,7 +12,8 @@
 // directory; the one folder removed recursively is a finished run's throwaway Chrome profile. Each worktree or branch
 // removal is journaled `cleanup-started` before and `cleanup-finished` after, so a restart settles an interrupted one
 // from what git shows and never repeats it.
-import { constants, copyFileSync, existsSync, lstatSync, readFileSync, realpathSync, rmSync, unlinkSync } from 'node:fs';
+import { constants, copyFileSync, existsSync, lstatSync, readFileSync, realpathSync, unlinkSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import * as gitA from './adapters/git.mjs';
 import { GATE_FILES } from './gate.mjs';
@@ -79,7 +80,9 @@ function insideRoot(root, path) {
 
 /**
  * One cleanup pass, at most once per integrationPollMs. Returns { removed, deleted, kept } (paths and branches), or null
- * when it did not run: switched off, unmerged runtime code (AW-005), or not yet due.
+ * when it did not run: switched off, unmerged runtime code (AW-005), or not yet due. Every Git call of the pass awaits
+ * its process, and the Git reads of a repository do not grow with its number of finished tasks (aiworks#119): one
+ * synchronous rev-parse per finished task held the event loop past the lease on every pass of a large installation.
  */
 export async function cleanupPass(ctl) {
   if (!cleanupEnabled(ctl.config) || ctl.unmergedRevision()) return null;
@@ -88,7 +91,7 @@ export async function cleanupPass(ctl) {
   const now = ctl.now();
   if (state.checkedAt + ctl.config.integrationPollMs > now) return null;
   state.checkedAt = now;
-  if (!state.reconciled) { reconcile(ctl); state.reconciled = true; }
+  if (!state.reconciled) { await reconcile(ctl); state.reconciled = true; }
   const report = { removed: [], deleted: [], kept: [] };
   const keep = (campaignId, item) => {
     report.kept.push(item);
@@ -100,8 +103,8 @@ export async function cleanupPass(ctl) {
   for (const repo of repositories(ctl)) await cleanRepository(ctl, repo, report, keep);
   // Shared planning checkouts have no repository scope; a scoped cleanup leaves them alone. Their owners are read after
   // every await of the repositories above (aiworks#140): a coordinator run recorded meanwhile keeps its checkout.
-  if (ctl.config.cleanup.repositories === undefined) cleanCoordinator(ctl, report, keep);
-  report.profiles = removeBrowserProfiles(ctl);
+  if (ctl.config.cleanup.repositories === undefined) await cleanCoordinator(ctl, report, keep);
+  report.profiles = await removeBrowserProfiles(ctl);
   if (report.removed.length || report.deleted.length) ctl.log(`cleanup removed ${report.removed.length} worktrees and ${report.deleted.length} branches`);
   return report;
 }
@@ -111,6 +114,10 @@ function foreignLease(ctl, id) {
   const lease = ctl.store.lease(id);
   return Boolean(lease && lease.instance_id !== ctl.instanceId && lease.expires_at > ctl.now());
 }
+
+/** A task that may not lose a worktree or branch now: another instance holds its campaign, or a run of it is open. */
+const ownerBusy = (ctl, campaignId, task) => foreignLease(ctl, campaignId) || Boolean(ctl.store.get(
+  `SELECT 1 AS v FROM operations WHERE campaign_id = ? AND task_id = ? AND state IN (${OPEN.map(() => '?').join(', ')})`, campaignId, task, ...OPEN));
 
 /** Every campaign grouped by its checkout, with the tasks and recorded workspaces it owns. */
 function repositories(ctl) {
@@ -129,52 +136,92 @@ function repositories(ctl) {
 
 async function cleanRepository(ctl, repo, report, keep) {
   const git = ctl.cmd.git;
-  const list = gitA.worktreeList({ git, repoPath: repo.path });
+  const list = await gitA.worktreeListAsync({ git, repoPath: repo.path });
   if (!list) { keep(null, { path: repo.path, reason: 'worktree-list-unreadable' }); return; }
   const registered = new Map(list.slice(1).map((wt) => [key(wt.path), wt]));
   // The trusted main: origin/main as the supervisor fetches it, or the trusted tip of local main when self-hosted.
   const main = repo.local || !repo.repository ? null : (await ctl.fetchBase(repo.path, 'main', repo.repository)).sha;
-  const contained = (sha) => SHA.test(sha ?? '') && SHA.test(main ?? '') && gitA.isAncestor({ git, path: repo.path, ancestor: sha, descendant: main });
+  // Every task branch and which of them main contains, read once for the repository (aiworks#119); null when unreadable.
+  const branches = SHA.test(main ?? '') ? await gitA.branchTipsAsync({ git, repoPath: repo.path, prefix: 'campaign', mergedInto: main }) : null;
+  const contained = async (sha) => SHA.test(sha ?? '') && SHA.test(main ?? '') && await gitA.isAncestorAsync({ git, path: repo.path, ancestor: sha, descendant: main });
   const coordinator = coordinatorOwners(ctl);
   const owners = new Map(), finishedTasks = [];
   for (const c of repo.campaigns) {
-    const terminal = ['finished', 'cancelled'].includes(c.control), foreign = foreignLease(ctl, c.id);
+    const terminal = ['finished', 'cancelled'].includes(c.control), foreign = foreignLease(ctl, c.id), local = isLocalTarget(c.declaration);
     for (const task of ctl.store.tasks(c.id)) {
       const ops = ctl.store.all('SELECT workspace, state, run_dir FROM operations WHERE campaign_id = ? AND task_id = ? ORDER BY created_at', c.id, task.task_id);
-      const finished = !foreign && !ops.some((op) => OPEN.includes(op.state)) && (terminal || (task.state === 'done' && contained(task.verified_sha)));
+      // A done task of an active campaign is finished once main contains its verified commit. That decides something only
+      // for a registered worktree of the task or a branch of it, so main is asked about no other task.
+      const removable = () => ops.some((op) => registered.has(key(op.workspace))) || (!local && Boolean(branches?.tips.has(gitA.branchName(c.id, task.task_id))));
+      const finished = !foreign && !ops.some((op) => OPEN.includes(op.state)) && (terminal || (task.state === 'done' && removable() && await contained(task.verified_sha)));
       for (const op of ops) owners.set(key(op.workspace), { campaignId: c.id, task: task.task_id, finished, runDir: op.run_dir, path: op.workspace });
-      if (finished && !isLocalTarget(c.declaration)) finishedTasks.push({ campaignId: c.id, task: task.task_id });
+      if (finished && !local) finishedTasks.push({ campaignId: c.id, task: task.task_id });
     }
   }
   for (const [path, wt] of registered) {
     if (owners.has(path) || coordinator.has(path)) continue;
     if (within(longName(repo.root), longName(wt.path))) keep(null, { path: wt.path, reason: 'unowned' });
   }
+  const extra = disposablePaths(ctl.config, repo.repository);
   for (const [path, owner] of owners) {
     const wt = registered.get(path);
     if (!wt || !owner.finished) continue;
     if (!insideRoot(repo.root, wt.path)) { keep(owner.campaignId, { path: wt.path, task: owner.task, reason: 'outside-root' }); continue; }
     // Without blocking the event loop (aiworks#39): a removal deletes every file of the checkout and can take minutes. The
     // removals before it awaited, so its owner is checked again: no other instance holds it and no run of its task opened.
-    if (foreignLease(ctl, owner.campaignId) || ctl.store.get(`SELECT 1 AS v FROM operations WHERE campaign_id = ? AND task_id = ? AND state IN (${OPEN.map(() => '?').join(', ')})`,
-      owner.campaignId, owner.task, ...OPEN)) continue;
-    const removal = startRemoval(ctl, repo.path, wt, owner, keep, disposablePaths(ctl.config, repo.repository));
+    if (ownerBusy(ctl, owner.campaignId, owner.task)) continue;
+    // A worktree its status or its commit keeps is kept from asynchronous reads (aiworks#119), so a pass over many kept
+    // worktrees never blocks; for one it may remove, startRemoval reads both again just before its record.
+    const blocker = await removalBlocker(git, repo.path, wt, extra);
+    if (blocker) { keep(owner.campaignId, { path: wt.path, task: owner.task, run: owner.run, ...blocker }); continue; }
+    if (ownerBusy(ctl, owner.campaignId, owner.task)) continue;
+    const removal = startRemoval(ctl, repo.path, wt, owner, keep, extra);
     if (removal) finishRemoval(ctl, removal, await gitA.removeWorktreeAsync({ git, repoPath: repo.path, path: wt.path }), report, keep);
   }
   if (!SHA.test(main ?? '')) return;
-  const checkedOut = new Set((gitA.worktreeList({ git, repoPath: repo.path }) ?? list).map((wt) => wt.branch).filter(Boolean));
+  // Without the listing nothing is deleted this pass: no branch is judged from a failed or partial read.
+  if (!branches) { keep(null, { path: repo.path, reason: 'branch-list-unreadable' }); return; }
+  const checkedOut = new Set((await gitA.worktreeListAsync({ git, repoPath: repo.path }) ?? list).map((wt) => wt.branch).filter(Boolean));
   for (const { campaignId, task } of finishedTasks) {
-    const branch = gitA.branchName(campaignId, task);
-    const tip = gitA.exec(git, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`], { cwd: repo.path }).stdout;
-    if (!SHA.test(tip ?? '')) continue;
+    const branch = gitA.branchName(campaignId, task), tip = branches.tips.get(branch);
+    if (!tip) continue;
     if (checkedOut.has(branch)) { keep(campaignId, { branch, task, reason: 'checked-out' }); continue; }
-    if (!contained(tip)) { keep(campaignId, { branch, task, reason: 'not-in-main' }); continue; }
+    if (!branches.merged.has(branch)) { keep(campaignId, { branch, task, reason: 'not-in-main' }); continue; }
+    // The deletions before it awaited: its owner is checked again, as a worktree's is before its removal.
+    if (ownerBusy(ctl, campaignId, task)) continue;
     const started = ctl.store.journal(campaignId, 'cleanup-started', { action: 'delete-branch', task, branch, sha: tip, repoPath: repo.path }, ctl.now());
-    const result = gitA.deleteMergedBranch({ git, repoPath: repo.path, branch });
+    const result = await gitA.deleteMergedBranchAsync({ git, repoPath: repo.path, branch });
     const reason = result.ok ? null : (result.stderr || result.error || `exit ${result.status}`).slice(0, 300);
     ctl.store.journal(campaignId, 'cleanup-finished', { started, outcome: result.ok ? 'deleted' : 'kept', reason }, ctl.now());
     if (result.ok) report.deleted.push(branch); else keep(campaignId, { branch, task, reason: 'git-refused' });
   }
+}
+
+/**
+ * What keeps a worktree from removal, read without blocking the event loop: { reason, entries? } as startRemoval keeps it
+ * (locked, status-unreadable, ignored-files, changes, unreferenced-commit), or null when nothing does.
+ */
+async function removalBlocker(git, repoPath, wt, extra) {
+  if (wt.locked) return { reason: 'locked' };
+  if (!existsSync(wt.path)) return null;
+  const changes = await gitA.worktreeChangesAsync({ git, path: wt.path });
+  if (changes === null) return { reason: 'status-unreadable' };
+  const blocked = changesBlocker(changes, extra);
+  if (blocked) return blocked;
+  if (!wt.branch && !(await gitA.execAsync(git, ['for-each-ref', '--count=1', '--contains', wt.head, 'refs/heads', 'refs/remotes', 'refs/aiworks'], { cwd: repoPath })).stdout) {
+    return { reason: 'unreferenced-commit' };
+  }
+  return null;
+}
+
+const gateArtifact = (entry) => /^(\?\?|!!) /.test(entry) && GATE_NAMES.has(entry.slice(3));
+/** Why a worktree with these status entries is kept ({ reason, entries }), or null: its changes are only disposable ones. */
+function changesBlocker(changes, extra) {
+  const disposable = (entry) => entry.startsWith('!! ') && (/(^|\/)(node_modules|__pycache__)\/$/.test(entry.slice(3)) || extra.includes(entry.slice(3)));
+  const ignored = changes.filter((entry) => entry.startsWith('!! ') && !gateArtifact(entry) && !disposable(entry));
+  if (ignored.length) return { reason: 'ignored-files', entries: ignored.slice(0, 5) };
+  if (changes.some((entry) => !gateArtifact(entry) && !disposable(entry))) return { reason: 'changes', entries: changes.slice(0, 5) };
+  return null;
 }
 
 /**
@@ -191,11 +238,8 @@ function startRemoval(ctl, repoPath, wt, owner, keep, extra = []) {
   const present = existsSync(wt.path);
   const changes = present ? gitA.worktreeChanges({ git, path: wt.path }) : [];
   if (changes === null) { keep(owner.campaignId, { ...item, reason: 'status-unreadable' }); return; }
-  const gateArtifact = (entry) => /^(\?\?|!!) /.test(entry) && GATE_NAMES.has(entry.slice(3));
-  const disposable = (entry) => entry.startsWith('!! ') && (/(^|\/)(node_modules|__pycache__)\/$/.test(entry.slice(3)) || extra.includes(entry.slice(3)));
-  const ignored = changes.filter((entry) => entry.startsWith('!! ') && !gateArtifact(entry) && !disposable(entry));
-  if (ignored.length) { keep(owner.campaignId, { ...item, reason: 'ignored-files', entries: ignored.slice(0, 5) }); return; }
-  if (changes.some((entry) => !gateArtifact(entry) && !disposable(entry))) { keep(owner.campaignId, { ...item, reason: 'changes', entries: changes.slice(0, 5) }); return; }
+  const blocked = changesBlocker(changes, extra);
+  if (blocked) { keep(owner.campaignId, { ...item, ...blocked }); return; }
   // A detached checkout whose commit no branch or remote ref holds would lose that commit with it.
   if (present && !wt.branch && !gitA.exec(git, ['for-each-ref', '--count=1', '--contains', wt.head, 'refs/heads', 'refs/remotes', 'refs/aiworks'], { cwd: repoPath }).stdout) {
     keep(owner.campaignId, { ...item, reason: 'unreferenced-commit' }); return;
@@ -221,7 +265,7 @@ function finishRemoval(ctl, { started, item, campaignId, path }, result, report,
  * of an operation that is no longer recorded or dispatched goes; the rest of the run directory stays. A profile still
  * locked is tried again on a later pass. Returns how many were removed.
  */
-export function removeBrowserProfiles(ctl) {
+export async function removeBrowserProfiles(ctl) {
   if (!ctl.dataDir) return 0;
   const runs = resolve(ctl.dataDir, 'runs');
   let removed = 0;
@@ -230,7 +274,8 @@ export function removeBrowserProfiles(ctl) {
     if (relative(runs, runDir) !== basename(runDir)) continue;
     const profile = join(runDir, 'chrome-profile');
     try { if (!existsSync(profile) || lstatSync(profile).isSymbolicLink() || !lstatSync(profile).isDirectory()) continue; } catch { continue; }
-    try { rmSync(profile, { recursive: true, force: true, maxRetries: 2 }); removed++; }
+    // Awaited, so a pass over many profiles never holds the event loop (aiworks#119).
+    try { await rm(profile, { recursive: true, force: true, maxRetries: 2 }); removed++; }
     catch { /* still locked: a later pass */ }
   }
   if (removed) ctl.store.journal(null, 'cleanup-browser-profiles', { removed }, ctl.now());
@@ -268,14 +313,15 @@ function coordinatorFree(ctl) {
   return !foreignLease(ctl, COORDINATOR_LANE) && !ctl.store.get("SELECT 1 AS v FROM meta WHERE key = 'coordinator_violation'");
 }
 
-function cleanCoordinator(ctl, report, keep) {
+async function cleanCoordinator(ctl, report, keep) {
   const owners = coordinatorOwners(ctl);
   if (!owners.size || !coordinatorFree(ctl)) return;
   const root = coordinatorWorktreeRoot(ctl);
   for (const owner of owners.values()) {
     if (!owner.finished || !existsSync(owner.path)) continue;
-    // The checkout's own repository lists it; the first entry is that repository's main checkout.
-    const list = gitA.worktreeList({ git: ctl.cmd.git, repoPath: owner.path });
+    // The checkout's own repository lists it; the first entry is that repository's main checkout. Read without blocking
+    // (aiworks#119): its runs and the lane are read again in the transaction below, which decides.
+    const list = await gitA.worktreeListAsync({ git: ctl.cmd.git, repoPath: owner.path });
     const wt = list?.slice(1).find((entry) => key(entry.path) === key(owner.path));
     if (!wt) continue;
     if (!insideRoot(root, wt.path)) { keep(COORDINATOR_LANE, { path: wt.path, run: owner.run, reason: 'outside-root' }); continue; }
@@ -292,7 +338,7 @@ function cleanCoordinator(ctl, report, keep) {
 }
 
 /** After a restart: settle every removal journaled as started but never finished, from what git shows now. */
-function reconcile(ctl) {
+async function reconcile(ctl) {
   const git = ctl.cmd.git;
   const open = ctl.store.all(`SELECT s.seq, s.campaign_id, s.detail FROM journal s WHERE s.kind = 'cleanup-started' AND NOT EXISTS
     (SELECT 1 FROM journal f WHERE f.kind = 'cleanup-finished' AND json_extract(f.detail, '$.started') = s.seq) ORDER BY s.seq`);
@@ -300,10 +346,10 @@ function reconcile(ctl) {
     if (!allowed(ctl, ctl.store.campaign(campaignId)?.declaration?.target?.repository)) continue;
     let done;
     if (detail.action === 'remove-worktree') {
-      const list = gitA.worktreeList({ git, repoPath: detail.repoPath });
+      const list = await gitA.worktreeListAsync({ git, repoPath: detail.repoPath });
       done = Boolean(list) && !list.some((wt) => key(wt.path) === key(detail.path)) && !existsSync(detail.path);
     } else {
-      done = existsSync(detail.repoPath) && !gitA.exec(git, ['rev-parse', '--verify', '--quiet', `refs/heads/${detail.branch}`], { cwd: detail.repoPath }).ok;
+      done = existsSync(detail.repoPath) && !(await gitA.execAsync(git, ['rev-parse', '--verify', '--quiet', `refs/heads/${detail.branch}`], { cwd: detail.repoPath })).ok;
     }
     // Not done: the next pass decides again from its own checks; nothing is retried from this record.
     ctl.store.journal(campaignId, 'cleanup-finished', { started: seq, outcome: done ? (detail.action === 'remove-worktree' ? 'removed' : 'deleted') : 'interrupted', reconciled: true }, ctl.now());
