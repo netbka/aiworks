@@ -529,8 +529,15 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
       'cmd/c^ "gh pr merge 1"', 'cmd/c^ "npm publish"', 'cmd/c^ "git -c alias.p=push p origin x"',
       ...['x;y', '\r'].map((part) => `cmd /d /e:on /v:off /q /a /u /t:0 ${part} /c "git push origin x"`),
       ...['/d x;y /c', ',/c', '/d,/c', '=/c'].map((part) => `cmd ${part} "git push origin x"`), 'cmd /cgit push origin x',
-      // PowerShell runs a quoted command that a non-space character precedes (from bash: \; \& \( ).
-      ...['\\;"git push origin x"', '\\&"git push origin x"', '\\("git push origin x"\\)'].map((part) => `powershell -NoProfile ${part}`)].map(shell),
+      // PowerShell runs a quoted command that a non-space character precedes (from bash: \; \& \( ), after such words too.
+      ...['\\;"git push origin x"', '\\&"git push origin x"', '\\("git push origin x"\\)'].map((part) => `powershell -NoProfile ${part}`),
+      'powershell \\; \\;"git push origin x"',
+      // cmd takes /c or /k anywhere in its arguments: after words no count reads (an unclosed ', ^&, or \", which opens a
+      // quote for cmd), and after another switch or word.
+      ...["/d = /e:on = /q = x'", "/d , /e:on , /q , x'", "= = = = = = = x'", '/d = /e:on = /q = ^&', '/d /e:on /v:off /q /a /u /t:0 \\" & \\"']
+        .map((part) => `cmd ${part} /c "git push origin x"`),
+      `cmd /d = /e:on = /q = x' /c "gh pr merge 1"`, `cmd /d = /e:on = /q = x' /c "git -c alias.p=push p"`,
+      'cmd /d/c "git push origin x"', 'cmd x/c "git push origin x"'].map(shell),
     { state: 'DONE', tool_name: 'run_command', tool_info: { parameters: {} } },
     { state: 'DONE', tool_name: 'write_file' }, { state: 'DONE', tool_name: 'search_web' }, browserTool('DONE'),
     { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'send_input' } } },
