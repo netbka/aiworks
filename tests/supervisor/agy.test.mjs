@@ -496,7 +496,7 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
     ...['rg -c alias. src', 'wc -c alias.txt', 'grep -rn GIT_CONFIG_COUNT src', 'gh auth status', 'echo cmd a b c d e f g & dir /k',
       'rg -l cmd src tests docs scripts site lib bin | findstr /c:"spawn"', 'rg -n "powershell" a b c d e f g h i j k l m | rg -e Encoded',
       'rg -n "git push" cmd/cli', 'grep -rn "git commit" src/cmd/client.go', 'cat cmd/kubectl/main.go | grep "gh pr merge"',
-      'rg "gh auth token" internal/cmd/config'].map(shell)];
+      'rg "gh auth token" internal/cmd/config', 'rg -n "git push" cmd/c/x.go', 'rg -n "git push" cmd/k.go', 'rg -n "git push" cmd/c-x'].map(shell)];
   assert.equal(read(allowed).class, 'result');
   const voided = [
     ...['git push origin HEAD', 'git -C . push', 'cmd /c "git push origin x"', 'git status; git commit -am x', '& "git" push', 'gh pr create --fill',
@@ -520,7 +520,17 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
       // A separator inside a substitution, a group or backticks, or a continued line, does not end the wrapper's command.
       ...['$(true;)', '`true;`', '$(:|:)'].map((part) => `bash ${'-x '.repeat(13)}${part} -c "git push origin x"`),
       'cmd /d /e:on /v:off /q /a /u /t:0 (x;) /c "git push origin x"', `powershell ${'-NoProfile '.repeat(13)}$(1;2) -EncodedCommand ZQB=`,
-      `powershell ${'-NoProfile '.repeat(13)}\`\r\n-EncodedCommand ZQB=`].map(shell),
+      `powershell ${'-NoProfile '.repeat(13)}\`\r\n-EncodedCommand ZQB=`,
+      // PowerShell escapes a separator with a backtick; brackets that do not match leave no separator trusted.
+      ...['x`;`;', 'x`a`;'].map((part) => `cmd /d /e:on /v:off /q /a /u /t:0 ${part} /c "git push origin x"`),
+      ...['$(: }; :)', '$(case x in x) :;; esac)'].map((part) => `bash ${'-x '.repeat(13)}${part} -c "git push origin x"`),
+      // cmd/c with no break, cmd's own argument breaks (, ; = and a lone CR), and a name right after /c.
+      ...['cmd/c^ ', 'cmd/c^', 'cmd/k^ ', 'cmd.exe/c^ ', 'cmd""/c ', "cmd''/c "].map((head) => `${head}"git push origin x"`),
+      'cmd/c^ "gh pr merge 1"', 'cmd/c^ "npm publish"', 'cmd/c^ "git -c alias.p=push p origin x"',
+      ...['x;y', '\r'].map((part) => `cmd /d /e:on /v:off /q /a /u /t:0 ${part} /c "git push origin x"`),
+      ...['/d x;y /c', ',/c', '/d,/c', '=/c'].map((part) => `cmd ${part} "git push origin x"`), 'cmd /cgit push origin x',
+      // PowerShell runs a quoted command that a non-space character precedes (from bash: \; \& \( ).
+      ...['\\;"git push origin x"', '\\&"git push origin x"', '\\("git push origin x"\\)'].map((part) => `powershell -NoProfile ${part}`)].map(shell),
     { state: 'DONE', tool_name: 'run_command', tool_info: { parameters: {} } },
     { state: 'DONE', tool_name: 'write_file' }, { state: 'DONE', tool_name: 'search_web' }, browserTool('DONE'),
     { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'send_input' } } },
