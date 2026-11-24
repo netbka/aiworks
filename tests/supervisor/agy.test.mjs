@@ -569,7 +569,17 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
       ...['2>&1', '&>/dev/null', '>|/dev/null'].map((part) => `bash ${part} -c "git push origin x"`),
       'powershell -NoProfile 2>&1 -EncodedCommand ZQB=', 'git 2>/dev/null push origin x',
       'cmd /d /e:on /v:off /q /a /u /t:0 x,\n/c "git push origin x"', 'powershell -NoProfile <#;#> -e ZQB=', 'powershell @(;) -e ZQB=',
-      'pwsh , , "-e" ZQB='].map(shell),
+      'pwsh , , "-e" ZQB=',
+      // The value of a PowerShell switch that takes one may hold a separator that does not end the command (from cmd: ;).
+      ...['By^&pass', 'By^|pass', 'By`;pass', 'By\\;pass', 'By;pass'].map((value) => `powershell -NoProfile -ExecutionPolicy ${value} -EncodedCommand ZQB=`),
+      'powershell -ExecutionPolicy By^&pass -e ZQB=', 'powershell -NoProfile -ExecutionPolicy x^&y -ec ZQB=',
+      'pwsh -NoProfile -WorkingDirectory a^&b -EncodedCommand ZQB=', 'pwsh -NoProfile -CustomPipeName a^&b -EncodedCommand ZQB=',
+      // Quotes around part of a name, carets doubled for a nested cmd, bash's $'...', a redirection glued to a word or with
+      // an escaped character in its target.
+      '"g"it push origin x', 'g"it" push origin x', "g'it' push origin x", 'cmd /c g"it" push origin x', 'git pu"sh" origin x',
+      'gh p"r" merge 1', 'powershell -NoProfile -"e" ZQB=', 'powershell -NoProfile -e"c" ZQB=', 'cmd /c g^^it push origin x',
+      'git>nul push origin x', 'bash>/dev/null -c "git push origin x"', "g$'i't push origin x", 'powershell -NoProfile&>x -e ZQB=',
+      'powershell "-NoProfile"2>&1 -e ZQB=', 'powershell -NoProfile>a\\;b -e ZQB='].map(shell),
     { state: 'DONE', tool_name: 'run_command', tool_info: { parameters: {} } },
     { state: 'DONE', tool_name: 'write_file' }, { state: 'DONE', tool_name: 'search_web' }, browserTool('DONE'),
     { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'send_input' } } },
@@ -584,7 +594,7 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
   // redirections (read in every way the audit reads a line).
   const started = performance.now();
   assert.equal(deniedCommand(`git ${'--x=y '.repeat(25)}status`), null);
-  for (const unit of ['-a=git ', 'cmd /x ', 'bash -x ', 'g^it -c ', 'g^it\\x $(a) 2>&1 -c ']) deniedCommand(unit.repeat(Math.floor((64 * 1024 - 1) / unit.length)));
+  for (const unit of ['-a=git ', 'cmd /x ', 'bash -x ', 'g^it -c ', 'g^it\\x $(a) 2>&1 -c ', 'g^^i"t">x -c ']) deniedCommand(unit.repeat(Math.floor((64 * 1024 - 1) / unit.length)));
   assert.ok(performance.now() - started < 1000, 'the audit cannot stall the supervisor');
   assert.equal(read(allowed, { mode: 'request-review' }).violation, true, 'only the sandboxed permission mode');
   assert.equal(read(allowed, { extra: { denied_actions: [{ action: 'command' }] } }).violation, true, 'a refused bypass voids the run');

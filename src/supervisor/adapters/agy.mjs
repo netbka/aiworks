@@ -125,11 +125,24 @@ const CMD_SWITCH = String.raw`["']?\/[ck]`;
 const SHELL_SWITCH = String.raw`-(?=[a-z]*c)[a-z]+`;
 const ENCODED_SWITCH = String.raw`[-\/\u2013\u2014\u2015]e(?:c|n[a-z]*)?`;
 // What powershell.exe itself reads as -EncodedCommand: -ec or a prefix of encodedcommand (-e, -en, -enc ..., not
-// -Encoding), maybe quoted as a whole word ("-e"), and the switch words it reads before it: it stops at the first word
-// that is not a switch.
+// -Encoding), maybe quoted as a whole word ("-e"), and the switch words it reads before it (POWERSHELL_SWITCHES).
 const quotedWord = (word) => String.raw`(?:${word}|"${word}"|'${word}')`;
-const ENCODED_PREFIX = quotedWord(String.raw`[-\/\u2013\u2014\u2015](?:ec|${Array.from({ length: 14 }, (_, cut) => 'encodedcommand'.slice(0, 14 - cut)).join('|')})`);
-const POWERSHELL_SWITCHES = (count) => String.raw`(?:\s+(?!${ENCODED_PREFIX}\s)${quotedWord(String.raw`[-\/\u2013\u2014\u2015][^\s"']*`)}){${count}}`;
+const prefixes = (names) => [...new Set(names.flatMap((name) => Array.from({ length: name.length }, (_, cut) => name.slice(0, name.length - cut))))];
+const PS_DASH = String.raw`[-\/\u2013\u2014\u2015]`;
+const ENCODED_PREFIX = quotedWord(String.raw`${PS_DASH}(?:ec|${prefixes(['encodedcommand']).join('|')})`);
+// powershell.exe reads its own switches up to the first word that is not one. A switch that takes a value (by any prefix
+// of its name, or an alias: -ExecutionPolicy Bypass, -ep, -wd) takes the next word, whatever it holds (By^&pass), and
+// -Command or -File (also -c, -f and their other prefixes) ends them: the rest is the command, or the script and its
+// arguments. A switch's name holds no separator (-NoProfile;echo is two commands, and powershell.exe knows no switch
+// -NoProfile&x), its value after a colon may (-ExecutionPolicy:By^&pass). Each word is read in one way only: the
+// lookahead captures it (a value with its switch where there is one) and the backreference takes exactly that.
+const PS_STOP = quotedWord(String.raw`${PS_DASH}(?:${prefixes(['command', 'file']).join('|')})`);
+const PS_VALUE = quotedWord(String.raw`${PS_DASH}(?:${[...prefixes(['executionpolicy', 'windowstyle', 'version', 'inputformat', 'outputformat',
+  'psconsolefile', 'configurationname', 'configurationfile', 'custompipename', 'settingsfile', 'workingdirectory']), 'ep', 'wd', 'if', 'of', 'ea'].join('|')})`);
+const PS_VALUE_WORD = String.raw`(?:"[^"]*"|'[^']*'|[^\s"'])+`;
+const PS_SWITCH_WORD = quotedWord(String.raw`${PS_DASH}[^\s"';&|:]*(?::[^\s"']*)?`);
+const POWERSHELL_SWITCHES = (count, group) => String.raw`(?:\s+(?!${ENCODED_PREFIX}\s|${PS_STOP}\s)`
+  + String.raw`(?=(${PS_VALUE}\s+(?!${ENCODED_PREFIX}\s)${PS_VALUE_WORD}|${PS_SWITCH_WORD}))` + `\\${group}){${count}}`;
 // cmd breaks its arguments at whitespace, `,`, `;` and `=` (CMD_BREAK), and may be followed by quote pairs (cmd""/c).
 const CMD_AT = String.raw`cmd(?:\.exe)?["']*`;
 const CMD_BREAK = String.raw`[\s,;=]`;
@@ -227,17 +240,18 @@ export const DENIED_COMMANDS = RULES.map(([name, pattern]) => ({ name, plain: ne
 // never ends a command. The git config alias rule denies its switch wherever it stands, so for it the name alone is a
 // window too: such a switch anywhere in the same command is denied, also after a word its count cannot read (a
 // substitution that holds a separator, $(a;b), which only bash and PowerShell expand). powershell.exe reads its own
-// switches only up to the first word that is not one, so there the window is its run of switch words (at most 32; past
-// them a later encoded switch in the same command is denied): a switch in a quoted command or after another word is not
-// its encoded command.
+// switches only up to the first word that is not one, so there the window is its run of switch words and their values
+// (at most 32 switches; past them a later encoded switch in the same command is denied; POWERSHELL_SWITCHES): a switch in
+// a quoted command or after another word is not its encoded command. A value may hold a `;` that cmd passes on
+// (-ExecutionPolicy By;pass), so it uses the cmd table too.
 const WINDOWS = [
   ['cmd switch past the audit limit', () => String.raw`${WRAPPER_AT}${CMD_AT}(?:${CMD_BREAK}+(?!${CMD_SWITCH})${CMD_WORD}){7}`, String.raw`${CMD_BREAK}${CMD_SWITCH}`, true],
   ['shell switch past the audit limit', () => String.raw`${WRAPPER_AT}${SHELLS}(?:\.exe)?["']?(?:\s+(?!${SHELL_SWITCH}\s)${WORD}){13}`,
     String.raw`\s${SHELL_SWITCH}(?=\s)`],
   ['encoded command past the audit limit', () => String.raw`${WRAPPER_AT}${POWERSHELL}(?:\s+(?!${ENCODED_SWITCH}\s)${WORD}){13}`,
     String.raw`\s${ENCODED_SWITCH}(?=\s)`, true],
-  ['encoded command', () => String.raw`${WRAPPER_AT}${POWERSHELL}(?:${POWERSHELL_SWITCHES('0,31')}(?=\s+${ENCODED_PREFIX}\s)|${POWERSHELL_SWITCHES(32)})`,
-    String.raw`\s${ENCODED_PREFIX}(?=\s)`],
+  ['encoded command', () => String.raw`${WRAPPER_AT}${POWERSHELL}(?:${POWERSHELL_SWITCHES('0,31', 1)}(?=\s+${ENCODED_PREFIX}\s)|${POWERSHELL_SWITCHES(32, 2)})`,
+    String.raw`\s${ENCODED_PREFIX}(?=\s)`, true],
   ['powershell command past the audit limit', () => String.raw`${WRAPPER_AT}${POWERSHELL}(?:\s+[^\s"']+){13}`, String.raw`\s${QUOTE_IN_WORD}`, true],
   ['git config past the audit limit', (w) => String.raw`${gitAt(w)}${quoted('config')}(?=\s)`, String.raw`\s["']?alias\.`],
 ].map(([name, head, token, cmd = false]) => ({ name, plain: new RegExp(head(false), 'gi'), wrapped: new RegExp(head(true), 'gi'),
@@ -524,10 +538,11 @@ function pastWindow(text, head, token, next) {
   return false;
 }
 
-// Names spelled with an escape: cmd's caret escapes the next character (cm^d and g^it are cmd and git, and a caret before
-// a line feed joins the lines), PowerShell's backtick and bash's backslash a letter (g`it, g\it), and an empty quote pair
-// next to a name character is nothing (g""it). %ComSpec% names cmd (also with cmd's substring or replacement suffix,
-// %ComSpec:~0%), and so do PowerShell's $env:ComSpec and bash's $COMSPEC. cmd expands variables before it reads carets.
+// Names spelled with an escape or quotes: cmd's caret escapes the next character (cm^d and g^it are cmd and git, g^^it
+// too when cmd starts cmd, and a caret before a line feed joins the lines), PowerShell's backtick and bash's backslash a
+// letter (g`it, g\it); quotes around a part of a name join it to the rest ("g"it, g"it", pu"sh", g""it, g$'i't).
+// %ComSpec% names cmd (also with cmd's substring or replacement suffix, %ComSpec:~0%), and so do PowerShell's
+// $env:ComSpec and bash's $COMSPEC. cmd expands variables before it reads carets.
 const COMSPEC = /%comspec(?::[^%\n]*)?%|\$\{?(?:env:)?comspec\}?/gi;
 // Every caret resolved, and a backslash or backtick before a name character, with %ComSpec% alone: one reading. It also
 // turns an escaped separator (^&) into a real one, so the narrower readings below keep it escaped.
@@ -535,17 +550,53 @@ const FULL_COMSPEC = /%comspec%|\$\{?(?:env:)?comspec\}?/gi;
 const ESCAPES = /\^(\r?\n|[\s\S])?|[\\\x60](?=[\w.-])/g;
 const resolved = (text) => text.replace(FULL_COMSPEC, 'cmd').replace(ESCAPES, (escape, next = '') => (next.endsWith('\n') ? '' : next));
 // A caret only before a name character or a line feed, a backtick before a name character, and an empty quote pair (a
-// lookbehind, so a run of quotes is read once).
+// lookbehind, so a run of quotes is read once). Then, in a reading of its own (joined), a run of carets before a name
+// character and a quoted run of name characters next to a name character (also read once each).
 const NAME_CARET = /\^(?:\r?\n|(?=[\w.-]))/g;
 const NAME_TICK = /\x60(?=[\w.-])/g;
 const EMPTY_QUOTES = /(?<=[\w.-])(?:""|'')+|(?<!["'])(?:""|'')+(?=[\w.-])/g;
+const CARETS = /(?<!\^)\^+(?=[\w.-])/g;
+const QUOTED_PIECE = /(?<=[\w.-])(["'])([\w.-]+)\1|(["'])([\w.-]+)\3(?=[\w.-])/g;
+const ANSI_ESCAPE = /\\(x[0-9a-f]{1,2}|u[0-9a-f]{1,4}|U[0-9a-f]{1,8}|[0-7]{1,3}|c[\s\S]|[\s\S])/gi;
+const ANSI_CONTROL = { a: 7, b: 8, e: 27, E: 27, f: 12, n: 10, r: 13, t: 9, v: 11 };
+const ansiChar = (escape, code) => {
+  const point = /^[xuU]/.test(code) ? parseInt(code.slice(1), 16) : /^[0-7]/.test(code) ? parseInt(code, 8)
+    : code[0] === 'c' && code.length === 2 ? code.charCodeAt(1) & 31 : ANSI_CONTROL[code] ?? code.codePointAt(0);
+  return point <= 0x10ffff ? String.fromCodePoint(point) : '\0';
+};
+/** bash's ANSI-C quotes ($'...', in which \ escapes) that hold only name characters, as those characters (g$'\x69't). */
+function ansiNames(text) {
+  let out = '';
+  let at = 0;
+  for (let start = text.indexOf("$'"); start >= 0; start = text.indexOf("$'", at)) {
+    let end = start + 2;
+    while (end < text.length && text[end] !== "'") end += text[end] === '\\' ? 2 : 1;
+    // An unclosed quote holds the rest of the line.
+    if (end >= text.length) break;
+    const body = text.slice(start + 2, end).replace(ANSI_ESCAPE, ansiChar);
+    out += text.slice(at, start) + (/^[\w.-]+$/.test(body) ? body : text.slice(start, end + 1));
+    at = end + 1;
+  }
+  return out + text.slice(at);
+}
 const named = (text) => text.replace(COMSPEC, 'cmd').replace(NAME_CARET, '').replace(NAME_TICK, '').replace(EMPTY_QUOTES, '');
+// The parts of a name joined, in a reading of its own, so the readings before stay as they were: carets, quoted parts and
+// redirections, also one glued to a word (JOINED_REDIRECTION), taken out.
+const joined = (text) => ansiNames(text.replace(CARETS, '')).replace(QUOTED_PIECE, (piece, quote, one, other, two) => one ?? two)
+  .replace(JOINED_REDIRECTION, '');
 // A backslash before a name character, in a reading of its own: it is also the separator of a Windows path
 // (C:\Windows\System32\cmd.exe), which the readings before keep.
 const NAME_BACKSLASH = /\\(?=[\w.-])/g;
 // A redirection and its target, which the shell takes out of the command's words: 2>&1, >&2, <&-, &>file, >|file,
 // > file, 2>>log, <<<word (not a here-document). And a word of commas only, PowerShell's array operator.
-const REDIRECTION = /(?<![^\s;&|(){}])(?:\d+|\*)?(?:[<>]&(?:\d+|-)(?![^\s;&|()])|(?:>>?\|?|<(?!<)|<<<|&>>?)[ \t]*(?:"[^"]*"|'[^']*'|[^\s;&|<>()"'])+)/g;
+const REDIRECT_TO = String.raw`(?:[<>]&(?:\d+|-)(?![^\s;&|()])|(?:>>?\|?|<(?!<)|<<<|&>>?)[ \t]*(?:"[^"]*"|'[^']*'|[^\s;&|<>()"'])+)`;
+const REDIRECTION = new RegExp(String.raw`(?<![^\s;&|(){}])(?:\d+|\*)?${REDIRECT_TO}`, 'g');
+// joined reads more as a redirection: one glued to the word before it (git>nul push, -NoProfile&>x, "-NoProfile"2>&1),
+// bash's >&file (-NoProf>&2le), and a target that holds an escaped character (-NoProfile>a\;b, cmd's >a^&b). It starts
+// after no digit, so a run of digits is read once, from its first.
+const JOINED_TO = String.raw`(?:[<>]&(?:\d+|-)(?![^\s;&|()])|(?:>>?\|?|>&|<(?!<)|<<<|&>>?)[ \t]*`
+  + String.raw`(?:"[^"]*"|'[^']*'|[\\^\x60][\s\S]|[^\s;&|<>()"'\\^\x60])+)`;
+const JOINED_REDIRECTION = new RegExp(String.raw`(?<![<>\d])(?:\d+|\*)?${JOINED_TO}`, 'g');
 const COMMAS = /(?<!\S),+(?!\S)/g;
 
 /**
@@ -577,18 +628,21 @@ function vanished(text) {
 
 /**
  * The readings of a command line: as written; with every escape resolved (resolved); as written and without the words
- * that may vanish (vanished), each with names resolved (named) and then also their backslashes; and with every escape
- * resolved and then without the words that may vanish (power`shell $(true;) -e).
+ * that may vanish (vanished), each with names resolved (named), then with quoted parts joined to them (joined), each
+ * also without its backslashes; and with every escape resolved and then without the words that may vanish
+ * (power`shell $(true;) -e).
  */
 function* readings(text) {
   yield text;
   const full = resolved(text);
   yield full;
   for (const base of [text, vanished(text)]) {
-    const name = named(base);
     yield base;
-    yield name;
-    yield name.replace(NAME_BACKSLASH, '');
+    const name = named(base);
+    for (const reading of [name, joined(name)]) {
+      yield reading;
+      yield reading.replace(NAME_BACKSLASH, '');
+    }
   }
   yield vanished(full);
 }
