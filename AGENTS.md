@@ -59,4 +59,4 @@ Write a test only when it protects product-critical behaviour: something that, i
 
 ## Agent leftovers
 
-After manual agent work, run `npm run cleanup:agents` (dry run) and then `npm run cleanup:agents -- --apply`. It removes merged `worktree-agent-*` branches, clean worktrees of merged branches under `.claude/worktrees` and `.worktrees`, orphan folders there that hold only `node_modules` or logs, and root `gate*.log` files. It never forces and never touches `.local/`.
+After manual agent work, run `npm run cleanup:agents` (dry run) and then `npm run cleanup:agents -- --apply`. It removes merged `worktree-agent-*` branches, clean worktrees of merged branches under `.claude/worktrees` and `.worktrees` together with those local branches, orphan folders there that hold only `node_modules` or logs, and root `gate*.log` files. It never forces and never touches `.local/`. A worktree Claude Code locked for an agent stays while the session that locked it runs; once that process has exited, the stale lock is lifted and the worktree removed. A removal that fails is reported, the rest still run, and the exit code is 1.
