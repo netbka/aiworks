@@ -498,7 +498,11 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
       'rg -n "git push" cmd/cli', 'grep -rn "git commit" src/cmd/client.go', 'cat cmd/kubectl/main.go | grep "gh pr merge"',
       'rg "gh auth token" internal/cmd/config', 'rg -n "git push" cmd/c/x.go', 'rg -n "git push" cmd/k.go', 'rg -n "git push" cmd/c-x',
       // A switch inside PowerShell's quoted command is not its encoded switch.
-      'powershell -NoProfile -Command "Get-Content README.md -Encoding UTF8"', 'pwsh -c "rg -n -e push -e merge src"'].map(shell)];
+      'powershell -NoProfile -Command "Get-Content README.md -Encoding UTF8"', 'pwsh -c "rg -n -e push -e merge src"',
+      // A quoted part glued to a quoted string that holds a blank is one word with that blank, not a command.
+      `rg -e 'git'" push" docs`, `rg -e "git"' push' docs`, `rg -n 'gh'" pr merge" docs`, `grep -rn 'npm'" publish" .`,
+      `Select-String -Pattern 'git'" push" -Path docs/*.md`, `echo 'git'" push"`, `rg -F 'git'" push origin" README.md`,
+      `git log --grep 'git'" push"`].map(shell)];
   assert.equal(read(allowed).class, 'result');
   const voided = [
     ...['git push origin HEAD', 'git -C . push', 'cmd /c "git push origin x"', 'git status; git commit -am x', '& "git" push', 'gh pr create --fill',
@@ -580,7 +584,8 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
       'gh p"r" merge 1', 'powershell -NoProfile -"e" ZQB=', 'powershell -NoProfile -e"c" ZQB=', 'cmd /c g^^it push origin x',
       'git>nul push origin x', 'bash>/dev/null -c "git push origin x"', "g$'i't push origin x", 'powershell -NoProfile&>x -e ZQB=',
       'powershell "-NoProfile"2>&1 -e ZQB=', 'powershell -NoProfile>a\\;b -e ZQB=',
-      // A chain of redirections, also right after one that ends in a digit; a target's escapes as each shell reads them.
+      // A chain of redirections, also right after one that ends in a digit; a target with a character escaped by \, ^ or `
+      // (any of the shells' escapes), or with bash's ordinary caret before a blank, which ends it.
       ...['>&2&>x', '>&2>a\\;b', '<&0>x', '&>x^', '>a\\;b^', '&>x2>&1', '>a^\\;b', '>d\\^;b', ' 2>&1>&2', ' 2>&1&>x', ' >&2&>x']
         .map((part) => `powershell -NoProfile${part} -e ZQB=`),
       'powershell -NoP>&2rof2>&1ile&>x -e ZQB=', 'powershell -NoPro>nulfile2>&1 -EncodedCommand ZQB=',
@@ -594,7 +599,13 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
       "powershell -ep By'pass -e ZQB=", `cmd /c "powershell -ep By'pass -e ZQB="`,
       // cmd's caret before a line feed escapes the next line's first character.
       ...['\n', '\r\n'].flatMap((eol) => [`powershell -NoProfile -ep By^${eol}&pass -EncodedCommand ZQB=`,
-        `powershell -NoProfile -ep By^${eol}|pass -e ZQB=`, `cmd /d ^${eol}& /c "git push origin x"`])].map(shell),
+        `powershell -NoProfile -ep By^${eol}|pass -e ZQB=`, `cmd /d ^${eol}& /c "git push origin x"`]),
+      // A switch word that holds a redirection reaches up to a blank or a separator the shell does not hide: with a word
+      // that comes to nothing, bash's ordinary caret, a here-document or another redirection form in it.
+      'powershell -NoProf$(true;)ile>&2>a\\;b -e ZQB=', 'powershell $(true;)-NoProfile>&2&>x -e ZQB=',
+      'powershell -NoProfile&>x^>&2&>x -e ZQB=', 'powershell -NoPro>nulfil^>&1 -EncodedCommand ZQB=',
+      'powershell -NoProfile>a<<EOF\\;b -e ZQB=', 'powershell -NoProfil>>&2 -e ZQB=', 'powershell -NoProfile<& 0>x -e ZQB=',
+      'powershell -NoProfile<>a\\;b>x -e ZQB=', 'powershell -NoProfile>&2&>x^"& x"x -e ZQB='].map(shell),
     { state: 'DONE', tool_name: 'run_command', tool_info: { parameters: {} } },
     { state: 'DONE', tool_name: 'write_file' }, { state: 'DONE', tool_name: 'search_web' }, browserTool('DONE'),
     { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'send_input' } } },
@@ -610,6 +621,8 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
   const started = performance.now();
   assert.equal(deniedCommand(`git ${'--x=y '.repeat(25)}status`), null);
   for (const unit of ['-a=git ', 'cmd /x ', 'bash -x ', 'g^it -c ', 'g^it\\x $(a) 2>&1 -c ', 'g^^i"t">x -c ', `g'i'"t">&2>x -c `]) deniedCommand(unit.repeat(Math.floor((64 * 1024 - 1) / unit.length)));
+  // A powershell switch word that holds a redirection and a run of escapes as long as the line (each read once).
+  deniedCommand(`powershell -x>${'^\\'.repeat(32 * 1024 - 16)}a & -e x`);
   assert.ok(performance.now() - started < 1000, 'the audit cannot stall the supervisor');
   assert.equal(read(allowed, { mode: 'request-review' }).violation, true, 'only the sandboxed permission mode');
   assert.equal(read(allowed, { extra: { denied_actions: [{ action: 'command' }] } }).violation, true, 'a refused bypass voids the run');

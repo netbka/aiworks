@@ -143,7 +143,14 @@ const PS_VALUE = quotedWord(String.raw`${PS_DASH}(?:${[...prefixes(['executionpo
   'psconsolefile', 'configurationname', 'configurationfile', 'custompipename', 'settingsfile', 'workingdirectory']), 'ep', 'wd', 'if', 'of', 'ea'].join('|')})`);
 const PS_VALUE_WORD = String.raw`(?:"[^"]*"|'[^']*'|[^\s"'])+`;
 const PS_VALUE_WORD_CMD = String.raw`(?:"[^"]*"|[^\s"])+`;
-const PS_SWITCH_WORD = quotedWord(String.raw`${PS_DASH}[^\s"';&|:]*(?::[^\s"']*)?`);
+// A switch word that holds a redirection (< or >) is read as far as the shell may leave it one word: up to a blank, or to
+// a ;, & or | that is not escaped (a run of \, ^ or ` before it, read at once), quoted or part of the redirection (>&,
+// <&, &>, >|): -NoProfile>&2&>x, -NoProfile>a\;b, -NoProfile&>x^"& x". The shell takes the redirection out, and the
+// switch before it stays.
+const PS_PLAIN_SWITCH_WORD = quotedWord(String.raw`${PS_DASH}[^\s"';&|:]*(?::[^\s"']*)?`);
+const PS_REDIRECTED_SWITCH_WORD = String.raw`(?=["']?${PS_DASH}[^\s]*?[<>])`
+  + String.raw`(?:"[^"]*"|'[^']*'|[\\^\x60]+[;&|]?|[<>]&|&>|>\||[^\s"';&|:\\^\x60])+(?::[^\s"']*)?`;
+const PS_SWITCH_WORD = String.raw`(?:${PS_REDIRECTED_SWITCH_WORD}|${PS_PLAIN_SWITCH_WORD})`;
 const POWERSHELL_SWITCHES = (count, group, value = PS_VALUE_WORD) => String.raw`(?:\s+(?!${ENCODED_PREFIX}\s|${PS_STOP}\s)`
   + String.raw`(?=(${PS_VALUE}\s+(?!${ENCODED_PREFIX}\s)${value}|${PS_SWITCH_WORD}))` + `\\${group}){${count}}`;
 const ENCODED_AFTER_SWITCHES = (value) => String.raw`${WRAPPER_AT}${POWERSHELL}`
@@ -594,8 +601,15 @@ const named = (text) => text.replace(COMSPEC, 'cmd').replace(NAME_CARET, '').rep
 // takes out every quote of a word made of quoted runs (QUOTED_RUN) and a whole chain of redirections (REDIRECTION_RUN).
 const joined = (text) => ansiNames(text.replace(CARETS, '')).replace(QUOTED_PIECE, (piece, quote, one, other, two) => one ?? two)
   .replace(JOINED_REDIRECTION, '');
+// A run glued to a quoted string that holds a blank keeps its quotes: 'git'" push" is one word, the text git push.
+const GLUED_BLANK = /"[^"\s]*\s[^"]*"|'[^'\s]*\s[^']*'/y;
+const beforeBlankQuote = (text, at) => {
+  GLUED_BLANK.lastIndex = at;
+  return GLUED_BLANK.test(text);
+};
 const joinedRuns = (text) => ansiNames(text.replace(CARETS, ''))
-  .replace(QUOTED_RUN, (run) => (/["']/.test(run) ? run.replace(/["']/g, '') : run)).replace(REDIRECTION_RUN, '');
+  .replace(QUOTED_RUN, (run, at, all) => (/["']/.test(run) && !beforeBlankQuote(all, at + run.length) ? run.replace(/["']/g, '') : run))
+  .replace(REDIRECTION_RUN, '');
 // A backslash before a name character, in a reading of its own: it is also the separator of a Windows path
 // (C:\Windows\System32\cmd.exe), which the readings before keep.
 const NAME_BACKSLASH = /\\(?=[\w.-])/g;
@@ -621,9 +635,10 @@ const COMMAS = /(?<!\S),+(?!\S)/g;
 /**
  * `text` without the words that may come to nothing: bash's substitutions ($(...), ${...} and backticks, see bashEnds)
  * and PowerShell's @(...), which may print nothing (powershell $(true;) -e), PowerShell's block comments (<#;#>) and
- * array commas (pwsh , "-e"), and redirections.
+ * array commas (pwsh , "-e"), and redirections unless `redirections` is false (REDIRECTION reads one at a time, which
+ * would cut a chain, >&2&>x, that joinedRuns reads whole).
  */
-function vanished(text) {
+function vanished(text, redirections = true) {
   // The substitutions closed before a bracket that does not match count too (bash reads a lone { or } as a word).
   const spans = [];
   bashEnds(text, spans);
@@ -642,15 +657,17 @@ function vanished(text) {
     kept += out.slice(at, start);
     at = end + 2;
   }
-  return (kept + out.slice(at)).replace(REDIRECTION, '').replace(COMMAS, '');
+  const words = kept + out.slice(at);
+  return (redirections ? words.replace(REDIRECTION, '') : words).replace(COMMAS, '');
 }
 
 /**
  * The readings of a command line: as written; with every escape resolved (resolved); as written and without the words
  * that may vanish (vanished), each with names resolved (named), then with quoted parts joined to them (joined, and
  * joinedRuns), each also without its backslashes; with every escape resolved and then without the words that may vanish
- * (power`shell $(true;) -e); and where a caret ends a line, with the caret kept on the next line's first character
- * (By^, a line feed and &pass is By^&pass).
+ * (power`shell $(true;) -e); without those words but with the redirections kept, as written and joined (joinedRuns,
+ * also without backslashes: -NoProf$(true;)ile>&2>a\;b); and where a caret ends a line, with the caret kept on the next
+ * line's first character (By^, a line feed and &pass is By^&pass).
  */
 function* readings(text) {
   yield text;
@@ -665,6 +682,11 @@ function* readings(text) {
     }
   }
   yield vanished(full);
+  const words = vanished(text, false);
+  yield words;
+  const runs = joinedRuns(named(words));
+  yield runs;
+  yield runs.replace(NAME_BACKSLASH, '');
   const caretLines = text.replace(CARET_LINE, '^');
   if (caretLines !== text) yield joinedRuns(named(caretLines));
 }
