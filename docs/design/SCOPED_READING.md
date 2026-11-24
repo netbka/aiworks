@@ -40,7 +40,7 @@ Two consequences of the table. First, the grammar is almost free: `docs/SUPERVIS
 A task reference is one of:
 
 - `path` — the whole document, exactly as today.
-- `path#anchor` — one section of a Markdown document. `anchor` is a GitHub-style heading slug: `[a-z0-9_-]+`, at most 160 characters, one `#` only.
+- `path#anchor` — one section of a Markdown document. `anchor` is a GitHub-style heading slug: lower-case letters of any script, marks, digits, connector punctuation such as `_`, and `-` (`ANCHOR` in `src/supervisor/reading.mjs`), at most 160 characters, one `#` only. A heading written in Russian has a Cyrillic slug.
 
 Rules:
 
@@ -196,7 +196,7 @@ Nothing in this design claims a saving. The numbers below exist so the owner can
 
 | Threat | Where it is stopped |
 | --- | --- |
-| An anchor used to point outside the repository (`../`, absolute, `%`-encoding) | `safePath` on the path part before the `#`; the anchor part allows only `[a-z0-9_-]`. Section 3. |
+| An anchor used to point outside the repository (`../`, absolute, `%`-encoding) | `safePath` on the path part before the `#`; the anchor part allows only the slug characters of section 3: no `/`, `.`, `%`, `#`, space or format character. Section 3. |
 | A secret-like path hidden behind an anchor (`.env#x`, `secrets.md#y`) | The secret-like pattern is already anchor-aware; it is applied to the whole string and to the path part. Admission A5 and declaration validation refuse it. |
 | A verifier cites a path to make the repair implementer read something outside the repository | Cites pass the same `safePath` and secret-like rules, then must exist at the target revision in the repository; otherwise dropped. Section 6.2. |
 | Citation spam to push declared references out of the packet | Cap by priority: declared first, 4 cites per finding, 24 total; overflow to text. Section 6.4. |

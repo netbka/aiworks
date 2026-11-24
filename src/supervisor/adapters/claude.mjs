@@ -10,8 +10,10 @@ import { DEVELOPMENT_DENIED } from '../development-policy.mjs';
 
 const SHA = '^[0-9a-f]{40}$';
 // A verifier citation names where a rule is written: a reference in the task reference grammar (SCOPED_READING sections 3
-// and 6.1), a path of at most 512 characters with at most one `#heading-slug`. The controller checks each one again.
-export const CITE_PATTERN = '^[^#]{1,512}(?:#[a-z0-9_-]{1,160})?$';
+// and 6.1), a path of at most 512 characters with at most one `#heading-slug`. A slug may be in any script (a heading in
+// Russian has a Cyrillic one), so this schema only keeps separators out of it; the controller checks each cite against
+// the exact grammar (`citeProblem`, `ANCHOR`) and drops one that does not fit without touching the verdict.
+export const CITE_PATTERN = '^[^#]{1,512}(?:#[^#\\s/\\\\.%:]{1,160})?$';
 export const MAX_CITES = 4;
 
 // A structured owner decision (OWNER_UI_V2 WP2): optional on both results, so a result without it is valid as before. The
