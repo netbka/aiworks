@@ -2079,6 +2079,16 @@ const CAPABILITY_WORDS = { ui: 'Screens people use', storybook: 'A gallery of sc
   mcp: 'Tools for AI assistants (MCP)', 'npm-package': 'A published code package (npm)', 'browser-extension': 'A browser extension',
   'data-pipeline': 'Moves or transforms data' };
 
+/** A governance rule code's area in plain words, by the prefix before its number (GOV-001 is a project-rules rule). */
+const RULE_AREAS = { GOV: 'how project rules are kept', AGENT: 'how AI workers act', DELIVERY: 'how work is delivered', OPS: 'running the project',
+  RELEASE: 'releases', UX: 'screens people use', VERIFY: 'checking work', SEC: 'security', DATA: 'data' };
+
+/** The plain areas a list of rule codes covers, in a readable list; an unknown prefix counts as "other rules". */
+function ruleAreas(ids) {
+  const areas = [...new Set(ids.map((id) => RULE_AREAS[String(id).split('-')[0].toUpperCase()] ?? 'other rules'))];
+  return areas.length > 1 ? `${areas.slice(0, -1).join(', ')} and ${areas.at(-1)}` : areas[0];
+}
+
 /** The rules of a project without GitHub: their state in one sentence, and the review the owner confirms by typing the name. */
 function rulesPanel(c) {
   const rules = c.rules, review = rulesReviews.get(c.id), busy = Boolean(rulesBusy) || offline || !state.supervisor.available;
@@ -2098,8 +2108,10 @@ function rulesPanel(c) {
       el('input', { type: 'checkbox', value: word, 'data-rules-capability': c.id, checked: chosen.has(word) }), CAPABILITY_WORDS[word] ?? word))),
     button('Show the rules for these', () => void openRules(c, rulesCapabilities(c)), 'secondary small', busy));
   const policies = review.policies.length
-    ? el('div', {}, el('p', {}, `AIWorks follows every rule your project rules apply to all projects. For "${review.project.name}" that is the rules below, each named by its code in your governance directory, where its text is kept:`),
-      el('ul', { class: 'rules-policies' }, ...review.policies.map((id) => el('li', {}, id))))
+    ? el('div', {}, el('p', {}, `AIWorks follows ${plural(review.policies.length, 'rule')} from your governance directory for "${review.project.name}". They cover ${ruleAreas(review.policies)}.`),
+      disclosure(`rules-codes/${c.id}`, `Rule codes (${review.policies.length})`, el('div', {},
+        el('p', { class: 'subtext' }, 'Each rule is named by its code; its text is kept under that code in your governance directory.'),
+        el('ul', { class: 'rules-policies' }, ...review.policies.map((id) => el('li', {}, id))))))
     : el('p', { role: 'status' }, review.message ?? 'No rules could be read for this project.');
   return el('div', { class: 'rules start-form', 'data-focus-scope': `rules/${c.id}` }, el('h2', {}, 'Project rules'), head,
     now === 'invalid' ? el('p', {}, review.rules.text) : null,
