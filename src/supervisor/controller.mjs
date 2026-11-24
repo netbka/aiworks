@@ -426,6 +426,19 @@ function envelopeConstraint(envelope) {
 const folded = (text) => String(text).toLowerCase().replace(/_/g, '-');
 
 /**
+ * The path prefixes Controller.publicText cuts from a publication: the target's worktree root (with each task's worktree
+ * folder) and checkout (work item 86), so a verifier citing a file by its absolute path is no reason for another verifier
+ * run; and this runtime's public `src/` folder. Every verifier is handed the gate helper by its absolute path there
+ * (executors.mjs GATE_HELPER) and lists the command among its checks, so without it each such verification was refused
+ * as a personal installation path and cost a fresh verifier run, and a task stalled once those runs were used up. Cut,
+ * the command names `src/supervisor/gate.mjs`. Only `src/` is cut: a path into the runtime's ignored `.local/` or any
+ * other folder keeps its prefix and is refused. The runtime comes first, as it may sit inside the target's checkout.
+ */
+export function publicRoots(repo, runtime = resolve(here, '../..')) {
+  return [{ path: runtime, under: 'src' }, ...(repo?.worktreeRoot ? [{ path: repo.worktreeRoot, depth: 1 }] : []), ...(repo?.path ? [{ path: repo.path }] : [])];
+}
+
+/**
  * The private terms that bind a publication into one target (work item 97). Two kinds of term are dropped for that
  * target only and still bind every other target:
  * - a term that the target's own repository name (the part after the owner) contains names that target itself: a pull
@@ -4512,15 +4525,14 @@ export class Controller {
   }
 
   /**
-   * Text bound for GitHub with the target's own checkout and worktree prefixes made repository-relative (work item 86):
-   * a verifier citing a file by its absolute path in its worktree is no reason for another verifier run. Every other
-   * absolute or personal path stays and is refused by the privacy check as before.
+   * Text bound for GitHub with the target's own checkout and worktree prefixes made repository-relative (work item 86),
+   * and this runtime's own root too (publicRoots). Every other absolute or personal path stays and is refused by the
+   * privacy check as before.
    */
   publicText(decl, text) {
     let repo = null;
-    try { repo = this.repo(decl); } catch { /* no checkout: nothing to relativise */ }
-    const roots = repo ? [...(repo.worktreeRoot ? [{ path: repo.worktreeRoot, depth: 1 }] : []), { path: repo.path }] : [];
-    return relativeTo(text, roots);
+    try { repo = this.repo(decl); } catch { /* no checkout: only the runtime's own root is cut */ }
+    return relativeTo(text, publicRoots(repo));
   }
 
   publicationFinding(task) {

@@ -52,7 +52,9 @@ export function contentFindings(text, terms = []) {
   // A sentence-ending period belongs to the prose, not the repository name.
   const repositories = text.match(/\bnetbka\/[\w.-]+/gi) ?? [];
   if (repositories.some(reference => !/^netbka\/aiworks(?:\.git)?$/i.test(reference.replace(/\.+$/, '')))) findings.push('another upstream-owner project');
-  if (/[A-Z]:[\\/]+(?:Users|Git)[\\/]+[\w.-]+/i.test(text) || /\/home\/(?!example\b|user\b)[\w.-]+/i.test(text)) findings.push('personal installation path');
+  // The same folders in Git Bash's drive form too (the drive letter as the first folder), which a worker in bash writes.
+  if (/[A-Z]:[\\/]+(?:Users|Git)[\\/]+[\w.-]+/i.test(text) || /(?<![\w.-])\/[A-Z]\/(?:Users|Git)\/[\w.-]+/i.test(text) ||
+      /\/home\/(?!example\b|user\b)[\w.-]+/i.test(text)) findings.push('personal installation path');
   if (terms.some(term => text.toLowerCase().includes(term.toLowerCase()))) findings.push('private installation reference');
   return findings;
 }
@@ -70,12 +72,13 @@ const ABSOLUTE_PATH = [
  * `text` with every path under one of `roots` made repository-relative (aiworks work item 86): a worker or verifier that
  * names a file by its absolute path in its own checkout cites the repository file, so the prefix is local detail only.
  * A root is `{ path, depth }`: `depth` further folder names after `path` belong to the prefix too (a worktree root's
- * own worktree folder). Only exact prefixes followed by a separator are cut, in either slash form and either case;
- * anything else stays for the privacy check to judge.
+ * own worktree folder). `under` names the one folder after `path` whose paths are cut: the folder name stays, and a
+ * path into any other folder keeps its prefix. Only exact prefixes followed by a separator are cut, in either slash form
+ * and either case; anything else stays for the privacy check to judge.
  */
 export function relativeTo(text, roots = []) {
   let value = String(text ?? '');
-  for (const { path, depth = 0 } of roots) {
+  for (const { path, depth = 0, under = null } of roots) {
     const parts = String(path ?? '').split(/[\\/]+/).filter(Boolean);
     if (parts.length < 2) continue;
     const sep = '[\\\\/]+';
@@ -83,7 +86,8 @@ export function relativeTo(text, roots = []) {
     // A worktree folder may carry `+` (git.mjs workspaceName). A path with any `..` folder after the prefix may leave the
     // root, so it keeps its prefix, whole, for the privacy check to refuse. The rest is read to the end of the line, not
     // to the first space or quote: a folder name may hold either, and keeping a prefix only keeps the old refusal.
-    const pattern = new RegExp(`(?<![\\w.-])${/^[A-Za-z]:$/.test(parts[0]) ? '' : '[\\\\/]'}${escaped}${`${sep}(?!\\.\\.?[\\\\/])[\\w.$~+-]+`.repeat(depth)}${sep}`, 'gi');
+    const folder = under ? `(?=${String(under).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\\\/])` : '';
+    const pattern = new RegExp(`(?<![\\w.-])${/^[A-Za-z]:$/.test(parts[0]) ? '' : '[\\\\/]'}${escaped}${`${sep}(?!\\.\\.?[\\\\/])[\\w.$~+-]+`.repeat(depth)}${sep}${folder}`, 'gi');
     value = value.replace(pattern, (match, offset, whole) => {
       const rest = /^[^\r\n]*/.exec(whole.slice(offset + match.length))[0];
       return /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(rest) ? match : '';
