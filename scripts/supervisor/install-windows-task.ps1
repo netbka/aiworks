@@ -17,7 +17,12 @@ if (-not (Test-Path $cli)) { throw "missing $cli" }
 if (-not (Test-Path (Join-Path $DataDir 'config.json'))) { throw "missing config.json in $DataDir" }
 if (-not (Get-Content -Raw (Join-Path $DataDir 'config.json') | ConvertFrom-Json).governanceRoot) { Write-Warning 'config.json has no governanceRoot: new campaigns will be refused and the roadmap panel stays empty (docs/SUPERVISOR.md section 6)' }
 $command = "& '$node' --no-warnings '$cli' keep --data '$DataDir'"
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -Command `"$command`"" -WorkingDirectory $Checkout
+# conhost.exe --headless gives PowerShell a console that has no window. A task that starts powershell.exe directly gets
+# a visible console first: on Windows 11 a Windows Terminal window opens at every start and -WindowStyle Hidden only
+# hides it once PowerShell is running, and closing that window would end the keeper.
+$powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
+$action = New-ScheduledTaskAction -Execute $conhost -Argument "--headless `"$powershell`" -NoProfile -Command `"$command`"" -WorkingDirectory $Checkout
 $logon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 # No repetition duration means indefinitely; never stop the running keeper when a repetition ends.
 $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
