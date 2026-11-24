@@ -3,8 +3,10 @@
 // heading table with the slugs GitHub renders, and finds the lines of one section. It reads no file, runs no command and
 // calls no model; the caller supplies the text at a pinned revision. Nothing dispatches with it yet (READ2).
 
-// The anchor of a reference: a GitHub heading slug in the characters a reference may carry, at most 160 of them.
-export const ANCHOR = /^[a-z0-9_-]{1,160}$/;
+// The anchor of a reference: a GitHub heading slug in the characters a reference may carry, at most 160 of them. A slug
+// keeps every letter of its heading (`slugify`), so a heading written in Russian has a Cyrillic slug: lower-case letters,
+// marks, digits, connector punctuation such as `_`, and `-`. Nothing else: no `#`, `/`, `.`, `%`, space or format character.
+export const ANCHOR = /^[\p{Ll}\p{Lm}\p{Lo}\p{M}\p{N}\p{Pc}-]{1,160}$/u;
 // Resolution reads Markdown only, and nothing larger than this (SCOPED_READING section 4, step 1).
 export const MAX_DOCUMENT_BYTES = 2 * 1024 * 1024;
 
@@ -15,7 +17,7 @@ const safePath = (path) => typeof path === 'string' && path.trim().length > 0 &&
 
 /**
  * A reference as `{ path, anchor }`: `anchor` is null for a whole document. Null when the reference is not one: an unsafe
- * path, more than one `#`, or an anchor that is empty or holds a character outside `[a-z0-9_-]`.
+ * path, more than one `#`, or an anchor that is empty or holds a character `ANCHOR` does not allow.
  */
 export function parseReference(reference) {
   if (typeof reference !== 'string') return null;
