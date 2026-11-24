@@ -131,12 +131,13 @@ exceeds the limit.
 Every PR title and body and every issue or PR comment passes one privacy check before it is sent
 ([#8](https://github.com/example-org/aiworks/issues/8), `src/shared/public-text.mjs`). It reuses the public-scope
 rules (credential material, personal installation paths, the installation's private terms from
-`.local/publication.json` in the runtime and target checkouts, except a term that the target's own repository name (after the owner) contains or, for a printable-ASCII term, that the target's tracked files already hold as a whole word at the tip of its base branch fetched from its own GitHub repository, never at the verified head: such a term is dropped for that target only, compared ignoring case and `-` versus `_`; see [the publication rules](PUBLICATION.md#checks)) and also refuses drive and UNC paths and paths under a POSIX or macOS filesystem root (`/opt`, `/tmp`, `/srv`,
-`/etc`, `/var`, `/usr`, `/home`, `/Users`, `/Volumes` and similar); repository-relative paths, URLs and REST routes
-such as `GET /repos/o/r/issues` pass. Before the check, the target's checkout and worktree prefixes and the runtime's
-own prefix before its `src/` folder are cut from the text, so a file cited by its absolute path, and the gate helper
-command every verifier is given, read as relative paths; any other absolute path, including one into the runtime's
-`.local/`, is still refused, and so is a personal path in Git Bash's drive form. Naming the
+`.local/publication.json` in the runtime and target checkouts, except a term that the target's own repository name (after the owner) contains or, for a printable-ASCII term, that the target's tracked files already hold as a whole word at the tip of its base branch fetched from its own GitHub repository, never at the verified head: such a term is dropped for that target only, compared ignoring case and `-` versus `_`; see [the publication rules](PUBLICATION.md#checks)) and also refuses drive and UNC paths, drive paths in Git Bash's form (the drive letter as the first folder) and paths
+under a POSIX or macOS filesystem root (`/opt`, `/tmp`, `/srv`,
+`/etc`, `/var`, `/usr`, `/home`, `/Users`, `/Volumes` and similar); repository-relative paths, URLs, dashboard hash
+routes and REST routes such as `GET /repos/o/r/issues` pass. Before the check, the target's checkout and worktree
+prefixes and the runtime's own prefix before its `src/` folder are cut from the text, in Windows or Git Bash form, so a
+file cited by its absolute path, and the gate helper command every verifier is given, read as relative paths; any
+other absolute path, including one into the runtime's `.local/`, is still refused. Naming the
 upstream owner's other projects is refused only for the AIWorks repository itself. `publish` checks every part of a
 publication (PR body, split verification comment, repair comment) before the push and before the first GitHub call,
 and the GitHub adapter checks again at each call. A refusal names categories only, never the matched text:
