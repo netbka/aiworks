@@ -496,7 +496,9 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
     ...['rg -c alias. src', 'wc -c alias.txt', 'grep -rn GIT_CONFIG_COUNT src', 'gh auth status', 'echo cmd a b c d e f g & dir /k',
       'rg -l cmd src tests docs scripts site lib bin | findstr /c:"spawn"', 'rg -n "powershell" a b c d e f g h i j k l m | rg -e Encoded',
       'rg -n "git push" cmd/cli', 'grep -rn "git commit" src/cmd/client.go', 'cat cmd/kubectl/main.go | grep "gh pr merge"',
-      'rg "gh auth token" internal/cmd/config', 'rg -n "git push" cmd/c/x.go', 'rg -n "git push" cmd/k.go', 'rg -n "git push" cmd/c-x'].map(shell)];
+      'rg "gh auth token" internal/cmd/config', 'rg -n "git push" cmd/c/x.go', 'rg -n "git push" cmd/k.go', 'rg -n "git push" cmd/c-x',
+      // A switch inside PowerShell's quoted command is not its encoded switch.
+      'powershell -NoProfile -Command "Get-Content README.md -Encoding UTF8"', 'pwsh -c "rg -n -e push -e merge src"'].map(shell)];
   assert.equal(read(allowed).class, 'result');
   const voided = [
     ...['git push origin HEAD', 'git -C . push', 'cmd /c "git push origin x"', 'git status; git commit -am x', '& "git" push', 'gh pr create --fill',
@@ -551,7 +553,23 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
       // A name spelled with an escape or through ComSpec; the encoded switch after a / or a dash.
       'cm^d /c "git push origin x"', 'cmd /c g^it push origin x', 'cmd /d /c "g^it push origin x"', '%ComSpec% /c "git push origin x"',
       '& $env:ComSpec /c "git push origin x"', 'g`it push origin x', 'g\\it push origin x', 'powershell /EncodedCommand ZQB=',
-      'powershell \u2013EncodedCommand ZQB='].map(shell),
+      'powershell \u2013EncodedCommand ZQB=',
+      // An escaped separator stays escaped where a caret spells a name; a wrapper or a name given by its Windows path; an
+      // empty quote pair inside a name; ComSpec with a suffix.
+      'cm^d /d ^& /c "git push origin x"', 'cmd /d ^& /c "g^it push origin x"', 'cm^d /d ^| /c "git push origin x"',
+      'cmd /d = /e:on = /q = ^& /c "g^it push origin x"',
+      String.raw`C:\Windows\System32\cmd.exe /c "g^it push origin x"`, String.raw`C:\Windows\System32\cm^d.exe /c "git push origin x"`,
+      String.raw`%SystemRoot%\System32\cmd /c "g^it push origin x"`, String.raw`cmd /c "C:\PROGRA~1\Git\cmd\g^it push origin x"`,
+      String.raw`"C:\Program Files\Git\cmd\git.exe" p^ush origin x`, String.raw`& "C:\Program Files\Git\cmd\git.exe" pu` + '`sh origin x',
+      String.raw`"C:\Program Files\Git\bin\bash.exe" -c 'g\it push origin x'`,
+      'g""it push origin x', 'cmd /c g""it push origin x', "g''it push origin x", '%ComSpec:~0% /c "git push origin x"',
+      // A redirection ends no command and is no word of it; a line feed after PowerShell's trailing comma ends none either;
+      // a word that may come to nothing (a substitution, a block comment, an array comma) stops no switch run.
+      ...['2>&1', '>&2'].map((part) => `cmd ${part} /c "git push origin x"`),
+      ...['2>&1', '&>/dev/null', '>|/dev/null'].map((part) => `bash ${part} -c "git push origin x"`),
+      'powershell -NoProfile 2>&1 -EncodedCommand ZQB=', 'git 2>/dev/null push origin x',
+      'cmd /d /e:on /v:off /q /a /u /t:0 x,\n/c "git push origin x"', 'powershell -NoProfile <#;#> -e ZQB=', 'powershell @(;) -e ZQB=',
+      'pwsh , , "-e" ZQB='].map(shell),
     { state: 'DONE', tool_name: 'run_command', tool_info: { parameters: {} } },
     { state: 'DONE', tool_name: 'write_file' }, { state: 'DONE', tool_name: 'search_web' }, browserTool('DONE'),
     { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'send_input' } } },
@@ -562,10 +580,11 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
   assert.equal(read(many).violation, true, 'command text past the run limit');
   // The worker writes the command line and the supervisor reads it: a line built to make a pattern backtrack is still read
   // at once (with nested option patterns, 25 Git options took seconds, and each one more doubled it), and so is a line
-  // just under the size limit that holds a command name at every word, also one spelled with an escape (read twice).
+  // just under the size limit that holds a command name at every word, also ones spelled with escapes, substitutions and
+  // redirections (read in every way the audit reads a line).
   const started = performance.now();
   assert.equal(deniedCommand(`git ${'--x=y '.repeat(25)}status`), null);
-  for (const unit of ['-a=git ', 'cmd /x ', 'bash -x ', 'g^it -c ']) deniedCommand(unit.repeat(Math.floor((64 * 1024 - 1) / unit.length)));
+  for (const unit of ['-a=git ', 'cmd /x ', 'bash -x ', 'g^it -c ', 'g^it\\x $(a) 2>&1 -c ']) deniedCommand(unit.repeat(Math.floor((64 * 1024 - 1) / unit.length)));
   assert.ok(performance.now() - started < 1000, 'the audit cannot stall the supervisor');
   assert.equal(read(allowed, { mode: 'request-review' }).violation, true, 'only the sandboxed permission mode');
   assert.equal(read(allowed, { extra: { denied_actions: [{ action: 'command' }] } }).violation, true, 'a refused bypass voids the run');
