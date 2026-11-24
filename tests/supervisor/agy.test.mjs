@@ -579,7 +579,22 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
       '"g"it push origin x', 'g"it" push origin x', "g'it' push origin x", 'cmd /c g"it" push origin x', 'git pu"sh" origin x',
       'gh p"r" merge 1', 'powershell -NoProfile -"e" ZQB=', 'powershell -NoProfile -e"c" ZQB=', 'cmd /c g^^it push origin x',
       'git>nul push origin x', 'bash>/dev/null -c "git push origin x"', "g$'i't push origin x", 'powershell -NoProfile&>x -e ZQB=',
-      'powershell "-NoProfile"2>&1 -e ZQB=', 'powershell -NoProfile>a\\;b -e ZQB='].map(shell),
+      'powershell "-NoProfile"2>&1 -e ZQB=', 'powershell -NoProfile>a\\;b -e ZQB=',
+      // A chain of redirections, also right after one that ends in a digit; a target's escapes as each shell reads them.
+      ...['>&2&>x', '>&2>a\\;b', '<&0>x', '&>x^', '>a\\;b^', '&>x2>&1', '>a^\\;b', '>d\\^;b', ' 2>&1>&2', ' 2>&1&>x', ' >&2&>x']
+        .map((part) => `powershell -NoProfile${part} -e ZQB=`),
+      'powershell -NoP>&2rof2>&1ile&>x -e ZQB=', 'powershell -NoPro>nulfile2>&1 -EncodedCommand ZQB=',
+      ...[' 2>&1&>x', '>&2>x', '>&2&>x', ' 1>&2>x', '&>x^', '>a2>&1'].map((part) => `git${part} push origin x`),
+      'bash>&2&>x -c "git push origin x"',
+      // Single- and double-quoted parts of one name.
+      `g'i'"t" push origin x`, `"g"'i't push origin x`, `g"i"'t' push origin x`, `& g'i'"t" push origin x`, `cmd /c g'i'"t" push origin x`,
+      `git p'u'"sh" origin x`, `gh "p"'r' merge 1`, `powershell -NoProfile -'e'"c" ZQB=`, `powershell -NoProfile -e'n'"c" ZQB=`,
+      // A value with a lone ', an ordinary character for cmd.
+      "powershell -NoProfile -ExecutionPolicy 'x -EncodedCommand ZQB=", "powershell -NoProfile -ep x' -EncodedCommand ZQB=",
+      "powershell -ep By'pass -e ZQB=", `cmd /c "powershell -ep By'pass -e ZQB="`,
+      // cmd's caret before a line feed escapes the next line's first character.
+      ...['\n', '\r\n'].flatMap((eol) => [`powershell -NoProfile -ep By^${eol}&pass -EncodedCommand ZQB=`,
+        `powershell -NoProfile -ep By^${eol}|pass -e ZQB=`, `cmd /d ^${eol}& /c "git push origin x"`])].map(shell),
     { state: 'DONE', tool_name: 'run_command', tool_info: { parameters: {} } },
     { state: 'DONE', tool_name: 'write_file' }, { state: 'DONE', tool_name: 'search_web' }, browserTool('DONE'),
     { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'send_input' } } },
@@ -594,7 +609,7 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
   // redirections (read in every way the audit reads a line).
   const started = performance.now();
   assert.equal(deniedCommand(`git ${'--x=y '.repeat(25)}status`), null);
-  for (const unit of ['-a=git ', 'cmd /x ', 'bash -x ', 'g^it -c ', 'g^it\\x $(a) 2>&1 -c ', 'g^^i"t">x -c ']) deniedCommand(unit.repeat(Math.floor((64 * 1024 - 1) / unit.length)));
+  for (const unit of ['-a=git ', 'cmd /x ', 'bash -x ', 'g^it -c ', 'g^it\\x $(a) 2>&1 -c ', 'g^^i"t">x -c ', `g'i'"t">&2>x -c `]) deniedCommand(unit.repeat(Math.floor((64 * 1024 - 1) / unit.length)));
   assert.ok(performance.now() - started < 1000, 'the audit cannot stall the supervisor');
   assert.equal(read(allowed, { mode: 'request-review' }).violation, true, 'only the sandboxed permission mode');
   assert.equal(read(allowed, { extra: { denied_actions: [{ action: 'command' }] } }).violation, true, 'a refused bypass voids the run');
