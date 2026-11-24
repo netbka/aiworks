@@ -120,10 +120,10 @@ const ARGS = (count) => String.raw`(?:${WORD}\s+){0,${count}}`;
 const quoted = (names) => String.raw`["']?(?:${names})["']?`;
 const SHELLS = '(?:powershell|pwsh|bash|sh|zsh|dash|ksh|wsl)';
 // What makes a wrapper run its command string: cmd's /c or /k, a shell option holding c (-c, -lc, -Command), and
-// PowerShell's -EncodedCommand (-e, -ec, -en...).
+// PowerShell's -EncodedCommand (-e, -ec, -en...), which powershell.exe also takes after a / or an en or em dash.
 const CMD_SWITCH = String.raw`["']?\/[ck]`;
 const SHELL_SWITCH = String.raw`-(?=[a-z]*c)[a-z]+`;
-const ENCODED_SWITCH = String.raw`-e(?:c|n[a-z]*)?`;
+const ENCODED_SWITCH = String.raw`[-\/\u2013\u2014\u2015]e(?:c|n[a-z]*)?`;
 // cmd breaks its arguments at whitespace, `,`, `;` and `=` (CMD_BREAK), and may be followed by quote pairs (cmd""/c).
 const CMD_AT = String.raw`cmd(?:\.exe)?["']*`;
 const CMD_BREAK = String.raw`[\s,;=]`;
@@ -132,17 +132,23 @@ const CMD_WORD = String.raw`(?:"[^"]*"|'[^']*'|[^\s,;=&|"'])+`;
 // cmd/c/x.go is a path); a shell with an option holding c (-c, -lc, -Command, -NoProfile -Command); PowerShell with a
 // quote in one of its first 13 words (split at whitespace only), which it may run as a command, as in powershell "git
 // push" or, from bash, powershell \; \;"git push" (an unquoted command is read as any command name is); a PowerShell
-// evaluator or launcher. A wrapper may be named by its path. cmd is also a wrapper where CMD_SWITCHED finds its switch.
+// evaluator or launcher. A wrapper may be named by its path. cmd or a shell is also a wrapper where SWITCHED finds its
+// switch.
 const WRAPPER_AT = String.raw`(?:^|[\s;&|("'\\/])`;
 const POWERSHELL = String.raw`(?:powershell|pwsh)(?:\.exe)?["']?`;
 const QUOTE_IN_WORD = String.raw`[^\s"']*["']`;
 const WRAPPER = new RegExp(String.raw`${WRAPPER_AT}(?:${CMD_AT}(?:${CMD_BREAK}+(?:${CMD_WORD}${CMD_BREAK}+){0,6}${CMD_SWITCH}|\/[ck](?![\w.\/\\-]))`
   + String.raw`|${SHELLS}(?:\.exe)?["']?\s+${ARGS(12)}${SHELL_SWITCH}\s|${POWERSHELL}\s+(?:[^\s"']+\s+){0,12}${QUOTE_IN_WORD}`
   + String.raw`|iex\s|invoke-expression\s|invoke-command\s|start-process\s|start-job\s)`, 'i');
-// cmd takes the first /c or /k anywhere in its arguments as its switch (cmd x/c, cmd /d/c, cmd /d "x /c ..." run), so a
-// cmd name followed in the same command (separators' cmd table) by one makes the line wrapped, however far out: a /c or
-// /k after one of cmd's breaks, or one no path character follows (cmd/c/x.go and cmd/cli stay paths).
-const CMD_SWITCHED = { head: new RegExp(`${WRAPPER_AT}${CMD_AT}`, 'gi'), token: new RegExp(String.raw`${CMD_BREAK}["']?\/[ck]|\/[ck](?![\w.\/\\-])`, 'gi') };
+// A wrapper's name followed in the same command (see separators) by its switch makes the line wrapped, however far out,
+// so a word no count reads (an unclosed quote, ^&, or a substitution that holds a separator, as in bash $(:;) -c) does
+// not hide the switch. cmd takes the first /c or /k anywhere in its arguments as its switch (cmd x/c, cmd /d/c, cmd /d
+// "x /c ..." run): a /c or /k after one of cmd's breaks, or one no path character follows (cmd/c/x.go and cmd/cli stay
+// paths), in cmd's own command (the cmd table). A shell's switch is a word of its own.
+const SWITCHED = [
+  { head: new RegExp(`${WRAPPER_AT}${CMD_AT}`, 'gi'), token: new RegExp(String.raw`${CMD_BREAK}["']?\/[ck]|\/[ck](?![\w.\/\\-])`, 'gi'), cmd: true },
+  { head: new RegExp(String.raw`${WRAPPER_AT}${SHELLS}(?:\.exe)?["']?(?=\s)`, 'gi'), token: new RegExp(String.raw`\s${SHELL_SWITCH}(?=\s)`, 'gi'), cmd: false },
+];
 // A command name follows the start, whitespace, a shell operator, a bracket, a backtick, a path separator, `=`, or cmd's
 // /c or /k (cmd /cgit push); inside a wrapper, a quote as well.
 const nameAt = (name, wrapped) => String.raw`(?:(?:^|[\s;&|({\x60\\/=]|\/[ck]${wrapped ? `|["']` : ''})${name}(?:\.exe|\.cmd)?["']?|["']${name}(?:\.exe|\.cmd)?["'])`;
@@ -208,29 +214,34 @@ const RULES = [
   ['encoded command', () => String.raw`(?:^|[\s;&|(\\/"'])(?:powershell|pwsh)(?:\.exe)?["']?\s+${ARGS(12)}${ENCODED_SWITCH}\s`],
 ];
 export const DENIED_COMMANDS = RULES.map(([name, pattern]) => ({ name, plain: new RegExp(pattern(false), 'i'), wrapped: new RegExp(pattern(true), 'i') }));
-// The windows of WRAPPER, the git config alias rule and the encoded-command rule: the words after a name that are read
-// for its switch (`head`, one word more than the window, none of them the switch). Past them a switch (`token`) of the
-// same command (before the next separator that ends it, see separators; for cmd a `;` does not) is not read as one, so a
-// line that has one there is denied.
+// The windows of WRAPPER and the encoded-command rule: the words after a name that are read for its switch (`head`, one
+// word more than the window, none of them the switch). Past them a switch (`token`) of the same command (before the next
+// separator that ends it, see separators) is not read as one, so a line that has one there is denied. cmd reads a `;` as
+// part of its arguments, and so does powershell.exe when cmd starts it, so their windows use the cmd table, where a `;`
+// never ends a command. The encoded-command and git config alias rules deny their switch wherever it stands, so for them
+// the name alone is a window too: such a switch anywhere in the same command is denied, also after a word their count
+// cannot read (a substitution that holds a separator, $(a;b), which only bash and PowerShell expand).
 const WINDOWS = [
   ['cmd switch past the audit limit', () => String.raw`${WRAPPER_AT}${CMD_AT}(?:${CMD_BREAK}+(?!${CMD_SWITCH})${CMD_WORD}){7}`, String.raw`${CMD_BREAK}${CMD_SWITCH}`, true],
   ['shell switch past the audit limit', () => String.raw`${WRAPPER_AT}${SHELLS}(?:\.exe)?["']?(?:\s+(?!${SHELL_SWITCH}\s)${WORD}){13}`,
     String.raw`\s${SHELL_SWITCH}(?=\s)`],
   ['encoded command past the audit limit', () => String.raw`${WRAPPER_AT}${POWERSHELL}(?:\s+(?!${ENCODED_SWITCH}\s)${WORD}){13}`,
-    String.raw`\s${ENCODED_SWITCH}(?=\s)`],
-  ['powershell command past the audit limit', () => String.raw`${WRAPPER_AT}${POWERSHELL}(?:\s+[^\s"']+){13}`, String.raw`\s${QUOTE_IN_WORD}`],
-  ['git config past the audit limit', (w) => String.raw`${gitAt(w)}${quoted('config')}(?:\s+(?!["']?alias\.)${WORD}){9}`, String.raw`\s["']?alias\.`],
+    String.raw`\s${ENCODED_SWITCH}(?=\s)`, true],
+  ['encoded command', () => String.raw`${WRAPPER_AT}${POWERSHELL}(?=\s)`, String.raw`\s${ENCODED_SWITCH}(?=\s)`],
+  ['powershell command past the audit limit', () => String.raw`${WRAPPER_AT}${POWERSHELL}(?:\s+[^\s"']+){13}`, String.raw`\s${QUOTE_IN_WORD}`, true],
+  ['git config past the audit limit', (w) => String.raw`${gitAt(w)}${quoted('config')}(?=\s)`, String.raw`\s["']?alias\.`],
 ].map(([name, head, token, cmd = false]) => ({ name, plain: new RegExp(head(false), 'gi'), wrapped: new RegExp(head(true), 'gi'),
   token: new RegExp(token, 'gi'), cmd }));
 // The position of the last character an escape at `i` hides: the next one, or a CRLF pair.
 const escaped = (text, i) => (text[i + 1] === '\r' && text[i + 2] === '\n' ? i + 2 : i + 1);
 
 /**
- * One reading of where `text`'s commands end: a ;, &, | or line feed outside quotes, backticks and brackets. A quote
- * hides everything up to its closing one, and ( or { everything up to its own ) or }, as in $(a; b), (a; b) or { a; b }.
- * An escape (\ or ^, and \ or the backtick inside double quotes) hides the next character, or a CRLF pair. `ticks`: a
- * backtick opens a region up to the next one (bash, `a; b`), or escapes the next character (PowerShell). Null when the
- * brackets do not match (a closer of the other kind or with no opener, or one left open): then no separator is trusted.
+ * One plain reading of where `text`'s commands end: a ;, &, | or line feed outside quotes, backticks and brackets. A
+ * quote hides everything up to its closing one, and ( or { everything up to its own ) or }, as in $(a; b), (a; b) or
+ * { a; b }. An escape (\ or ^, and \ or the backtick inside double quotes) hides the next character, or a CRLF pair.
+ * `ticks`: a backtick opens a region up to the next one (bash, `a; b`), or escapes the next character (PowerShell). Null
+ * when the brackets do not match (a closer of the other kind or with no opener, or one left open): then no separator is
+ * trusted. It knows no comment; bashEnds and powershellEnds read each shell's own forms.
  */
 function commandEnds(text, ticks) {
   const ends = new Uint8Array(text.length);
@@ -250,6 +261,159 @@ function commandEnds(text, ticks) {
   return open.length ? null : ends;
 }
 
+// The characters that end a bash word, so that a # after one starts a comment.
+const BASH_BREAKS = ' \t\n;&|()<>';
+
+/**
+ * bash's own reading of where its commands end, as commandEnds reads them where bash does not differ. Only \ escapes (^
+ * is a plain character). A # that starts a word comments out the rest of its line, also a bracket in it. $'...' is a
+ * quote in which \ escapes. Inside double quotes a backtick, $( or ${ opens a region of its own up to its own closer (in
+ * $( and ${ quotes and brackets open again), as a backtick does outside them. A here-document (<<) is not read: null.
+ */
+function bashEnds(text) {
+  const ends = new Uint8Array(text.length);
+  // The open regions, innermost last: ( and { (groups and substitutions), " (double quotes), and the backtick.
+  const open = [];
+  // Whether the previous character belongs to a word, so that a # is not a comment.
+  let word = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const region = open.at(-1);
+    if (region === '"' || region === '\x60') {
+      if (c === region) {
+        open.pop();
+        word = true;
+      } else if (c === '\\') i = escaped(text, i);
+      else if (region === '"' && c === '\x60') open.push(c);
+      else if (region === '"' && c === '$' && (text[i + 1] === '(' || text[i + 1] === '{')) {
+        open.push(text[++i]);
+        word = text[i] === '{';
+      }
+      continue;
+    }
+    if (c === '#' && !word) {
+      const end = text.indexOf('\n', i);
+      if (end < 0) break;
+      // The line feed itself is read next.
+      i = end - 1;
+    } else if (c === '\\') {
+      // A line continuation leaves the word as it was.
+      const next = escaped(text, i);
+      if (text[next] !== '\n') word = true;
+      i = next;
+    } else if (c === "'" || (c === '$' && text[i + 1] === "'")) {
+      let end = i + 1;
+      if (c === '$') {
+        for (end = i + 2; end < text.length && text[end] !== "'"; end++) if (text[end] === '\\') end++;
+      } else end = text.indexOf("'", end);
+      // An unclosed quote hides the rest of the line.
+      i = end < 0 ? text.length : end;
+      word = true;
+    } else if (c === '"' || c === '\x60' || c === '(' || c === '{') {
+      open.push(c);
+      word = c !== '(';
+    } else if (c === ')' || c === '}') {
+      if (open.pop() !== (c === ')' ? '(' : '{')) return null;
+      word = c === '}';
+    } else if (c === '<' && text[i + 1] === '<') {
+      if (text[i + 2] !== '<') return null;
+      i += 2;
+      word = false;
+    } else {
+      if (!open.length && (c === ';' || c === '&' || c === '|' || c === '\n')) ends[i] = 1;
+      word = !BASH_BREAKS.includes(c);
+    }
+  }
+  return open.some((region) => region === '(' || region === '{') ? null : ends;
+}
+
+// PowerShell takes the typographic quotes as quotes, and a # starts a comment at the start of a token: after one of
+// these, or after a quote or a bracket closes.
+const PS_SINGLE = '\'\u2018\u2019\u201a\u201b';
+const PS_DOUBLE = '"\u201c\u201d\u201e';
+const PS_BREAKS = ' \t\r\n;&|,';
+const PS_HERE_START = /["'\u2018-\u201e][ \t]*\r?\n/y;
+const PS_HERE_END = { "'": /\n['\u2018\u2019\u201a\u201b]@/g, '"': /\n["\u201c\u201d\u201e]@/g };
+
+/** The position of the closing @ of a here-string whose @ is at `i` (text.length when none closes it), or -1. */
+function hereStringEnd(text, i) {
+  PS_HERE_START.lastIndex = i + 1;
+  const header = PS_HERE_START.exec(text);
+  if (!header) return -1;
+  const close = PS_HERE_END[PS_SINGLE.includes(header[0][0]) ? "'" : '"'];
+  // The header's own line feed may start the closing line.
+  close.lastIndex = PS_HERE_START.lastIndex - 1;
+  const found = close.exec(text);
+  return found ? found.index + 2 : text.length;
+}
+
+/**
+ * PowerShell's own reading of where its commands end, as commandEnds reads them where PowerShell does not differ. Only
+ * the backtick escapes (\ and ^ are plain characters). A # at the start of a token comments out the rest of its line,
+ * <# ... #> is a block comment, @" or @' at the end of a line opens a here-string up to a line that starts with "@ or
+ * '@, the typographic quotes quote, and $( inside double quotes opens a region in which quotes and brackets open again.
+ * After the stop-parsing token --% the rest of the line up to a | is the command's own text.
+ */
+function powershellEnds(text) {
+  const ends = new Uint8Array(text.length);
+  const open = [];
+  // Whether a token starts here, so that a # is a comment.
+  let token = true;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (open.at(-1) === '"') {
+      if (PS_DOUBLE.includes(c)) {
+        open.pop();
+        token = true;
+      } else if (c === '\x60') i = escaped(text, i);
+      else if (c === '$' && text[i + 1] === '(') {
+        open.push(text[++i]);
+        token = true;
+      }
+      continue;
+    }
+    const here = c === '@' ? hereStringEnd(text, i) : -1;
+    if (c === '#' && token) {
+      const end = text.indexOf('\n', i);
+      if (end < 0) break;
+      // The line feed itself is read next.
+      i = end - 1;
+    } else if (c === '<' && text[i + 1] === '#' && token) {
+      const end = text.indexOf('#>', i + 2);
+      if (end < 0) break;
+      i = end + 1;
+    } else if (here >= 0) {
+      i = here;
+      token = true;
+    } else if (c === '-' && token && text.startsWith('-%', i + 1) && (i + 3 === text.length || /\s/.test(text[i + 3]))) {
+      let end = i + 3;
+      while (end < text.length && text[end] !== '\n' && text[end] !== '|') end++;
+      i = end - 1;
+    } else if (PS_SINGLE.includes(c)) {
+      let end = i + 1;
+      while (end < text.length && !PS_SINGLE.includes(text[end])) end++;
+      i = end;
+      token = true;
+    } else if (PS_DOUBLE.includes(c)) open.push('"');
+    else if (c === '\x60') {
+      // A line continuation leaves the token as it was.
+      const next = escaped(text, i);
+      if (text[next] !== '\n') token = false;
+      i = next;
+    } else if (c === '(' || c === '{') {
+      open.push(c);
+      token = true;
+    } else if (c === ')' || c === '}') {
+      if (open.pop() !== (c === ')' ? '(' : '{')) return null;
+      token = true;
+    } else {
+      if (!open.length && (c === ';' || c === '&' || c === '|' || c === '\n')) ends[i] = 1;
+      token = PS_BREAKS.includes(c);
+    }
+  }
+  return open.some((region) => region === '(' || region === '{') ? null : ends;
+}
+
 /**
  * cmd's own reading of where its commands end: a &, | or line feed outside double quotes and not escaped by ^. cmd has
  * no other quote or escape: \, ' and the backtick are plain characters, so \" opens a quote for it.
@@ -267,20 +431,28 @@ function cmdEnds(text) {
 
 /**
  * For each position of `text`, the first separator at or after it that ends a command (text.length if none), in two
- * tables: `all`, where a separator counts only where both readings of commandEnds find it, and `cmd`, for cmd's own
- * arguments, where cmd's reading (cmdEnds) must find it as well, so a `;` never ends one there. Each shell's escapes and
- * regions hide a separator. Forward scans; this reads each shell only approximately, and errs toward hiding a separator,
- * which widens what the windows read.
+ * tables: `all`, where a separator counts only where every reading finds it (both plain readings of commandEnds, and
+ * bashEnds and powershellEnds), and `cmd`, for cmd's own arguments, where cmd's reading (cmdEnds) must find it as well,
+ * so a `;` never ends one there. Each shell's escapes, quotes, comments and regions hide a separator. Forward scans; this
+ * reads each shell only approximately, and errs toward hiding a separator, which widens what the windows read.
  */
 function separators(text) {
-  const bash = commandEnds(text, true);
-  const powershell = bash && commandEnds(text, false);
+  const readings = [];
+  for (const read of [() => commandEnds(text, true), () => commandEnds(text, false), () => bashEnds(text), () => powershellEnds(text)]) {
+    const reading = read();
+    if (!reading) {
+      readings.length = 0;
+      break;
+    }
+    readings.push(reading);
+  }
+  const [plainBash, plainPowershell, bash, powershell] = readings;
   const cmdReading = cmdEnds(text);
   const all = new Int32Array(text.length + 1);
   const cmd = new Int32Array(text.length + 1);
   all[text.length] = cmd[text.length] = text.length;
   for (let i = text.length - 1; i >= 0; i--) {
-    const end = powershell !== null && bash[i] === 1 && powershell[i] === 1;
+    const end = readings.length > 0 && plainBash[i] === 1 && plainPowershell[i] === 1 && bash[i] === 1 && powershell[i] === 1;
     all[i] = end ? i : all[i + 1];
     cmd[i] = end && cmdReading[i] === 1 ? i : cmd[i + 1];
   }
@@ -314,17 +486,35 @@ function pastWindow(text, head, token, next) {
   return false;
 }
 
-/** The name of the first denied command a command line contains, or null. */
-export function deniedCommand(line) {
-  const text = String(line);
-  if (Buffer.byteLength(text, 'utf8') > COMMAND_LIMIT) return 'command line too long to audit';
+// Names spelled with an escape: cmd's caret escapes the next character (cm^d and g^it are cmd and git, and a caret before
+// a line feed joins the lines), PowerShell's backtick and bash's backslash a letter (g`it, g\it). %ComSpec% names cmd,
+// and so do PowerShell's $env:ComSpec and bash's $COMSPEC. cmd expands variables before it reads carets.
+const COMSPEC = /%comspec%|\$\{?(?:env:)?comspec\}?/gi;
+const NAME_ESCAPE = /\^(\r?\n|[\s\S])?|[\\\x60](?=[\w.-])/g;
+const unescaped = (text) => text.replace(COMSPEC, 'cmd').replace(NAME_ESCAPE, (escape, next = '') => (next.endsWith('\n') ? '' : next));
+
+/** The denied command `text` names as it is written, or null. */
+function deniedText(text) {
   let ends = null;
   const table = (cmd) => () => (ends ??= separators(text))[cmd ? 'cmd' : 'all'];
-  const key = WRAPPER.test(text) || pastWindow(text, CMD_SWITCHED.head, CMD_SWITCHED.token, table(true)) ? 'wrapped' : 'plain';
+  const key = WRAPPER.test(text) || SWITCHED.some((item) => pastWindow(text, item.head, item.token, table(item.cmd))) ? 'wrapped' : 'plain';
   const rule = DENIED_COMMANDS.find((item) => item[key].test(text))?.name;
   if (rule) return rule;
   if (GIT_CONFIG_NAMED.test(text) && GIT_NAMED[key].test(text)) return 'git alias';
   return WINDOWS.find((window) => pastWindow(text, window[key], window.token, table(window.cmd)))?.name ?? null;
+}
+
+/**
+ * The name of the first denied command a command line contains, or null. A line with a name spelled with an escape or
+ * through ComSpec is read a second time with those spellings resolved (unescaped).
+ */
+export function deniedCommand(line) {
+  const text = String(line);
+  if (Buffer.byteLength(text, 'utf8') > COMMAND_LIMIT) return 'command line too long to audit';
+  const denied = deniedText(text);
+  if (denied) return denied;
+  const resolved = unescaped(text);
+  return resolved === text ? null : deniedText(resolved);
 }
 
 const origin = (url) => new URL(url).origin;

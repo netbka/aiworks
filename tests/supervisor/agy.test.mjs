@@ -537,7 +537,21 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
       ...["/d = /e:on = /q = x'", "/d , /e:on , /q , x'", "= = = = = = = x'", '/d = /e:on = /q = ^&', '/d /e:on /v:off /q /a /u /t:0 \\" & \\"']
         .map((part) => `cmd ${part} /c "git push origin x"`),
       `cmd /d = /e:on = /q = x' /c "gh pr merge 1"`, `cmd /d = /e:on = /q = x' /c "git -c alias.p=push p"`,
-      'cmd /d/c "git push origin x"', 'cmd x/c "git push origin x"'].map(shell),
+      'cmd /d/c "git push origin x"', 'cmd x/c "git push origin x"',
+      // A separator that one shell hides ends no command: a bash comment hides a bracket; $'...', a backtick or $( inside
+      // double quotes, or a ^ (no escape in bash) hides one from bash; a comment, a here-string, typographic quotes or --%
+      // hide one from PowerShell.
+      `bash ${'-x '.repeat(13)}$(: # )\n: # (\n) -c "git push origin x"`,
+      ...["$'\\' & x'", '"`echo "&"`"', '"$(echo "&")"', 'x^"& x"', '"$(#)\n" & "\n)"', '<#\n&\n#>', '@"\n"&\n"@', 'x\u201c& x\u201d']
+        .map((part) => `cmd /d /e:on /v:off /q /a /u /t:0 ${part} /c "git push origin x"`),
+      'cmd --% /d /e:on /v:off /q /a /u /t:0 & /c "git push origin x"',
+      // cmd ends no command at a `;`, also where it starts PowerShell; a substitution that holds a separator is one word.
+      `powershell ${'a '.repeat(13)}; "git push origin x"`, `powershell ${'-NoProfile '.repeat(13)}; -EncodedCommand ZQB=`,
+      'bash $(true;) -c "git push origin x"', 'powershell $(1;2) -EncodedCommand ZQB=', 'git config $(true;) alias.p push',
+      // A name spelled with an escape or through ComSpec; the encoded switch after a / or a dash.
+      'cm^d /c "git push origin x"', 'cmd /c g^it push origin x', 'cmd /d /c "g^it push origin x"', '%ComSpec% /c "git push origin x"',
+      '& $env:ComSpec /c "git push origin x"', 'g`it push origin x', 'g\\it push origin x', 'powershell /EncodedCommand ZQB=',
+      'powershell \u2013EncodedCommand ZQB='].map(shell),
     { state: 'DONE', tool_name: 'run_command', tool_info: { parameters: {} } },
     { state: 'DONE', tool_name: 'write_file' }, { state: 'DONE', tool_name: 'search_web' }, browserTool('DONE'),
     { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'send_input' } } },
@@ -548,10 +562,10 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
   assert.equal(read(many).violation, true, 'command text past the run limit');
   // The worker writes the command line and the supervisor reads it: a line built to make a pattern backtrack is still read
   // at once (with nested option patterns, 25 Git options took seconds, and each one more doubled it), and so is a line
-  // just under the size limit that holds a command name at every word.
+  // just under the size limit that holds a command name at every word, also one spelled with an escape (read twice).
   const started = performance.now();
   assert.equal(deniedCommand(`git ${'--x=y '.repeat(25)}status`), null);
-  for (const unit of ['-a=git ', 'cmd /x ', 'bash -x ']) deniedCommand(unit.repeat(Math.floor((64 * 1024 - 1) / unit.length)));
+  for (const unit of ['-a=git ', 'cmd /x ', 'bash -x ', 'g^it -c ']) deniedCommand(unit.repeat(Math.floor((64 * 1024 - 1) / unit.length)));
   assert.ok(performance.now() - started < 1000, 'the audit cannot stall the supervisor');
   assert.equal(read(allowed, { mode: 'request-review' }).violation, true, 'only the sandboxed permission mode');
   assert.equal(read(allowed, { extra: { denied_actions: [{ action: 'command' }] } }).violation, true, 'a refused bypass voids the run');
