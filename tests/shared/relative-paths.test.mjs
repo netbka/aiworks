@@ -27,10 +27,11 @@ test('a path in Git Bash drive form is cut under a root and refused elsewhere; r
   const options = { repository: 'example-org/sampleapp' };
   const bash = (...parts) => ['', ...parts].join('/');
   assert.equal(relativeTo(`see ${bash('c', 'Repo', 'proj', 'src', 'a.js')}`, roots), 'see src/a.js');
-  for (const text of [bash('d', 'Data', 'notes.txt'), bash('c', 'Users', 'sample', 'notes.txt'), `file://${bash('c', 'Work', 'x')}`, bash('c', 'Repo', 'proj', '..', 'x')]) {
+  for (const text of [bash('d', 'Data', 'notes.txt'), bash('c', 'Users', 'sample', 'notes.txt'), `file://${bash('c', 'Work', 'x')}`, bash('c', 'Repo', 'proj', '..', 'x'),
+    `docker run -v /${bash('c', 'Users', 'sample', 'proj')}:/app img`, bash('cygdrive', 'd', 'Data')]) {
     assert.notDeepEqual(publicationFindings(relativeTo(text, roots), options), [], text);
   }
-  for (const text of ['#/p/git/settings', 'http://127.0.0.1:4318/#/p/notes', 'https://example.com/c/Users/x', 'GET /repos/o/r/issues', 'cmd /d/c "npm test"']) {
+  for (const text of ['#/p/git/settings', 'http://127.0.0.1:4318/#/p/notes', 'https://example.com/c/Users/x', 'https://example.com/a//c/Users/x', 'GET /repos/o/r/issues', 'cmd /d/c "npm test"']) {
     assert.deepEqual(publicationFindings(relativeTo(text, roots), options), [], text);
   }
 });

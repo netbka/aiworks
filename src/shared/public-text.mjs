@@ -47,8 +47,9 @@ export function repositoryNameTerms(root, own) {
 
 // The start of a path in Git Bash's drive form: a slash, the drive letter as the first folder and a slash. Not after a
 // word character, `.`, `-` (a relative path or URL) or `#` (a dashboard hash route such as `#/p/<id>`), and not after a
-// slash that follows anything but `:` or another slash (a doubled slash inside a URL path); `file:///<drive>/` stays.
-const BASH_DRIVE = String.raw`(?<![\w.#-])(?<![^:\/]\/)\/[A-Za-z]\/`;
+// doubled slash that follows a character of a URL path. `//<drive>/` after a space or quote (bash's way to stop path
+// conversion) and `file:///<drive>/` stay paths. A path right after `#` cannot be told from a hash route and passes.
+const BASH_DRIVE = String.raw`(?<![\w.#-])(?<![\w.~%+#-]\/)\/[A-Za-z]\/`;
 
 export function contentFindings(text, terms = []) {
   const findings = [];
@@ -68,12 +69,12 @@ export function contentFindings(text, terms = []) {
 // path under a POSIX or macOS filesystem root, is local detail. Relative paths, URLs, dashboard hash routes and REST
 // routes (`GET /repos/o/r/issues`) pass: a route starts with no filesystem root, and the slash in a relative path or
 // URL follows a word character. A Git Bash drive path needs a first folder of two or more characters, so cmd switches
-// written together (`cmd /d/c`) are not taken for one.
+// written together (`cmd /d/c`) are not taken for one; Cygwin writes drives under `/cygdrive`.
 const ABSOLUTE_PATH = [
   /(?<![A-Za-z0-9])[A-Za-z]:[\\/]+[\w.$~-]/,
   new RegExp(String.raw`${BASH_DRIVE}[\w.$~-]{2,}`),
   /(?<![\w\\])\\\\[\w.$-]+\\[\w.$-]+/,
-  /(?<![\w.-])\/(?:home|Users|root|mnt|media|opt|tmp|srv|etc|var|usr(?!\/bin\/env\b)|private|Volumes|Library|Applications|System|run|snap|nix)\/(?!example\b|user\b)[\w.-]+/,
+  /(?<![\w.-])\/(?:home|Users|root|mnt|media|opt|tmp|srv|etc|var|usr(?!\/bin\/env\b)|private|Volumes|Library|Applications|System|run|snap|nix|cygdrive)\/(?!example\b|user\b)[\w.-]+/,
 ];
 
 /**
