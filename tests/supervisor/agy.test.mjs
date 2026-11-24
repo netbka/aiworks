@@ -496,7 +496,13 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
     ...['rg -c alias. src', 'wc -c alias.txt', 'grep -rn GIT_CONFIG_COUNT src', 'gh auth status', 'echo cmd a b c d e f g & dir /k',
       'rg -l cmd src tests docs scripts site lib bin | findstr /c:"spawn"', 'rg -n "powershell" a b c d e f g h i j k l m | rg -e Encoded',
       'rg -n "git push" cmd/cli', 'grep -rn "git commit" src/cmd/client.go', 'cat cmd/kubectl/main.go | grep "gh pr merge"',
-      'rg "gh auth token" internal/cmd/config', 'rg -n "git push" cmd/c/x.go', 'rg -n "git push" cmd/k.go', 'rg -n "git push" cmd/c-x'].map(shell)];
+      'rg "gh auth token" internal/cmd/config', 'rg -n "git push" cmd/c/x.go', 'rg -n "git push" cmd/k.go', 'rg -n "git push" cmd/c-x',
+      // A switch inside PowerShell's quoted command is not its encoded switch.
+      'powershell -NoProfile -Command "Get-Content README.md -Encoding UTF8"', 'pwsh -c "rg -n -e push -e merge src"',
+      // A quoted part glued to a quoted string that holds a blank is one word with that blank, not a command.
+      `rg -e 'git'" push" docs`, `rg -e "git"' push' docs`, `rg -n 'gh'" pr merge" docs`, `grep -rn 'npm'" publish" .`,
+      `Select-String -Pattern 'git'" push" -Path docs/*.md`, `echo 'git'" push"`, `rg -F 'git'" push origin" README.md`,
+      `git log --grep 'git'" push"`].map(shell)];
   assert.equal(read(allowed).class, 'result');
   const voided = [
     ...['git push origin HEAD', 'git -C . push', 'cmd /c "git push origin x"', 'git status; git commit -am x', '& "git" push', 'gh pr create --fill',
@@ -537,7 +543,69 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
       ...["/d = /e:on = /q = x'", "/d , /e:on , /q , x'", "= = = = = = = x'", '/d = /e:on = /q = ^&', '/d /e:on /v:off /q /a /u /t:0 \\" & \\"']
         .map((part) => `cmd ${part} /c "git push origin x"`),
       `cmd /d = /e:on = /q = x' /c "gh pr merge 1"`, `cmd /d = /e:on = /q = x' /c "git -c alias.p=push p"`,
-      'cmd /d/c "git push origin x"', 'cmd x/c "git push origin x"'].map(shell),
+      'cmd /d/c "git push origin x"', 'cmd x/c "git push origin x"',
+      // A separator that one shell hides ends no command: a bash comment hides a bracket; $'...', a backtick or $( inside
+      // double quotes, or a ^ (no escape in bash) hides one from bash; a comment, a here-string, typographic quotes or --%
+      // hide one from PowerShell.
+      `bash ${'-x '.repeat(13)}$(: # )\n: # (\n) -c "git push origin x"`,
+      ...["$'\\' & x'", '"`echo "&"`"', '"$(echo "&")"', 'x^"& x"', '"$(#)\n" & "\n)"', '<#\n&\n#>', '@"\n"&\n"@', 'x\u201c& x\u201d']
+        .map((part) => `cmd /d /e:on /v:off /q /a /u /t:0 ${part} /c "git push origin x"`),
+      'cmd --% /d /e:on /v:off /q /a /u /t:0 & /c "git push origin x"',
+      // cmd ends no command at a `;`, also where it starts PowerShell; a substitution that holds a separator is one word.
+      `powershell ${'a '.repeat(13)}; "git push origin x"`, `powershell ${'-NoProfile '.repeat(13)}; -EncodedCommand ZQB=`,
+      'bash $(true;) -c "git push origin x"', 'powershell $(1;2) -EncodedCommand ZQB=', 'git config $(true;) alias.p push',
+      // A name spelled with an escape or through ComSpec; the encoded switch after a / or a dash.
+      'cm^d /c "git push origin x"', 'cmd /c g^it push origin x', 'cmd /d /c "g^it push origin x"', '%ComSpec% /c "git push origin x"',
+      '& $env:ComSpec /c "git push origin x"', 'g`it push origin x', 'g\\it push origin x', 'powershell /EncodedCommand ZQB=',
+      'powershell \u2013EncodedCommand ZQB=',
+      // An escaped separator stays escaped where a caret spells a name; a wrapper or a name given by its Windows path; an
+      // empty quote pair inside a name; ComSpec with a suffix.
+      'cm^d /d ^& /c "git push origin x"', 'cmd /d ^& /c "g^it push origin x"', 'cm^d /d ^| /c "git push origin x"',
+      'cmd /d = /e:on = /q = ^& /c "g^it push origin x"',
+      String.raw`C:\Windows\System32\cmd.exe /c "g^it push origin x"`, String.raw`C:\Windows\System32\cm^d.exe /c "git push origin x"`,
+      String.raw`%SystemRoot%\System32\cmd /c "g^it push origin x"`, String.raw`cmd /c "C:\PROGRA~1\Git\cmd\g^it push origin x"`,
+      String.raw`"C:\Program Files\Git\cmd\git.exe" p^ush origin x`, String.raw`& "C:\Program Files\Git\cmd\git.exe" pu` + '`sh origin x',
+      String.raw`"C:\Program Files\Git\bin\bash.exe" -c 'g\it push origin x'`,
+      'g""it push origin x', 'cmd /c g""it push origin x', "g''it push origin x", '%ComSpec:~0% /c "git push origin x"',
+      // A redirection ends no command and is no word of it; a line feed after PowerShell's trailing comma ends none either;
+      // a word that may come to nothing (a substitution, a block comment, an array comma) stops no switch run.
+      ...['2>&1', '>&2'].map((part) => `cmd ${part} /c "git push origin x"`),
+      ...['2>&1', '&>/dev/null', '>|/dev/null'].map((part) => `bash ${part} -c "git push origin x"`),
+      'powershell -NoProfile 2>&1 -EncodedCommand ZQB=', 'git 2>/dev/null push origin x',
+      'cmd /d /e:on /v:off /q /a /u /t:0 x,\n/c "git push origin x"', 'powershell -NoProfile <#;#> -e ZQB=', 'powershell @(;) -e ZQB=',
+      'pwsh , , "-e" ZQB=',
+      // The value of a PowerShell switch that takes one may hold a separator that does not end the command (from cmd: ;).
+      ...['By^&pass', 'By^|pass', 'By`;pass', 'By\\;pass', 'By;pass'].map((value) => `powershell -NoProfile -ExecutionPolicy ${value} -EncodedCommand ZQB=`),
+      'powershell -ExecutionPolicy By^&pass -e ZQB=', 'powershell -NoProfile -ExecutionPolicy x^&y -ec ZQB=',
+      'pwsh -NoProfile -WorkingDirectory a^&b -EncodedCommand ZQB=', 'pwsh -NoProfile -CustomPipeName a^&b -EncodedCommand ZQB=',
+      // Quotes around part of a name, carets doubled for a nested cmd, bash's $'...', a redirection glued to a word or with
+      // an escaped character in its target.
+      '"g"it push origin x', 'g"it" push origin x', "g'it' push origin x", 'cmd /c g"it" push origin x', 'git pu"sh" origin x',
+      'gh p"r" merge 1', 'powershell -NoProfile -"e" ZQB=', 'powershell -NoProfile -e"c" ZQB=', 'cmd /c g^^it push origin x',
+      'git>nul push origin x', 'bash>/dev/null -c "git push origin x"', "g$'i't push origin x", 'powershell -NoProfile&>x -e ZQB=',
+      'powershell "-NoProfile"2>&1 -e ZQB=', 'powershell -NoProfile>a\\;b -e ZQB=',
+      // A chain of redirections, also right after one that ends in a digit; a target with a character escaped by \, ^ or `
+      // (any of the shells' escapes), or with bash's ordinary caret before a blank, which ends it.
+      ...['>&2&>x', '>&2>a\\;b', '<&0>x', '&>x^', '>a\\;b^', '&>x2>&1', '>a^\\;b', '>d\\^;b', ' 2>&1>&2', ' 2>&1&>x', ' >&2&>x']
+        .map((part) => `powershell -NoProfile${part} -e ZQB=`),
+      'powershell -NoP>&2rof2>&1ile&>x -e ZQB=', 'powershell -NoPro>nulfile2>&1 -EncodedCommand ZQB=',
+      ...[' 2>&1&>x', '>&2>x', '>&2&>x', ' 1>&2>x', '&>x^', '>a2>&1'].map((part) => `git${part} push origin x`),
+      'bash>&2&>x -c "git push origin x"',
+      // Single- and double-quoted parts of one name.
+      `g'i'"t" push origin x`, `"g"'i't push origin x`, `g"i"'t' push origin x`, `& g'i'"t" push origin x`, `cmd /c g'i'"t" push origin x`,
+      `git p'u'"sh" origin x`, `gh "p"'r' merge 1`, `powershell -NoProfile -'e'"c" ZQB=`, `powershell -NoProfile -e'n'"c" ZQB=`,
+      // A value with a lone ', an ordinary character for cmd.
+      "powershell -NoProfile -ExecutionPolicy 'x -EncodedCommand ZQB=", "powershell -NoProfile -ep x' -EncodedCommand ZQB=",
+      "powershell -ep By'pass -e ZQB=", `cmd /c "powershell -ep By'pass -e ZQB="`,
+      // cmd's caret before a line feed escapes the next line's first character.
+      ...['\n', '\r\n'].flatMap((eol) => [`powershell -NoProfile -ep By^${eol}&pass -EncodedCommand ZQB=`,
+        `powershell -NoProfile -ep By^${eol}|pass -e ZQB=`, `cmd /d ^${eol}& /c "git push origin x"`]),
+      // A switch word that holds a redirection reaches up to a blank or a separator the shell does not hide: with a word
+      // that comes to nothing, bash's ordinary caret, a here-document or another redirection form in it.
+      'powershell -NoProf$(true;)ile>&2>a\\;b -e ZQB=', 'powershell $(true;)-NoProfile>&2&>x -e ZQB=',
+      'powershell -NoProfile&>x^>&2&>x -e ZQB=', 'powershell -NoPro>nulfil^>&1 -EncodedCommand ZQB=',
+      'powershell -NoProfile>a<<EOF\\;b -e ZQB=', 'powershell -NoProfil>>&2 -e ZQB=', 'powershell -NoProfile<& 0>x -e ZQB=',
+      'powershell -NoProfile<>a\\;b>x -e ZQB=', 'powershell -NoProfile>&2&>x^"& x"x -e ZQB='].map(shell),
     { state: 'DONE', tool_name: 'run_command', tool_info: { parameters: {} } },
     { state: 'DONE', tool_name: 'write_file' }, { state: 'DONE', tool_name: 'search_web' }, browserTool('DONE'),
     { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'send_input' } } },
@@ -548,10 +616,13 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
   assert.equal(read(many).violation, true, 'command text past the run limit');
   // The worker writes the command line and the supervisor reads it: a line built to make a pattern backtrack is still read
   // at once (with nested option patterns, 25 Git options took seconds, and each one more doubled it), and so is a line
-  // just under the size limit that holds a command name at every word.
+  // just under the size limit that holds a command name at every word, also ones spelled with escapes, substitutions and
+  // redirections (read in every way the audit reads a line).
   const started = performance.now();
   assert.equal(deniedCommand(`git ${'--x=y '.repeat(25)}status`), null);
-  for (const unit of ['-a=git ', 'cmd /x ', 'bash -x ']) deniedCommand(unit.repeat(Math.floor((64 * 1024 - 1) / unit.length)));
+  for (const unit of ['-a=git ', 'cmd /x ', 'bash -x ', 'g^it -c ', 'g^it\\x $(a) 2>&1 -c ', 'g^^i"t">x -c ', `g'i'"t">&2>x -c `]) deniedCommand(unit.repeat(Math.floor((64 * 1024 - 1) / unit.length)));
+  // A powershell switch word that holds a redirection and a run of escapes as long as the line (each read once).
+  deniedCommand(`powershell -x>${'^\\'.repeat(32 * 1024 - 16)}a & -e x`);
   assert.ok(performance.now() - started < 1000, 'the audit cannot stall the supervisor');
   assert.equal(read(allowed, { mode: 'request-review' }).violation, true, 'only the sandboxed permission mode');
   assert.equal(read(allowed, { extra: { denied_actions: [{ action: 'command' }] } }).violation, true, 'a refused bypass voids the run');
