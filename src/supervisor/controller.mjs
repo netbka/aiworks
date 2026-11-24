@@ -428,13 +428,14 @@ const folded = (text) => String(text).toLowerCase().replace(/_/g, '-');
 /**
  * The path prefixes Controller.publicText cuts from a publication: the target's worktree root (with each task's worktree
  * folder) and checkout (work item 86), so a verifier citing a file by its absolute path is no reason for another verifier
- * run; and this runtime's own root. Every verifier is handed the gate helper by its absolute path under that root
+ * run; and this runtime's public `src/` folder. Every verifier is handed the gate helper by its absolute path there
  * (executors.mjs GATE_HELPER) and lists the command among its checks, so without it each such verification was refused
  * as a personal installation path and cost a fresh verifier run, and a task stalled once those runs were used up. Cut,
- * the command names the public `src/supervisor/gate.mjs`.
+ * the command names `src/supervisor/gate.mjs`. Only `src/` is cut: a path into the runtime's ignored `.local/` or any
+ * other folder keeps its prefix and is refused. The runtime comes first, as it may sit inside the target's checkout.
  */
 export function publicRoots(repo, runtime = resolve(here, '../..')) {
-  return [...(repo?.worktreeRoot ? [{ path: repo.worktreeRoot, depth: 1 }] : []), ...(repo?.path ? [{ path: repo.path }] : []), { path: runtime }];
+  return [{ path: runtime, under: 'src' }, ...(repo?.worktreeRoot ? [{ path: repo.worktreeRoot, depth: 1 }] : []), ...(repo?.path ? [{ path: repo.path }] : [])];
 }
 
 /**
