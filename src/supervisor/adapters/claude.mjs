@@ -411,8 +411,12 @@ export function quotaRetryAt(text, now) {
 
 /** A quota refusal consumes no worker run only when the recorded counters prove zero work. */
 export function refusedBeforeWork(verdict) {
-  const receipt = verdict?.receipt;
-  if (verdict?.class !== 'quota' || receipt?.measured !== true || receipt.numTurns !== 1) return false;
+  return verdict?.class === 'quota' && noWorkReceipt(verdict.receipt);
+}
+
+/** The recorded counters prove the provider answered before any model turn: one turn, every counter zero. */
+function noWorkReceipt(receipt) {
+  if (receipt?.measured !== true || receipt.numTurns !== 1) return false;
   const usage = normalizedUsage(receipt.usage, 'claude-cli');
   if (usage?.total !== 0) return false;
   return ![usage, ...(receipt.models ?? []).map((part) => part.usage)].some((counters) =>
@@ -479,11 +483,9 @@ export function classify({ role, run, stdoutText, stderrText, expect, now }) {
   const failed = !out || out.is_error || run.exitCode !== 0 || run.signal;
   // An account refused by the provider is the owner's sign-in matter, not the task's: it waits on the account like a
   // failed login instead of spending the task's attempts. Only a refusal before any work qualifies: one turn, no
-  // tokens, no permission denial. Any other 403 stays a permission denial below.
-  const usage = receipt.usage;
-  const noWork = receipt.measured && receipt.numTurns === 1 && receipt.permissionDenials === 0 && Boolean(usage)
-    && [usage.input, usage.output, usage.cacheRead, usage.cacheCreation, usage.total].every((n) => !n);
-  if (failed && out?.api_error_status === 403 && noWork && ACCOUNT_REFUSED.test(String(out.result ?? ''))) {
+  // tokens, no sign of a permission denial. Any other 403 stays a permission denial below.
+  if (failed && out?.api_error_status === 403 && receipt.permissionDenials === 0 && noWorkReceipt(receipt)
+    && !PERMISSION_DENIAL.test(errorText) && ACCOUNT_REFUSED.test(String(out.result ?? ''))) {
     return { ...base, class: 'auth', detail: 'Claude account refused by the provider (organization verification or access); no work ran' };
   }
   if (failed && (out?.api_error_status === 403 || receipt.permissionDenials > 0 || PERMISSION_DENIAL.test(errorText))) {
