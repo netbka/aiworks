@@ -359,6 +359,9 @@ export const AUTH = /(invalid api key|please run \/login|not logged in|oauth tok
 export const QUOTA = /(usage limit|rate[_ ]limit|limit reached|quota exceeded|overloaded_error|hit your [\w ]*limit)/i;
 export const CREDIT_LIMIT = /credit balance (?:is )?too low|insufficient (?:credits|balance)|out of credits|no credits (?:left|remaining)|billing[_ -]hard[_ -]limit|exceeded (?:your )?(?:current )?(?:spending|billing) limit/i;
 export const PERMISSION_DENIAL = /permission denied|approval required|blocked by policy|sandbox.*(?:denied|blocked)|not permitted|access is denied/i;
+// The provider refused the whole account before any model turn, e.g. "This organization can't receive replies from
+// Claude right now ... Verification Portal". Only the provider writes this text, and only when no work ran.
+export const ACCOUNT_REFUSED = /organization can(?:'|’)?t receive replies|organization (?:has been |is )?(?:disabled|suspended)|verification portal|verification_required/i;
 // Subscription limits report a wall-clock reset: "You've hit your session limit · resets 1:50pm (Asia/Jerusalem)".
 const RESET_AT = /resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*\(([A-Za-z_]+(?:\/[A-Za-z0-9_+-]+)*)\)/i;
 
@@ -408,8 +411,12 @@ export function quotaRetryAt(text, now) {
 
 /** A quota refusal consumes no worker run only when the recorded counters prove zero work. */
 export function refusedBeforeWork(verdict) {
-  const receipt = verdict?.receipt;
-  if (verdict?.class !== 'quota' || receipt?.measured !== true || receipt.numTurns !== 1) return false;
+  return verdict?.class === 'quota' && noWorkReceipt(verdict.receipt);
+}
+
+/** The recorded counters prove the provider answered before any model turn: one turn, every counter zero. */
+function noWorkReceipt(receipt) {
+  if (receipt?.measured !== true || receipt.numTurns !== 1) return false;
   const usage = normalizedUsage(receipt.usage, 'claude-cli');
   if (usage?.total !== 0) return false;
   return ![usage, ...(receipt.models ?? []).map((part) => part.usage)].some((counters) =>
@@ -474,6 +481,13 @@ export function classify({ role, run, stdoutText, stderrText, expect, now }) {
   if (run.timedOut) return { ...base, class: 'timeout', detail: 'agent exceeded its time bound and was terminated' };
   const errorText = `${out?.is_error ? String(out.result ?? '') : ''}\n${stderrText.slice(-4000)}`;
   const failed = !out || out.is_error || run.exitCode !== 0 || run.signal;
+  // An account refused by the provider is the owner's sign-in matter, not the task's: it waits on the account like a
+  // failed login instead of spending the task's attempts. Only a refusal before any work qualifies: one turn, no
+  // tokens, no sign of a permission denial. Any other 403 stays a permission denial below.
+  if (failed && out?.api_error_status === 403 && receipt.permissionDenials === 0 && noWorkReceipt(receipt)
+    && !PERMISSION_DENIAL.test(errorText) && ACCOUNT_REFUSED.test(String(out.result ?? ''))) {
+    return { ...base, class: 'auth', detail: 'Claude account refused by the provider (organization verification or access); no work ran' };
+  }
   if (failed && (out?.api_error_status === 403 || receipt.permissionDenials > 0 || PERMISSION_DENIAL.test(errorText))) {
     return { ...base, class: 'error', detail: 'executor permission or sandbox denial' };
   }
