@@ -1361,8 +1361,8 @@ only a second local process. Its campaign routes are exempt from the origin/CSRF
 from the operator's own secret store in its place — because their caller is by design not a browser holding the
 dashboard's session, so CSRF protection (which defends a browser session against another page's script) does not
 apply to it; this is the separately reviewed authentication design AW-003 anticipates for a caller that is not that
-browser session. The exemption exists only while the API is enabled, for exactly `POST /api/campaigns` and
-`GET /api/campaigns/:id/status|report`. Each is answered in full before another route is considered. The server gives
+browser session. The exemption exists only while the API is enabled, for exactly `POST /api/campaigns`,
+`GET /api/campaigns/:id/status|report` and `GET /api/farm/reach`. Each is answered in full before another route is considered. The server gives
 no CORS answer; every other dashboard route retains its Host, Origin, CSRF and caller checks.
 
 - **The switch.** `config.json` `"campaignApi": { "enabled": true, "tokenRef"?: "<name>", "tokenRefs"?: ["<name>",
@@ -1420,6 +1420,23 @@ no CORS answer; every other dashboard route retains its Host, Origin, CSRF and c
   and left no blocking finding (state `verified` or `done`); before that, and again
   whenever the task is sent back for another round, `report` is `null`. An implementer's unverified output, verifier
   evidence, worker logs and local paths are never part of the answer. `404 CAMPAIGN_NOT_FOUND` as for status.
+- **`GET /api/farm/reach`** answers whether this computer reaches the web applications its browser workers sign in
+  to (`src/dashboard/elma-reach.mjs`), so a caller can warn its operator about a VPN that is down or a password
+  missing in the store before a run fails on it: `{ checkedAt, targets: [{ origin, network: "ok" | "down",
+  httpStatus, ms?, reason?: "timeout" | "tls" | "no-answer" | "server-error", downSince, credentials: "ok" | "missing" |
+  "unknown", config: "ok" | "invalid" }] }`. The targets are exactly `config.json` `browserLogin.profiles`, each
+  checked alone with the validation a browser run applies to the profile of its own origin: a profile a run would
+  refuse is listed with `config: "invalid"` and is not fetched; the caller names nothing, so the route cannot make this computer fetch an
+  address of the caller's choosing or try a secret against one. `network` is one plain GET of each profile's own
+  `loginUrl` (no cookie, no credential, no redirect followed, 15 s): any HTTP answer below 500 is `ok`. A sign-in is
+  never attempted, so a check cannot lock an account or change anything. `credentials` says whether both of the
+  profile's references resolve to non-empty values in `browserLogin.credentialStore`; the values are dropped at once
+  and never compared, sent, stored or logged. The answer is kept 5 minutes and credentials 1 hour (a store that could
+  not tell, 5 minutes), and one check runs at a time, so frequent polling adds no requests to the applications; each
+  call still pays the token check every campaign route pays. A project-named token sees only the origins of its
+  project's registry entry `web.buildOrigins`; a token under another reference sees every profile. It is answered in
+  full like the routes above. Node's fetch uses its own CA list, not the Windows store: a host whose certificate only
+  the Windows store trusts reads `down` with `reason: "tls"` (start Node with `--use-system-ca` for such a host). Critical test: `tests/dashboard/elma-reach.test.mjs`.
 - **Reports kept local.** A declaration may set `"reportPublication": "local"` (`campaign.mjs`; part of the immutable
   scope, so it cannot be dropped by an amendment without a new scope). The controller then posts none of the campaign's
   verified reports to the task issue: the task's own stored result is the only copy, read through the report route,

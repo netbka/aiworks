@@ -6,13 +6,14 @@ import { fileURLToPath } from 'node:url';
 import { hostname } from 'node:os';
 import { supervisorSnapshot, applyCommand, applyAnswerChange, applyDecision, applyResultReview, captureResultPreview, checkRelease, openResultPreview, previewStillChecked, applyScopedControl, postMessage, dashboardAccounts, removeDashboardAccount, configuredModelPreferences, saveDashboardModelPreferences } from './supervisor.mjs';
 import { Store } from '../supervisor/store.mjs';
-import { configuredGovernanceRoot } from '../supervisor/governance.mjs';
+import { configuredGovernanceRoot, requireGovernanceRoot } from '../supervisor/governance.mjs';
 import { RELEASE_STOP } from '../supervisor/release/state.mjs';
 import { campaignApiAuthorized, campaignApiScope, campaignApiSettings, campaignReports, registerRemoteCampaign, remoteCampaignStatus } from '../supervisor/remote-campaigns.mjs';
 import { PREVIEW_POLICY, PreviewSessions } from '../supervisor/preview.mjs';
 import { PreviewCaptures } from '../supervisor/preview-capture.mjs';
 import { ServerPreviews } from '../supervisor/preview-server.mjs';
 import { ownerView } from './owner.mjs';
+import { elmaReach } from './elma-reach.mjs';
 import { configuredMergeDelegation } from './merges.mjs';
 import { mergeSettings } from '../supervisor/merge.mjs';
 import { checkConnectedProject, configuredRepositories, confirmProjectRules, connectedProjects, connectProject, createSampleProject, disconnectConnectedProject, listConnectedProjects,
@@ -53,6 +54,7 @@ const HOME_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** The external campaign API's routes, by exact method and path. */
 function campaignApiRoute(method, path) {
   if (method === 'POST' && path === '/api/campaigns') return { register: true };
+  if (method === 'GET' && path === '/api/farm/reach') return { reach: true };
   const read = method === 'GET' ? /^\/api\/campaigns\/([^/]+)\/(status|report)$/.exec(path) : null;
   return read ? { id: read[1], kind: read[2] } : null;
 }
@@ -70,10 +72,27 @@ const RECORDS_UNREADABLE = 'AIWorks can’t read its work records on this comput
  * session, so it is authenticated by its own bearer token (remote-campaigns.mjs campaignApiAuthorized), never by the
  * session's CSRF secret. Registration, status and verified reports are limited to a project-named token's own project.
  */
-async function answerCampaignApi(req, route, { dataDir, settings, config, provenanceRoot }) {
+// One reachability check per process: the dashboard listener and the API listener share its answer (elma-reach.mjs).
+let sharedReach = null;
+
+async function answerCampaignApi(req, route, { dataDir, settings, config, provenanceRoot, reach = null }) {
   // Each request is scoped to the project of the one token that authenticated it.
   const caller = campaignApiAuthorized(settings, req.headers.authorization);
   if (!caller) return [401, { error: TOKEN_REQUIRED }];
+  // Whether this computer reaches the operator's configured sign-in targets: only config.json's own profiles, no input.
+  // A project-named token sees only the origins its registry entry lists (`web.buildOrigins`); another token sees all.
+  if (route.reach) {
+    const answer = await (reach ?? (sharedReach ??= elmaReach()))(config);
+    if (caller.projectId === null) return [200, answer];
+    let root, allowed = [];
+    try { root = requireGovernanceRoot(configuredGovernanceRoot(dataDir)); }
+    catch (error) { return [503, { error: error.message, code: error.code ?? 'GOVERNANCE_ROOT_INVALID' }]; }
+    try {
+      const entry = JSON.parse(readFileSync(join(root, 'registry', 'projects', `${caller.projectId}.json`), 'utf8'));
+      allowed = Array.isArray(entry?.web?.buildOrigins) ? entry.web.buildOrigins : [];
+    } catch { allowed = []; }
+    return [200, { ...answer, targets: answer.targets.filter((target) => allowed.includes(target.origin)) }];
+  }
   const governanceRoot = configuredGovernanceRoot(dataDir);
   if (route.register) {
     const declaration = await readJsonBody(req, CAMPAIGN_API_BYTES);
@@ -99,7 +118,7 @@ async function answerCampaignApi(req, route, { dataDir, settings, config, proven
 
 /** Optional loopback listener for campaign routes alone. It shares bearer authentication and project scope with
  * the dashboard listener, but exposes no browser session, dashboard data or owner controls. */
-export function createCampaignApiServer({ dataDir, provenanceRoot = undefined }) {
+export function createCampaignApiServer({ dataDir, provenanceRoot = undefined, reach = null }) {
   const server = createServer(async (req, res) => {
     const send = (status, body) => {
       const value = JSON.stringify(body);
@@ -113,7 +132,7 @@ export function createCampaignApiServer({ dataDir, provenanceRoot = undefined })
     const config = readConfig(dataDir), settings = campaignApiSettings(config);
     if (!route || !settings.enabled || !settings.port) return send(404, { error: 'Not found.' });
     try {
-      const [status, body] = await answerCampaignApi(req, route, { dataDir, settings, config, provenanceRoot });
+      const [status, body] = await answerCampaignApi(req, route, { dataDir, settings, config, provenanceRoot, reach });
       return send(status, body);
     } catch (error) {
       if (error.status) return send(error.status, { error: error.message, ...(typeof error.code === 'string' ? { code: error.code } : {}) });
