@@ -270,6 +270,13 @@ test('claude output classification covers the failure classes', { skip: skipWith
   assert.equal(cls('', '', { timedOut: true }), 'timeout');
   assert.equal(cls('', '', { spawnError: 'ENOENT' }), 'spawn-failed');
   assert.equal(cls(JSON.stringify({ is_error: true, api_error_status: 401, result: 'x' })), 'auth');
+  // A provider refusal of the whole account before any work waits on the account instead of spending the task's
+  // attempts; the same 403 after work ran stays a task failure.
+  const refused = { type: 'result', subtype: 'success', is_error: true, api_error_status: 403, num_turns: 1, permission_denials: [],
+    usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    result: "API Error: This organization can't receive replies from Claude right now. An Admin of this organization can find the next step in the Anthropic Verification Portal: https://portal.example.invalid/verify" };
+  assert.equal(cls(JSON.stringify(refused), '', { exitCode: 1 }), 'auth');
+  assert.equal(cls(JSON.stringify({ ...refused, num_turns: 6, usage: { input_tokens: 900, output_tokens: 40 } }), '', { exitCode: 1 }), 'error');
   const quota = claude.classify({ role: 'implementer', run, stdoutText: JSON.stringify({ is_error: true, result: 'Claude AI usage limit reached|1700003600' }), stderrText: '', expect, now });
   assert.deepEqual([quota.class, quota.retryAt], ['quota', 1700003600 * 1000 + 60_000]);
   assert.equal(cls(JSON.stringify({ is_error: false, structured_output: { result: 'resolved', summary: 's', report: 'r' } })), 'invalid-result', 'commit deliverable needs headSha');
