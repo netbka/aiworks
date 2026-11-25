@@ -515,7 +515,8 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
       // denied command as data; a script switch's letter after a script or module.
       'npm --prefix $dir run test', 'npm -w $WS run lint', 'pnpm --filter $PKG run build', 'yarn --cwd $dir run lint',
       'for d in packages/*; do npm --prefix $d run test; done', 'foreach ($p in $pkgs) { npm --prefix $p run test }',
-      'ls -d packages/* | xargs -I {} npm --prefix {} run build', 'docker compose -f $FILE run --rm app pytest', 'make -C $DIR release',
+      'ls -d packages/* | xargs -I {} npm --prefix {} run build', 'docker compose -f $FILE run --rm app pytest',
+      'sudo docker compose -f $FILE run --rm app pytest', 'make -C $DIR release',
       'pytest $TESTS -k push', '& $npm run check', String.raw`& (Join-Path $env:ProgramFiles 'nodejs\npm.cmd') run test`, '$NPM run test',
       '%NPM% run build', 'call %NPM% run build', '$(which npm) run build', '$DOCKER run --rm alpine echo hi',
       String.raw`cmd /c "findstr /s /c:\"git push\" docs\*.md"`, 'rg -n -e "eval " -e "git push" docs',
@@ -652,10 +653,11 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
       'cmd /v:on /c "set g=git&& !g! push origin x"', 'cmd /c "set g=git& call %g% push origin x"', 'for %f in (git) do %f push origin x',
       '$(which git) push origin x', '& (Get-Command git) push origin x', '&("git") push origin x', '. (gcm git) push origin x',
       "& ([string]::Concat('g', 'it')) push origin x",
-      // A held name after a command that runs the next one, a condition, xargs' options, assignments or a glued cmd switch;
+      // A held name after a command that runs the next one (past its options), a condition, xargs' options, assignments or
+      // a glued cmd switch;
       // gh's run and release with a verb that writes; a bracket's member; a blank variable beside one that comes to nothing;
       // names glued together; such a position inside a wrapper's quoted command.
-      'sudo $g push origin x', 'if $g push origin x; then :; fi', 'echo x | xargs -0 -n 1 $g push origin x', 'X=1 Y=2 $g push origin x',
+      'sudo -u root $g push origin x', 'env -i PATH=/usr/bin $g push origin x', 'timeout 60 $g push origin x', 'if $g push origin x; then :; fi', 'echo x | xargs -0 -n 1 $g push origin x', 'X=1 Y=2 $g push origin x',
       'cmd /d/c "%g% push origin x"', '& $x run rerun 1', '$x release delete v1', '. (Get-Command git).Source push origin x',
       'git${IFS}p$ZZZ"ush" origin x', '$g$(true) push origin x', "bash -c 'if $g push origin x; then :; fi'",
       // An interpreter's script that runs a command, after its options, or one that the text before it feeds.

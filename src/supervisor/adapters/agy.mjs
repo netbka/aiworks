@@ -707,26 +707,35 @@ const HELD_NAMES = ['git', 'gh', 'npm', 'npx', ' '];
 const GH_READ_ONLY = /(\bgh["']?[ \t]+["']?)(run|release)(?=["']?(?:$|[\s;&|)]))(?!["']?\s+["']?(?:rerun|cancel|delete|create|edit|upload|delete-asset)(?![\w-]))/gi;
 const BLANK_VARIABLE = /\$(?:\{IFS\}|IFS\b)|%[^%\s:]+:~[^%\n]*%/gi;
 // Where a command name stands: at the start, or after a separator, a bracket or a backtick (COMMAND_STARTS), with blanks
-// between; after a word that starts a command (COMMAND_WORDS: cmd's call, do and start, bash's do, then, else, elif, if,
-// while, until, !, exec, and the commands that run the command after them, sudo, nohup, time, env, command, builtin and
-// nice, find's -exec, -execdir, -ok and -okdir, PowerShell's . (dot-sourcing)), or a word that ends in cmd's /c or /k,
-// which cmd finds anywhere in its arguments (cmd /c, cmd /d/c, cmd x/c, also glued: cmd /c%g%); after xargs and its
-// options, each with its value where it takes one (XARGS_VALUES); after a shell's command switch that opens a quoted
-// string (bash -c "$g push"); and after assignments that stand there themselves (X=1 $g push). An opening
-// quote may come first. It reads back over at most 12 words, each found at once from where the words of the line start
-// (wordStarts) and tested on at most WORD_LIMIT of its characters, so the cost of each position is bounded; a longer word
-// that starts with name characters only counts as an assignment, and a longer one that starts with - as a shell's command
-// switch (fail closed).
+// between; after a word that starts a command (COMMAND_WORDS: cmd's call and do, bash's do, then, else, elif, if, while,
+// until and !, find's -exec, -execdir, -ok and -okdir, PowerShell's . (dot-sourcing)), or a word that ends in cmd's /c or
+// /k, which cmd finds anywhere in its arguments (cmd /c, cmd /d/c, cmd x/c, also glued: cmd /c%g%); after a command that
+// runs the command after it (RUNNER_END: sudo, doas, nohup, time, env, command, builtin, exec, nice, ionice, stdbuf,
+// setsid, timeout, cmd's start and xargs, also named by a path), with its options between (a word that starts with - or
+// /, or a quoted title: start "" %g%), each option with a value where one follows it, assignments (env -i PATH=x $g) and
+// timeout's duration; after a shell's command switch that opens a quoted string (bash -c "$g push"); and after
+// assignments that stand there themselves (X=1 $g push). An opening quote may come first. Right after xargs' -I it is
+// the replace string (xargs -I {} npm); right after another option it may be that option's value or the command, and
+// counts as the command (fail closed: sudo -E $g push). It reads back over at most 12 words, each found at once from where
+// the words of the line start (wordStarts) and tested on at most WORD_LIMIT of its characters, so the cost of each
+// position is bounded; a longer word that starts with name characters only counts as an assignment, and a longer one
+// that starts with - as a shell's command switch (fail closed).
 const COMMAND_STARTS = ';&|\n\r({\x60';
 const WORD_ENDS = ' \t;&|\n\r';
-const COMMAND_WORDS = new Set(['call', 'do', 'start', 'then', 'else', 'elif', 'if', 'while', 'until', '!', 'exec', 'sudo', 'nohup', 'time', 'env',
-  'command', 'builtin', 'nice', '-exec', '-execdir', '-ok', '-okdir', '.']);
-const XARGS_VALUES = new Set(['-I', '-L', '-n', '-P', '-s', '-d', '-E', '-a']);
-const XARGS_NAME = /^(?:.*[\\/])?xargs(?:\.exe)?["']?$/i;
-const XARGS_PATH_END = /[\\/]xargs(?:\.exe)?["']?$/i;
+const COMMAND_WORDS = new Set(['call', 'do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '-exec', '-execdir', '-ok', '-okdir', '.']);
+const RUNNER_END = /(?:^|[\\/])(?:sudo|doas|nohup|time|env|command|builtin|exec|nice|ionice|stdbuf|setsid|timeout|start|xargs)(?:\.exe)?["']?$/i;
+const RUNNER_ARGUMENT = /(?:^|[\\/])timeout(?:\.exe)?["']?$/i;
+const OPTION = /^(?:-|\/[a-z?]|"[^"]*"$)/i;
 const QUOTED_SWITCH = /^--?(?:[a-z]*c|co(?:m(?:m(?:a(?:nd?)?)?)?)?)$/i;
 const ASSIGNMENT = /^[A-Za-z_]\w*(?:=|$)/;
 const WORD_LIMIT = 256;
+/** Whether the word from `from` to `end` names a command that runs the command after it (see RUNNER_END). */
+function runnerWord(text, from, end) {
+  const tail = text.slice(Math.max(from, end - 20), end);
+  const match = RUNNER_END.exec(tail);
+  // A longer word names one only by a path (C:\Windows\System32\timeout.exe).
+  return match !== null && (end - from <= 20 || match[0][0] === '/' || match[0][0] === '\\');
+}
 /**
  * For each position of `text`: where the blanks before it start (blanks), and where the word that ends there starts
  * (words), so a word before a position is found at once.
@@ -755,7 +764,7 @@ function wordBefore(text, starts, at) {
 function commandAt(text, starts, start) {
   const opened = text[start - 1] === '"' || text[start - 1] === "'";
   let at = opened ? start - 1 : start;
-  // Whether the words read back so far are xargs' options.
+  // Whether the words read back so far hold a runner's option (only a runner may come before them).
   let options = false;
   for (let step = 0; step < 12; step++) {
     const before = wordBefore(text, starts, at);
@@ -763,24 +772,26 @@ function commandAt(text, starts, start) {
     const [from, end, word] = before;
     const switchEnd = end - from >= 2 && text[end - 2] === '/' && 'ck'.includes(text[end - 1].toLowerCase());
     if (end === at) return step === 0 && switchEnd;
-    if ((end - from <= 12 ? XARGS_NAME : XARGS_PATH_END).test(text.slice(Math.max(from, end - 12), end))) return true;
+    if (runnerWord(text, from, end)) return true;
     const whole = end - from <= WORD_LIMIT;
     if (!options && ((end - from <= 8 && COMMAND_WORDS.has(word.toLowerCase())) || switchEnd
       || (step === 0 && opened && (whole ? QUOTED_SWITCH.test(word) : word.startsWith('-'))))) return true;
-    // The value of an xargs option is no command (xargs -I {} npm).
-    if (step === 0 && XARGS_VALUES.has(word)) return false;
-    if (!options && (word.includes('=') || end - from > WORD_LIMIT) && ASSIGNMENT.test(word)) {
+    // xargs' replace string is no command (xargs -I {} npm).
+    if (step === 0 && word === '-I') return false;
+    if ((word.includes('=') || end - from > WORD_LIMIT) && ASSIGNMENT.test(word)) {
       at = from;
       continue;
     }
     options = true;
-    if (word.startsWith('-')) {
+    if (OPTION.test(word)) {
       at = from;
       continue;
     }
-    // A word that is not an option is the value of the xargs option before it, or this is no command position.
+    // A word that is no option is the value of the option before it or timeout's duration, or this is no command position.
     const option = wordBefore(text, starts, from);
-    if (!option || !XARGS_VALUES.has(option[2])) return false;
+    if (!option) return false;
+    if (RUNNER_ARGUMENT.test(option[2])) return true;
+    if (!OPTION.test(option[2])) return false;
     at = option[0];
   }
   return false;
