@@ -502,7 +502,29 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
       // A quoted part glued to a quoted string that holds a blank is one word with that blank, not a command.
       `rg -e 'git'" push" docs`, `rg -e "git"' push' docs`, `rg -n 'gh'" pr merge" docs`, `grep -rn 'npm'" publish" .`,
       `Select-String -Pattern 'git'" push" -Path docs/*.md`, `echo 'git'" push"`, `rg -F 'git'" push origin" README.md`,
-      `git log --grep 'git'" push"`].map(shell)];
+      `git log --grep 'git'" push"`,
+      // Variables, an interpreter's script, forfiles and a wrapper's quoted command that name no denied command.
+      'node -e "console.log(1)"', 'python -c "print(1)"', 'echo $HOME', 'git log --format=%H', 'forfiles /m *.log /c "cmd /c echo @file"',
+      "rg -n '\\$1' src", "grep -rn 'git push' docs", 'git log --grep "push"', "node -p \"require('./package.json').version\"",
+      'git diff $(git merge-base HEAD main) -- src', 'for %f in (*.txt) do type %f', 'cmd /v:on /c "set x=1&& echo !x!"', 'ls src/{a,b}.mjs',
+      'bash -c "echo \\"hello world\\""', "python3 - <<'EOF'\nprint(open('README.md').read())\nEOF", 'git log | awk \'{print $1}\'',
+      'eval "$(ssh-agent -s)"', 'watch -n 5 "git status"', 'npm run watch', 'env -i PATH=/usr/bin node x.js', 'npx -c "eslint ."',
+      "& (Join-Path $PSScriptRoot 'build.ps1')", 'iex (irm https://example.com/install.ps1)', 'mkdir -p src/{lib,test}/{a,b}',
+      // A variable where no command name stands, or one that names gh's run or release with no verb that writes; a runner or
+      // a denied command inside a quoted pattern; a script, also one a pipe feeds, that runs nothing though it names a
+      // denied command as data; a script switch's letter after a script or module.
+      'npm --prefix $dir run test', 'npm -w $WS run lint', 'pnpm --filter $PKG run build', 'yarn --cwd $dir run lint',
+      'for d in packages/*; do npm --prefix $d run test; done', 'foreach ($p in $pkgs) { npm --prefix $p run test }',
+      'ls -d packages/* | xargs -I {} npm --prefix {} run build', 'docker compose -f $FILE run --rm app pytest',
+      'sudo docker compose -f $FILE run --rm app pytest', 'make -C $DIR release',
+      'pytest $TESTS -k push', '& $npm run check', String.raw`& (Join-Path $env:ProgramFiles 'nodejs\npm.cmd') run test`, '$NPM run test',
+      '%NPM% run build', 'call %NPM% run build', '$(which npm) run build', '$DOCKER run --rm alpine echo hi',
+      String.raw`cmd /c "findstr /s /c:\"git push\" docs\*.md"`, 'rg -n -e "eval " -e "git push" docs',
+      "grep -n 'git push' docs/SUPERVISOR.md | awk -F: '{print $1}'", `rg -n 'gh pr create' docs | awk -F: '{print $1":"$2}'`,
+      'rg -n "git push" docs | node scripts/count.mjs', `grep -c 'git push' docs/a.md | python -c "import sys; print(int(sys.stdin.read()) > 0)"`,
+      `node -e "import('./src/supervisor/adapters/agy.mjs').then((m) => console.log(m.deniedCommand('git push origin x')))"`,
+      `node -p "'git push'.split(' ')"`, `node -e "console.log(JSON.stringify({ cmd: 'git commit' }))"`, `node -e "console.log('ssh is disabled')"`,
+      'node x.mjs -p 4', 'python -m pip install -r requirements.txt'].map(shell)];
   assert.equal(read(allowed).class, 'result');
   const voided = [
     ...['git push origin HEAD', 'git -C . push', 'cmd /c "git push origin x"', 'git status; git commit -am x', '& "git" push', 'gh pr create --fill',
@@ -605,7 +627,51 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
       'powershell -NoProf$(true;)ile>&2>a\\;b -e ZQB=', 'powershell $(true;)-NoProfile>&2&>x -e ZQB=',
       'powershell -NoProfile&>x^>&2&>x -e ZQB=', 'powershell -NoPro>nulfil^>&1 -EncodedCommand ZQB=',
       'powershell -NoProfile>a<<EOF\\;b -e ZQB=', 'powershell -NoProfil>>&2 -e ZQB=', 'powershell -NoProfile<& 0>x -e ZQB=',
-      'powershell -NoProfile<>a\\;b>x -e ZQB=', 'powershell -NoProfile>&2&>x^"& x"x -e ZQB='].map(shell),
+      'powershell -NoProfile<>a\\;b>x -e ZQB=', 'powershell -NoProfile>&2&>x^"& x"x -e ZQB=',
+      // A variable that comes to nothing, or to a blank, inside a name or a switch; bash's brace list.
+      'g$ZZZ"it" push origin x', 'g$1it push origin x', 'g$*it push origin x', 'g$@it push origin x', 'g$ZZZ\\it push origin x',
+      "g$ZZZ$'it' push origin x", 'g$-"it" push origin x', 'g$_"it" push origin x', 'g$"it" push origin x', "g$''it push origin x",
+      'g"$ZZZ"it push origin x', 'git p$ZZZ"ush" origin x', 'git pu$1sh origin x', 'powershell -NoProfile -e$ZZZnc ZQB=',
+      'cmd /c "g%CD:~0,0%it push origin x"', 'git${IFS}push origin x', 'cmd /c "git%PROGRAMFILES:~10,1%push origin x"', '{git,push} origin x',
+      '{git,{push,}} origin x', 'git "p$1ush" origin x',
+      // A caret before a quoted part of a name.
+      `cmd /c g^'i'"t" push origin x`, `cmd /c "g^'i'\\"t\\" push origin x"`, 'cmd /c g^"i"t push origin x',
+      // Quoted parts of a name inside a wrapper's quoted command, with escaped quotes, also two wrappers deep.
+      'bash -c "g\\"i\\"t push origin x"', `bash -c "g'i'\\"t\\" push origin x"`, `powershell -NoProfile -Command "& g'i'\\"t\\" push origin x"`,
+      `bash -c 'g"i"'"'"'t'"'"' push origin x'`, 'bash -c "g`"i`"t push origin x"', 'bash -c "bash -c \\"g\\\\\\"i\\\\\\"t push origin x\\""',
+      // forfiles runs its command, also with 0xHH characters.
+      'forfiles /c "cmd /c git push origin x"', 'forfiles /p . /m x /c "cmd /c git push origin x"', 'forfiles /c "git push origin x"',
+      'forfiles /p . /m x /c "0x67it push origin x"',
+      // An interpreter's script, on its command line or on stdin.
+      ...['-e', '-p', '--eval', '--print'].map((flag) => `node ${flag} "require('child_process').execSync('git push origin x')"`),
+      `python -c "import os; os.system('git push origin x')"`, `python -c "import subprocess; subprocess.run(['git', 'push', 'origin', 'x'])"`,
+      `perl -e "system('git push origin x')"`, `ruby -e "system('git push origin x')"`,
+      `deno eval "new Deno.Command('git', { args: ['push', 'origin', 'x'] }).outputSync()"`, `awk 'BEGIN { system("git push origin x") }'`,
+      `python3 - <<'EOF'\nimport os\nos.system('git push origin x')\nEOF`, `echo "require('child_process').execSync('git push origin x')" | node`,
+      'echo "git push origin x" | bash', "Invoke-Expression ('git' + ' push origin x')", "[Diagnostics.Process]::Start('git', 'push origin x')",
+      // A command name held by a variable, a loop, a substitution or the call operator's bracket.
+      'cmd /v:on /c "set g=git&& !g! push origin x"', 'cmd /c "set g=git& call %g% push origin x"', 'for %f in (git) do %f push origin x',
+      '$(which git) push origin x', '& (Get-Command git) push origin x', '&("git") push origin x', '. (gcm git) push origin x',
+      "& ([string]::Concat('g', 'it')) push origin x",
+      // A held name after a command that runs the next one (past its options, also more than the audit reads, and
+      // timeout's duration after an option's value), a condition, xargs' options, assignments or a glued cmd switch;
+      // gh's run and release with a verb that writes, also after options; a bracket's member; a blank variable beside one
+      // that comes to nothing; names glued together; such a position inside a wrapper's quoted command.
+      'sudo -u root $g push origin x', 'env -i PATH=/usr/bin $g push origin x', 'timeout 60 $g push origin x', 'if $g push origin x; then :; fi', 'echo x | xargs -0 -n 1 $g push origin x', 'X=1 Y=2 $g push origin x',
+      'env -i A=1 B=2 C=3 D=4 E=5 F=6 G=7 H=8 I=9 J=10 K=11 $g push origin x', 'sudo -a -b -c -d -e -f -g -h -i -j -k -l $g push origin x',
+      'timeout -k 5 60 $g push origin x', 'timeout -s KILL 60 $g push origin x', '$x run --repo a/b rerun 1', '$x release --repo a/b delete v1',
+      'cmd /d/c "%g% push origin x"', '& $x run rerun 1', '$x release delete v1', '. (Get-Command git).Source push origin x',
+      'git${IFS}p$ZZZ"ush" origin x', '$g$(true) push origin x', "bash -c 'if $g push origin x; then :; fi'",
+      // An interpreter's script that runs a command, after its options, or one that the text before it feeds.
+      `python -X utf8 -c "import os; os.system('git push origin x')"`, `cat x | node -e "require('child_process').execSync('git push origin x')"`,
+      `echo 'git push origin x' | node -e "require('child_process').execSync(require('fs').readFileSync(0, 'utf8'))"`,
+      // Another command that runs a command string it is given.
+      'eval "git push origin x"', "eval 'g\"i\"t push origin x'", 'watch "git push origin x"', 'su -c "git push origin x"',
+      'script -qc "git push origin x" /dev/null', 'env -S "git push origin x"', 'npx -c "git push origin x"', 'npm exec -c "git push origin x"',
+      'runas /user:x "git push origin x"', 'tmux new-session "git push origin x"', 'parallel "git push origin {}" ::: x',
+      'schtasks /create /tn x /tr "git push origin x"', 'wmic process call create "git push origin x"',
+      'Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=\'git push origin x\'}',
+      '& ([scriptblock]::Create("git push origin x"))', "$ExecutionContext.InvokeCommand.InvokeScript('git push origin x')"].map(shell),
     { state: 'DONE', tool_name: 'run_command', tool_info: { parameters: {} } },
     { state: 'DONE', tool_name: 'write_file' }, { state: 'DONE', tool_name: 'search_web' }, browserTool('DONE'),
     { state: 'DONE', tool_name: 'manage_task', tool_info: { parameters: { Action: 'send_input' } } },
@@ -620,9 +686,15 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
   // redirections (read in every way the audit reads a line).
   const started = performance.now();
   assert.equal(deniedCommand(`git ${'--x=y '.repeat(25)}status`), null);
-  for (const unit of ['-a=git ', 'cmd /x ', 'bash -x ', 'g^it -c ', 'g^it\\x $(a) 2>&1 -c ', 'g^^i"t">x -c ', `g'i'"t">&2>x -c `]) deniedCommand(unit.repeat(Math.floor((64 * 1024 - 1) / unit.length)));
+  // Also held names glued into one word, each one's command position read back.
+  for (const unit of ['-a=git ', 'cmd /x ', 'bash -x ', 'g^it -c ', 'g^it\\x $(a) 2>&1 -c ', 'g^^i"t">x -c ', `g'i'"t">&2>x -c `, '$a']) {
+    deniedCommand(unit.repeat(Math.floor((64 * 1024 - 1) / unit.length)));
+  }
   // A powershell switch word that holds a redirection and a run of escapes as long as the line (each read once).
   deniedCommand(`powershell -x>${'^\\'.repeat(32 * 1024 - 16)}a & -e x`);
+  // A wrapped line read in every way, its words included, that names no denied command.
+  const unit = `forfiles node -e "bash -c \\"g$*i\\"t\\" {a,{b,}} !x! 0x67 ^'x' eval npx -c & (x) ]::start( `;
+  assert.equal(deniedCommand(unit.repeat(Math.floor((64 * 1024 - 1) / unit.length))), null);
   assert.ok(performance.now() - started < 1000, 'the audit cannot stall the supervisor');
   assert.equal(read(allowed, { mode: 'request-review' }).violation, true, 'only the sandboxed permission mode');
   assert.equal(read(allowed, { extra: { denied_actions: [{ action: 'command' }] } }).violation, true, 'a refused bypass voids the run');

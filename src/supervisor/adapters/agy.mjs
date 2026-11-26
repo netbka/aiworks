@@ -163,14 +163,21 @@ const CMD_WORD = String.raw`(?:"[^"]*"|'[^']*'|[^\s,;=&|"'])+`;
 // cmd/c/x.go is a path); a shell with an option holding c (-c, -lc, -Command, -NoProfile -Command); PowerShell with a
 // quote in one of its first 13 words (split at whitespace only), which it may run as a command, as in powershell "git
 // push" or, from bash, powershell \; \;"git push" (an unquoted command is read as any command name is); a PowerShell
-// evaluator or launcher. A wrapper may be named by its path. cmd or a shell is also a wrapper where SWITCHED finds its
-// switch.
+// evaluator or launcher; forfiles, which runs its /c command itself (forfiles /c "git push"); another command that runs a
+// command string it is given (eval, watch, su, runas, script, env -S, npx -c, npm exec -c, tmux, parallel, schtasks, wmic,
+// PowerShell's WMI and CIM methods, [scriptblock]::Create, InvokeScript and Process.Start). A wrapper may be named by its
+// path. cmd or a shell is also a wrapper where SWITCHED finds its switch.
 const WRAPPER_AT = String.raw`(?:^|[\s;&|("'\\/])`;
 const POWERSHELL = String.raw`(?:powershell|pwsh)(?:\.exe)?["']?`;
+const FORFILES_NAME = String.raw`forfiles(?:\.exe)?["']?`;
 const QUOTE_IN_WORD = String.raw`[^\s"']*["']`;
+// A runner's name follows no quote, so a quoted pattern (rg -e "eval ") names none.
+const RUNNERS = String.raw`(?:^|[\s;&|(\\/])(?:(?:eval|watch|su|runas|tmux|parallel|schtasks|wmic|invoke-wmimethod|invoke-cimmethod|new-scheduledtaskaction)(?:\.exe)?\s`
+  + String.raw`|(?:script|env)\s+["']?-|(?:npx|npm\s+(?:exec|x))\s+(?:${WORD}\s+){0,8}?["']?(?:-c|--call)(?=[\s="']))`;
+const POWERSHELL_RUNNER = String.raw`\[scriptblock\]::create\(|\.invokescript\(|\]::start\(`;
 const WRAPPER = new RegExp(String.raw`${WRAPPER_AT}(?:${CMD_AT}(?:${CMD_BREAK}+(?:${CMD_WORD}${CMD_BREAK}+){0,6}${CMD_SWITCH}|\/[ck](?![\w.\/\\-]))`
   + String.raw`|${SHELLS}(?:\.exe)?["']?\s+${ARGS(12)}${SHELL_SWITCH}\s|${POWERSHELL}\s+(?:[^\s"']+\s+){0,12}${QUOTE_IN_WORD}`
-  + String.raw`|iex\s|invoke-expression\s|invoke-command\s|start-process\s|start-job\s)`, 'i');
+  + String.raw`|iex\s|invoke-expression\s|invoke-command\s|start-process\s|start-job\s|${FORFILES_NAME}\s)|${RUNNERS}|${POWERSHELL_RUNNER}`, 'i');
 // A wrapper's name followed in the same command (see separators) by its switch makes the line wrapped, however far out,
 // so a word no count reads (an unclosed quote, ^&, or a substitution that holds a separator, as in bash $(:;) -c) does
 // not hide the switch. cmd takes the first /c or /k anywhere in its arguments as its switch (cmd x/c, cmd /d/c, cmd /d
@@ -386,6 +393,27 @@ function bashEnds(text, spans = null) {
   return open.some((region) => region === '(' || region === '{') ? null : ends;
 }
 
+// One call of deniedCommand makes the same pass over the same text more than once (a reading of a line is the base of
+// another, and the words a held name stands in are read for their substitutions too), and each pass reads all of it, so
+// within a call each such pass over a text is made once (kept). Outside a call a pass is made as asked.
+let passes = null;
+/** `read`, a pure function of one text, made once per text within a call of deniedCommand. */
+function kept(read) {
+  return (text) => {
+    if (!passes) return read(text);
+    let table = passes.get(read);
+    if (!table) passes.set(read, (table = new Map()));
+    let result = table.get(text);
+    if (result === undefined) table.set(text, (result = read(text)));
+    return result;
+  };
+}
+/** bashEnds of `text` and its substitutions' spans, which the caller must not change. */
+const bashRead = kept((text) => {
+  const spans = [];
+  return { ends: bashEnds(text, spans), spans };
+});
+
 // PowerShell takes the typographic quotes as quotes, and a # starts a comment at the start of a token: after one of
 // these, or after a quote or a bracket closes.
 const PS_SINGLE = '\'\u2018\u2019\u201a\u201b';
@@ -502,7 +530,7 @@ function cmdEnds(text) {
  */
 function separators(text) {
   const readings = [];
-  for (const read of [() => commandEnds(text, true), () => commandEnds(text, false), () => bashEnds(text), () => powershellEnds(text)]) {
+  for (const read of [() => commandEnds(text, true), () => commandEnds(text, false), () => bashRead(text).ends, () => powershellEnds(text)]) {
     const reading = read();
     if (!reading) {
       readings.length = 0;
@@ -528,14 +556,17 @@ function separators(text) {
  * separators table, built only when both are found.
  */
 function pastWindow(text, head, token, next) {
+  // The tokens are read only where a head is found.
+  head.lastIndex = 0;
+  const first = head.exec(text);
+  if (!first) return false;
   const tokens = [];
   token.lastIndex = 0;
   for (let found = token.exec(text); found; found = token.exec(text)) tokens.push(found.index);
   if (!tokens.length) return false;
   const last = tokens.at(-1);
   let ends = null;
-  head.lastIndex = 0;
-  for (let found = head.exec(text); found && found.index < last; found = head.exec(text)) {
+  for (let found = first; found && found.index < last; found = head.exec(text)) {
     const end = found.index + found[0].length;
     // The first token at or after the window's end, by binary search.
     let low = 0;
@@ -565,14 +596,13 @@ const resolved = (text) => text.replace(FULL_COMSPEC, 'cmd').replace(ESCAPES, (e
 // A caret only before a name character or a line feed, a backtick before a name character, and an empty quote pair (a
 // lookbehind, so a run of quotes is read once). Then, in a reading of its own (joined), a run of carets before a name
 // character and a quoted run of name characters next to a name character (also read once each), and in another
-// (joinedRuns) every quote of a word made of name characters and quoted runs of them (g'i'"t", QUOTED_RUN).
+// (joinedRuns) every quote of a word made of name characters and quoted runs of them (g'i'"t", unquotedRuns).
 const NAME_CARET = /\^(?:\r?\n|(?=[\w.-]))/g;
 const CARET_LINE = /\^\r?\n/g;
 const NAME_TICK = /\x60(?=[\w.-])/g;
 const EMPTY_QUOTES = /(?<=[\w.-])(?:""|'')+|(?<!["'])(?:""|'')+(?=[\w.-])/g;
 const CARETS = /(?<!\^)\^+(?=[\w.-])/g;
 const QUOTED_PIECE = /(?<=[\w.-])(["'])([\w.-]+)\1|(["'])([\w.-]+)\3(?=[\w.-])/g;
-const QUOTED_RUN = /(?:[\w.-]|"[\w.-]*"|'[\w.-]*')+/g;
 const ANSI_ESCAPE = /\\(x[0-9a-f]{1,2}|u[0-9a-f]{1,4}|U[0-9a-f]{1,8}|[0-7]{1,3}|c[\s\S]|[\s\S])/gi;
 const ANSI_CONTROL = { a: 7, b: 8, e: 27, E: 27, f: 12, n: 10, r: 13, t: 9, v: 11 };
 const ansiChar = (escape, code) => {
@@ -595,10 +625,10 @@ function ansiNames(text) {
   }
   return out + text.slice(at);
 }
-const named = (text) => text.replace(COMSPEC, 'cmd').replace(NAME_CARET, '').replace(NAME_TICK, '').replace(EMPTY_QUOTES, '');
+const named = kept((text) => text.replace(COMSPEC, 'cmd').replace(NAME_CARET, '').replace(NAME_TICK, '').replace(EMPTY_QUOTES, ''));
 // The parts of a name joined, in a reading of its own, so the readings before stay as they were: carets, quoted parts and
 // redirections, also one glued to a word (JOINED_REDIRECTION), taken out. joinedRuns, in a reading of its own as well,
-// takes out every quote of a word made of quoted runs (QUOTED_RUN) and a whole chain of redirections (REDIRECTION_RUN).
+// takes out every quote of a word made of quoted runs (unquotedRuns) and a whole chain of redirections (REDIRECTION_RUN).
 const joined = (text) => ansiNames(text.replace(CARETS, '')).replace(QUOTED_PIECE, (piece, quote, one, other, two) => one ?? two)
   .replace(JOINED_REDIRECTION, '');
 // A run glued to a quoted string that holds a blank keeps its quotes: 'git'" push" is one word, the text git push.
@@ -607,9 +637,43 @@ const beforeBlankQuote = (text, at) => {
   GLUED_BLANK.lastIndex = at;
   return GLUED_BLANK.test(text);
 };
-const joinedRuns = (text) => ansiNames(text.replace(CARETS, ''))
-  .replace(QUOTED_RUN, (run, at, all) => (/["']/.test(run) && !beforeBlankQuote(all, at + run.length) ? run.replace(/["']/g, '') : run))
-  .replace(REDIRECTION_RUN, '');
+// The name characters ([\w.-]) by their code.
+const NAME_CODES = new Uint8Array(128);
+for (const character of 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-') NAME_CODES[character.charCodeAt(0)] = 1;
+const nameCode = (code) => code < 128 && NAME_CODES[code] === 1;
+/**
+ * `text` with the quotes taken out of each run that holds one, unless a quoted string that holds a blank is glued to its
+ * end: a run is the longest one from where the one before ends of name characters and quoted runs of them ("..." or
+ * '...' with name characters only between), as /(?:[\w.-]|"[\w.-]*"|'[\w.-]*')+/g finds them, read in one scan.
+ */
+function unquotedRuns(text) {
+  let out = '';
+  let at = 0;
+  for (let i = 0; i < text.length;) {
+    const start = i;
+    let quotes = false;
+    while (i < text.length) {
+      const code = text.charCodeAt(i);
+      if (nameCode(code)) {
+        i++;
+        continue;
+      }
+      if (code !== 34 && code !== 39) break;
+      let end = i + 1;
+      while (end < text.length && nameCode(text.charCodeAt(end))) end++;
+      if (end >= text.length || text.charCodeAt(end) !== code) break;
+      i = end + 1;
+      quotes = true;
+    }
+    if (i === start) i++;
+    else if (quotes && !beforeBlankQuote(text, i)) {
+      out += text.slice(at, start) + text.slice(start, i).replace(/["']/g, '');
+      at = i;
+    }
+  }
+  return out + text.slice(at);
+}
+const joinedRuns = kept((text) => unquotedRuns(ansiNames(text.replace(CARETS, ''))).replace(REDIRECTION_RUN, ''));
 // A backslash before a name character, in a reading of its own: it is also the separator of a Windows path
 // (C:\Windows\System32\cmd.exe), which the readings before keep.
 const NAME_BACKSLASH = /\\(?=[\w.-])/g;
@@ -640,8 +704,7 @@ const COMMAS = /(?<!\S),+(?!\S)/g;
  */
 function vanished(text, redirections = true) {
   // The substitutions closed before a bracket that does not match count too (bash reads a lone { or } as a word).
-  const spans = [];
-  bashEnds(text, spans);
+  const { spans } = bashRead(text);
   let out = '';
   let at = 0;
   for (const [start, end] of spans) {
@@ -661,19 +724,284 @@ function vanished(text, redirections = true) {
   return (redirections ? words.replace(REDIRECTION, '') : words).replace(COMMAS, '');
 }
 
+// The readings below come after every reading above, which they leave as they were, so every line those deny stays
+// denied.
+// A variable that may expand to nothing inside a name or a switch (emptied): bash's and PowerShell's $NAME, a positional
+// or special parameter ($1, $@, $*, $-, $_), bash's empty $'' and $"" and the $ of $"...", and cmd's %NAME% and !NAME!,
+// also with a suffix, which come to nothing in a batch file or under delayed expansion when undefined, or as an empty
+// substring (%CD:~0,0%): g$ZZZ"it", g$1it, g$*it, g$ZZZ\it, g$ZZZ$'it', -e$ZZZnc. A name reaches as far as bash reads it,
+// so p$ZZZush is p. In the same reading, bash's brace expansion of a list ({git,push} is git push).
+const VARIABLE = /\$(?:''|""|(?=")|[A-Za-z_]\w*|[0-9*@#?$!_-])|%[^%\s:]+(?::[^%\n]*)?%|![^!\s:]+(?::[^!\n]*)?!/g;
+const BRACE_LIST = /\{([^{}\s,]*(?:,[^{}\s,]*)+)\}/g;
+// A list that is a whole item of another list is read as its items ({git,{push,}} is {git,push,}), at most 4 deep.
+const BRACE_ITEM = /(?<=[{,])\{([^{}\s,]*(?:,[^{}\s,]*)+)\}(?=[,}])/g;
+function braced(text) {
+  let out = text;
+  for (let depth = 0; depth < 4; depth++) {
+    const flat = out.replace(BRACE_ITEM, '$1');
+    if (flat === out) break;
+    out = flat;
+  }
+  return out.replace(BRACE_LIST, (list, items) => ` ${items.replaceAll(',', ' ')} `);
+}
+const emptied = (text) => braced(text.replace(COMSPEC, 'cmd').replace(VARIABLE, ''));
+// joinedRuns, and then a caret left before a name character taken out too: one that stood before a quoted part of the name
+// (cmd /c g^'i'"t", which bash or PowerShell passes on as g^it, and cmd runs as git).
+const caretsJoined = (text) => joinedRuns(named(text)).replace(CARETS, '');
+// A command name held by a variable, a substitution, a cmd for-variable, forfiles' @file, xargs' {} or a bracket that
+// PowerShell's & or . runs, with members after it (cmd /v:on /c "set g=git&& !g! push", for %f in (git) do %f push,
+// $(which git) push, & (Get-Command git) push, . (gcm git).Source push), where a command name stands (commandAt): read as
+// each command that a rule names with a subcommand, so such a line fails closed where it also names a denied subcommand,
+// except gh's run and release, which count only with a verb that writes (GH_READ_ONLY: $DOCKER run and & $npm run check
+// pass, & $x run rerun and $x run --repo a/b rerun do not). Each of them, wherever it stands, is also read as a blank,
+// which bash's $IFS or a substring of cmd's (%ProgramFiles:~10,1%) may hold (git${IFS}push); and those two alone as a
+// blank with the other variables emptied (BLANK_VARIABLE: git${IFS}p$ZZZ"ush"). The bracket may hold brackets one level
+// deep (& ([string]::Concat('g', 'it')) push); its lookbehind is checked after its ( is taken, so it reads back only
+// over the blanks before that (.
+const HELD = /\$(?:[A-Za-z_]\w*(?::[A-Za-z_]\w*)?|[0-9*@#?$!_-])|%[^%\s:]+(?::[^%\n]*)?%|![^!\s:]+(?::[^!\n]*)?!|%%?(?:~[a-z$:]*)?[a-z0-9*](?![\w%])|@(?:file|fname|ext|path|relpath)\b|\{\}|\((?<=[&.][ \t]*\()(?:[^()]|\([^()]*\))*\)(?:\.[A-Za-z_]\w*)*/gi;
+const HELD_NAMES = ['git', 'gh', 'npm', 'npx', ' '];
+// gh's verb may follow its options (gh run --repo a/b rerun): at most GH_OPTIONS of them, -R and --repo with a value; past
+// them run and release count as written.
+const GH_VALUES = '-R|--repo';
+const GH_OPTIONS = 8;
+const GH_READ_ONLY = new RegExp(String.raw`(\bgh["']?[ \t]+["']?)(run|release)(?=["']?(?:$|[\s;&|)]))`
+  + String.raw`(?!["']?${options(GH_VALUES, GH_OPTIONS)}\s+["']?(?:rerun|cancel|delete|create|edit|upload|delete-asset)(?![\w-])`
+  + String.raw`|["']?(?:\s+${option(GH_VALUES)}){${GH_OPTIONS + 1}})`, 'gi');
+const BLANK_VARIABLE = /\$(?:\{IFS\}|IFS\b)|%[^%\s:]+:~[^%\n]*%/gi;
+// Where a command name stands: at the start, or after a separator, a bracket or a backtick (COMMAND_STARTS), with blanks
+// between; after a word that starts a command (COMMAND_WORDS: cmd's call and do, bash's do, then, else, elif, if, while,
+// until and !, find's -exec, -execdir, -ok and -okdir, PowerShell's . (dot-sourcing)), or a word that ends in cmd's /c or
+// /k, which cmd finds anywhere in its arguments (cmd /c, cmd /d/c, cmd x/c, also glued: cmd /c%g%); after a command that
+// runs the command after it (RUNNER_END: sudo, doas, nohup, time, env, command, builtin, exec, nice, ionice, stdbuf,
+// setsid, timeout, cmd's start and xargs, also named by a path), with its options between (a word that starts with - or
+// /, or a quoted title: start "" %g%), each option with a value where one follows it, assignments (env -i PATH=x $g) and
+// timeout's duration, also after an option's value (timeout -k 5 60 $g); after a shell's command switch that opens a
+// quoted string (bash -c "$g push"); and after assignments that stand there themselves (X=1 $g push). An opening quote
+// may come first. Right after xargs' -I it is the replace string (xargs -I {} npm); right after another option it may be
+// that option's value or the command, and counts as the command (fail closed: sudo -E $g push). It reads back over at
+// most 12 words or pairs of an option and its value, each found at once from where the words of the line start
+// (wordStarts) and tested on at most WORD_LIMIT of its characters, so the cost of each position is bounded; past them it
+// counts as a command (fail closed). A longer word that starts with name characters only counts as an assignment, and a
+// longer one that starts with - as a shell's command switch (fail closed).
+const COMMAND_STARTS = ';&|\n\r({\x60';
+const WORD_END_CODES = new Uint8Array(128);
+for (const character of ' \t;&|\n\r') WORD_END_CODES[character.charCodeAt(0)] = 1;
+const COMMAND_WORDS = new Set(['call', 'do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '-exec', '-execdir', '-ok', '-okdir', '.']);
+const RUNNER_END = /(?:^|[\\/])(?:sudo|doas|nohup|time|env|command|builtin|exec|nice|ionice|stdbuf|setsid|timeout|start|xargs)(?:\.exe)?["']?$/i;
+const TIMEOUT_NAME = /(?:^|[\\/])timeout(?:\.exe)?["']?$/i;
+const OPTION = /^(?:-|\/[a-z?]|"[^"]*"$)/i;
+const QUOTED_SWITCH = /^--?(?:[a-z]*c|co(?:m(?:m(?:a(?:nd?)?)?)?)?)$/i;
+const ASSIGNMENT = /^[A-Za-z_]\w*(?:=|$)/;
+const WORD_LIMIT = 256;
+/**
+ * The command that runs the command after it (see RUNNER_END) that the word from `from` to `end` names, as RUNNER_END
+ * matches its end, or null.
+ */
+function runnerName(text, from, end) {
+  const tail = text.slice(Math.max(from, end - 20), end);
+  const match = RUNNER_END.exec(tail);
+  // A longer word names one only by a path (C:\Windows\System32\timeout.exe).
+  return match !== null && (end - from <= 20 || match[0][0] === '/' || match[0][0] === '\\') ? match[0] : null;
+}
+/**
+ * For each position of `text`: where the blanks before it start (blanks), and where the word that ends there starts
+ * (words), so a word before a position is found at once.
+ */
+function wordStarts(text) {
+  const blanks = new Int32Array(text.length + 1);
+  const words = new Int32Array(text.length + 1);
+  for (let i = 1; i <= text.length; i++) {
+    const code = text.charCodeAt(i - 1);
+    blanks[i] = code === 32 || code === 9 ? blanks[i - 1] : i;
+    words[i] = code < 128 && WORD_END_CODES[code] === 1 ? i : words[i - 1];
+  }
+  return { blanks, words };
+}
+/**
+ * The word that ends at `at` after blanks: [from, end, its first WORD_LIMIT characters], or null at the start or after a
+ * command start.
+ */
+function wordBefore(text, starts, at) {
+  const end = starts.blanks[at];
+  if (end === 0 || COMMAND_STARTS.includes(text[end - 1])) return null;
+  const from = starts.words[end];
+  return [from, end, text.slice(from, Math.min(end, from + WORD_LIMIT))];
+}
+/** Whether a command name may stand at `start` (see COMMAND_STARTS). */
+function commandAt(text, starts, start) {
+  const opened = text[start - 1] === '"' || text[start - 1] === "'";
+  let at = opened ? start - 1 : start;
+  // Whether the words read back so far hold a runner's option (only a runner may come before them), and whether one of
+  // them is read as timeout's duration (only timeout may come before it).
+  let options = false;
+  let duration = false;
+  for (let step = 0; step < 12; step++) {
+    const before = wordBefore(text, starts, at);
+    if (!before) return !options;
+    const [from, end, word] = before;
+    const switchEnd = end - from >= 2 && text[end - 2] === '/' && 'ck'.includes(text[end - 1].toLowerCase());
+    if (end === at) return step === 0 && switchEnd;
+    const runner = runnerName(text, from, end);
+    if (runner !== null) return !duration || TIMEOUT_NAME.test(runner);
+    const whole = end - from <= WORD_LIMIT;
+    if (!options && ((end - from <= 8 && COMMAND_WORDS.has(word.toLowerCase())) || switchEnd
+      || (step === 0 && opened && (whole ? QUOTED_SWITCH.test(word) : word.startsWith('-'))))) return true;
+    // xargs' replace string is no command (xargs -I {} npm).
+    if (step === 0 && word === '-I') return false;
+    if ((word.includes('=') || end - from > WORD_LIMIT) && ASSIGNMENT.test(word)) {
+      at = from;
+      continue;
+    }
+    options = true;
+    if (OPTION.test(word)) {
+      at = from;
+      continue;
+    }
+    // A word that is no option is the value of the option before it, or else timeout's duration (one word at most).
+    const option = wordBefore(text, starts, from);
+    if (option && OPTION.test(option[2])) {
+      at = option[0];
+      continue;
+    }
+    if (duration) return false;
+    duration = true;
+    at = from;
+  }
+  // Past the words it reads (options, their values and assignments), fail closed.
+  return true;
+}
+/**
+ * The held names of `text`: [start, end, whether a command name stands there], by their start (see HELD). Names glued
+ * together are one ($g$(true) push, $x${ZZZ} release delete). A name inside a substitution is one too ($($g push)), read
+ * where the substitution itself is not.
+ */
+function heldNames(text) {
+  const found = [...bashRead(text).spans.map(([start, end]) => [start, end]),
+    ...Array.from(text.matchAll(HELD), (match) => [match.index, match.index + match[0].length])];
+  if (!found.length) return found;
+  found.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+  const names = [];
+  // The outermost name so far, which a name that starts where it ends joins.
+  let top = null;
+  for (const name of found) {
+    if (top && name[0] === top[1]) {
+      top[1] = name[1];
+      continue;
+    }
+    names.push(name);
+    if (!top || name[0] >= top[1]) top = name;
+  }
+  const starts = wordStarts(text);
+  return names.map(([start, end]) => [start, end, commandAt(text, starts, start)]);
+}
+/**
+ * `text` with each held name read as `name`: a blank wherever it stands, a command only where a command name stands. A
+ * name inside one that is read so is part of it.
+ */
+function heldAs(text, names, name) {
+  let out = '';
+  let at = 0;
+  for (const [start, end, command] of names) {
+    if (start < at || (name !== ' ' && !command)) continue;
+    out += text.slice(at, start) + name;
+    at = end;
+  }
+  return out + text.slice(at);
+}
+// The commands are read in one pass: a name character that the text does not hold (MARKS) stands where a command name
+// stands, caretsJoined reads it as it reads the letters of a name (they are of one kind for each of its patterns), and
+// then each command takes its place. Where the text holds every mark, or bash's $'...' may decode a name's first letter
+// (\n), each command is read on its own.
+const MARKS = '_QZJqzj';
+/**
+ * `text` (cmd named through ComSpec as cmd) with its held names read as each of HELD_NAMES, and its blank variables.
+ * Where no command name stands at a held name, its commands read as the line itself (read before).
+ */
+function* heldReadings(text) {
+  const cmdNamed = text.replace(COMSPEC, 'cmd');
+  const names = heldNames(cmdNamed);
+  if (names.some(([, , command]) => command)) {
+    const mark = [...MARKS].find((character) => !cmdNamed.includes(character));
+    const marked = mark === undefined ? null : named(heldAs(cmdNamed, names, mark));
+    const commands = marked === null || marked.includes("$'") ? null : joinedRuns(marked).replace(CARETS, '');
+    for (const name of HELD_NAMES) {
+      if (name === ' ') continue;
+      const reading = commands === null ? caretsJoined(heldAs(cmdNamed, names, name)) : commands.replaceAll(mark, name);
+      yield name === 'gh' ? reading.replace(GH_READ_ONLY, '$1x$2') : reading;
+    }
+  }
+  if (names.length) yield caretsJoined(heldAs(cmdNamed, names, ' '));
+  if (cmdNamed.search(BLANK_VARIABLE) >= 0) yield caretsJoined(emptied(cmdNamed.replace(BLANK_VARIABLE, ' ')));
+}
+// A script read as commands (scriptOf): its text with quotes, backslashes, backticks, brackets, commas, + and $ read as
+// blanks, and so the key of an object or dictionary entry whose value is a string, list or object, so a denied command
+// named anywhere in it is denied (os.system('git push'), subprocess.run(['git', 'push']), execSync("git" + " push"), new
+// Deno.Command('git', { args: ['push'] }), [Diagnostics.Process]::Start('git', 'push')).
+// - A shell given its commands on stdin (a lone - or bash's -s, a redirection, or a bare pipe into it, with options only:
+//   echo "git push" | bash), and PowerShell's iex, Invoke-Expression and POWERSHELL_RUNNER: the whole line, always.
+// - An interpreter given its script on stdin (a lone -, a redirection, or a bare pipe into it): the whole line, where it
+//   names a process API (PROCESS_API).
+// - An interpreter given its script on the command line, by a switch word ending in c, e, p or r (-c, -e, -p, -r, -E,
+//   -lne, --eval, --print) among the options that come first, at most 8, each with its value where it takes one (python
+//   -X utf8 -c; node x.mjs -p 4 and python -m pip install -r x name a script or module first), deno eval, or awk's
+//   program: the whole line, where the part from the interpreter's name on names a process API (awk: system or a pipe),
+//   since the text before it can feed the script (echo 'git push' | node -e "...execSync(...readFileSync(0))"); a
+//   script that runs nothing is not read, though it names a denied command as data or follows a pipe.
+// The interpreters: node, bun, deno, python, perl, ruby, php, lua, Rscript, osascript and awk.
+const INTERPRETERS = String.raw`node|nodejs|deno|bun|python[\d.]*|pythonw|py|pypy[\d.]*|perl|ruby|php|lua[\d.]*|rscript|osascript`;
+const STDIN_SHELLS = 'powershell|pwsh|bash|sh|zsh|dash|ksh|wsl|cmd';
+const SCRIPT_SWITCH = String.raw`["']?(?:--eval|--print|-[a-z]*[cepr])["']?(?=[\s"'=]|$)`;
+// An option before the script switch: a word that starts with -, and the value after one that takes it (not itself an
+// option), so each option has one reading.
+const INTERPRETER_OPTION = String.raw`(?:["']?(?:-[XWIlMdC]|--(?:require|import|loader|experimental-loader|conditions|input-type))["']?\s+(?!["']?-)${WORD}`
+  + String.raw`|(?!${SCRIPT_SWITCH})["']?-${WORD})`;
+const INTERPRETER_AT = String.raw`${WRAPPER_AT}(?:${INTERPRETERS})(?:\.exe)?["']?`;
+const BARE = String.raw`(?:\.exe)?["']?(?:[ \t]+["']?-[^\s"';&|)]*["']?){0,8}[ \t]*(?=$|[;&|)\r\n])`;
+const SHELL_STDIN = new RegExp(String.raw`${WRAPPER_AT}(?:(?:${STDIN_SHELLS})(?:\.exe)?["']?(?:\s+${WORD}){0,8}?\s+(?:["']?-s?["']?(?=\s|$)|<)`
+  + String.raw`|iex\s|invoke-expression\s)|\|\s*(?:${STDIN_SHELLS})${BARE}|${POWERSHELL_RUNNER}`, 'i');
+const INTERPRETER_STDIN = new RegExp(String.raw`${INTERPRETER_AT}(?:(?:\s+${INTERPRETER_OPTION}){0,8}?\s+["']?-["']?(?=\s|$)|(?:\s+${WORD}){0,8}?\s+<)`
+  + String.raw`|\|\s*(?:${INTERPRETERS})${BARE}`, 'i');
+const ONE_LINER = new RegExp(String.raw`${INTERPRETER_AT}(?:\s+${INTERPRETER_OPTION}){0,8}?\s+${SCRIPT_SWITCH}`
+  + String.raw`|${WRAPPER_AT}(?:deno(?:\.exe)?["']?(?:\s+["']?-${WORD}){0,8}?\s+["']?eval["']?(?=\s|$)|(?<awk>[gmn]?awk)(?:\.exe)?["']?\s)`, 'i');
+// The ways a script runs a command: Node's child_process, exec and spawn in their forms, system, subprocess, popen (also
+// IO.popen), PHP's passthru and proc_open, Ruby's %x and Open3, Perl's qx and an open with a pipe, backticks, osascript's
+// do shell script, Deno.Command and Deno.run, and Bun.$.
+const PROCESS_API = /child_process|exec|spawn|system|subprocess|popen|passthru|proc_open|%x|\bqx\b|\x60|do shell script|deno\.(?:command|run)|bun\.\$|open3|\bopen\s*\([^()]*\|/i;
+// A line that may hold a script, read as written, joined and as the words bash passes on (quotes removed).
+const SCRIPTED = [SHELL_STDIN, INTERPRETER_STDIN, ONE_LINER];
+/** `text` where it is read as a script (see the list above), or null. */
+function scriptOf(text) {
+  if (SHELL_STDIN.test(text) || (INTERPRETER_STDIN.test(text) && PROCESS_API.test(text))) return text;
+  const match = ONE_LINER.exec(text);
+  if (!match) return null;
+  const part = text.slice(match.index);
+  return PROCESS_API.test(part) || (match.groups.awk && part.includes('|')) ? text : null;
+}
+const SCRIPT_KEY = /\b\w+["']?\s*:\s*(?=[[{"'\x60])/g;
+const SCRIPT_PUNCTUATION = /[\\'"\x60,()[\]{}+$]/g;
+const script = (text) => text.replace(SCRIPT_KEY, ' ').replace(SCRIPT_PUNCTUATION, ' ');
+// forfiles reads 0xHH in its command as the character with that code (forfiles /c "0x67it push" runs git push).
+const FORFILES = new RegExp(`${WRAPPER_AT}${FORFILES_NAME}\\s`, 'i');
+const HEX_CHAR = /0x([0-9a-f]{2})/gi;
+
 /**
  * The readings of a command line: as written; with every escape resolved (resolved); as written and without the words
  * that may vanish (vanished), each with names resolved (named), then with quoted parts joined to them (joined, and
  * joinedRuns), each also without its backslashes; with every escape resolved and then without the words that may vanish
  * (power`shell $(true;) -e); without those words but with the redirections kept, as written and joined (joinedRuns,
  * also without backslashes: -NoProf$(true;)ile>&2>a\;b); and where a caret ends a line, with the caret kept on the next
- * line's first character (By^, a line feed and &pass is By^&pass).
+ * line's first character (By^, a line feed and &pass is By^&pass). Then, as written and without the words that may
+ * vanish, joined with the carets left before a name character taken out (caretsJoined), also without the variables that
+ * may come to nothing (emptied), each also without its backslashes; with a held name read as each command a rule names
+ * where a command name stands, and as a blank (heldNames); a script (scriptOf) as commands; and forfiles' 0xHH characters
+ * decoded.
  */
 function* readings(text) {
   yield text;
   const full = resolved(text);
   yield full;
-  for (const base of [text, vanished(text)]) {
+  const gone = vanished(text);
+  for (const base of [text, gone]) {
     yield base;
     const name = named(base);
     for (const reading of [name, joined(name), joinedRuns(name)]) {
@@ -689,6 +1017,128 @@ function* readings(text) {
   yield runs.replace(NAME_BACKSLASH, '');
   const caretLines = text.replace(CARET_LINE, '^');
   if (caretLines !== text) yield joinedRuns(named(caretLines));
+  const plain = caretsJoined(emptied(text));
+  for (const base of [text, gone]) {
+    for (const reading of [caretsJoined(base), base === text ? plain : caretsJoined(emptied(base))]) {
+      yield reading;
+      yield reading.replace(NAME_BACKSLASH, '');
+    }
+  }
+  yield* heldReadings(text);
+  if (SCRIPTED.some((pattern) => pattern.test(text) || pattern.test(plain))) {
+    for (const source of [text, plain, caretsJoined(emptied(bashWords(text, ' ')))]) {
+      const part = scriptOf(source);
+      if (part !== null) yield script(part);
+    }
+  }
+  if (FORFILES.test(text) || FORFILES.test(plain)) {
+    const decoded = text.replace(HEX_CHAR, (code, hex) => String.fromCharCode(parseInt(hex, 16)));
+    yield decoded;
+    yield caretsJoined(decoded);
+  }
+}
+
+// bash's escapes inside double quotes: a \ before $, `, ", \ or a line feed.
+const DOUBLE_ESCAPE = /\\([$\x60"\\])|\\\r?\n/g;
+const BLANK = ' \t\r\n';
+
+/**
+ * The words bash passes on, joined by `joiner`: its quote removal ('...' keeps its text, $'...' its text with the escapes
+ * decoded, "..." and $"..." theirs with \ escaping only $, `, ", \ and a line feed, and outside quotes \ escapes any
+ * character), with each blank outside quotes read as the joiner. With &, a separator in bash, PowerShell and cmd alike
+ * that is none of cmd's argument breaks, each word is a command of its own, so a quoted command string (bash -c
+ * "g\"i\"t push") is read as the command line its shell runs, and its blanks stay, while a wrapper's own switch is no
+ * longer read as one (cmd&/c&findstr /c:"git push" is no wrapper). The argument parsing of powershell.exe, git.exe and
+ * other Windows programs reads \" inside quotes in the same way. An unclosed quote leaves the rest of the line as written.
+ */
+function bashWords(text, joiner = '&') {
+  let out = '';
+  let at = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (BLANK.includes(c)) {
+      out += text.slice(at, i) + joiner;
+      at = i + 1;
+    } else if (c === '\\') {
+      out += text.slice(at, i);
+      i = escaped(text, i);
+      // The escaped character stays, a line continuation does not.
+      at = text[i] === '\n' ? i + 1 : i;
+    } else if (c === "'" || c === '"' || (c === '$' && (text[i + 1] === "'" || text[i + 1] === '"'))) {
+      const quote = c === '$' ? text[i + 1] : c;
+      const ansi = c === '$' && quote === "'";
+      const start = c === '$' ? i + 2 : i + 1;
+      let end = start;
+      if (quote === "'" && !ansi) end = text.indexOf("'", start);
+      else {
+        while (end < text.length && text[end] !== quote) end += text[end] === '\\' ? 2 : 1;
+        if (end >= text.length) end = -1;
+      }
+      if (end < 0) break;
+      const body = text.slice(start, end);
+      out += text.slice(at, i) + (ansi ? body.replace(ANSI_ESCAPE, ansiChar) : quote === '"' ? body.replace(DOUBLE_ESCAPE, '$1') : body);
+      i = end;
+      at = end + 1;
+    }
+  }
+  return out + text.slice(at);
+}
+
+/**
+ * The words PowerShell passes on, joined by &, as bashWords reads bash's: '...' keeps its text with '' read as ', "..."
+ * its text with "" read as " and the backtick escaping the next character, and outside quotes the backtick escapes it
+ * (bash -c "g`"i`"t push"). Typographic quotes quote as well.
+ */
+function powershellWords(text) {
+  let out = '';
+  let at = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (BLANK.includes(c)) {
+      out += `${text.slice(at, i)}&`;
+      at = i + 1;
+    } else if (c === '\x60') {
+      out += text.slice(at, i);
+      i = escaped(text, i);
+      at = text[i] === '\n' ? i + 1 : i;
+    } else if (PS_SINGLE.includes(c) || PS_DOUBLE.includes(c)) {
+      const quotes = PS_SINGLE.includes(c) ? PS_SINGLE : PS_DOUBLE;
+      let body = '';
+      let from = i + 1;
+      let end = i + 1;
+      for (; end < text.length; end++) {
+        if (quotes === PS_DOUBLE && text[end] === '\x60') {
+          body += text.slice(from, end);
+          end = escaped(text, end);
+          from = end;
+        } else if (quotes.includes(text[end])) {
+          // A doubled quote is one quote of the text.
+          if (end + 1 >= text.length || !quotes.includes(text[end + 1])) break;
+          body += text.slice(from, end + 1);
+          from = ++end + 1;
+        }
+      }
+      if (end >= text.length) break;
+      out += text.slice(at, i) + body + text.slice(from, end);
+      i = end;
+      at = end + 1;
+    }
+  }
+  return out + text.slice(at);
+}
+
+/**
+ * The readings of the words a shell passes on: as they are, and joined (caretsJoined), also emptied, without backslashes;
+ * and with their held names read (heldReadings), so a name a quoted command string holds counts where it stands in that
+ * string (bash -c 'if $g push; then :; fi').
+ */
+function* wordReadings(words) {
+  yield words;
+  for (const reading of [caretsJoined(words), caretsJoined(emptied(vanished(words)))]) {
+    yield reading;
+    yield reading.replace(NAME_BACKSLASH, '');
+  }
+  yield* heldReadings(words);
 }
 
 /**
@@ -706,23 +1156,49 @@ function deniedText(text, wrapped) {
   return { denied, wrapped: inside };
 }
 
+/** The first denial among distinct `lines`, each read as deniedText reads it, and whether the last was wrapped. */
+function audited(lines) {
+  const seen = new Set();
+  let wrapped = false;
+  for (const reading of lines) {
+    if (seen.has(reading)) continue;
+    seen.add(reading);
+    const result = deniedText(reading, wrapped);
+    if (result.denied) return result;
+    wrapped = result.wrapped;
+  }
+  return { denied: null, wrapped };
+}
+
 /**
  * The name of the first denied command a command line contains, or null. Every distinct reading of the line (readings)
- * is audited; a denial in any of them denies the line.
+ * is audited; a denial in any of them denies the line. A line that a reading finds wrapped is also read as the words
+ * bash and PowerShell pass on (bashWords, powershellWords), each as a command line of its own (wordReadings), and where
+ * bash's words are wrapped as well, as bash's words of them: a quoted command string with escaped quotes in it. Words
+ * the same as words already read are not read again (the audit is the same). The passes of one call are kept (kept).
  */
 export function deniedCommand(line) {
   const text = String(line);
   if (Buffer.byteLength(text, 'utf8') > COMMAND_LIMIT) return 'command line too long to audit';
-  const seen = new Set();
-  let wrapped = false;
-  for (const reading of readings(text)) {
-    if (seen.has(reading)) continue;
-    seen.add(reading);
-    const result = deniedText(reading, wrapped);
-    if (result.denied) return result.denied;
-    wrapped = result.wrapped;
+  passes = new Map();
+  try {
+    return deniedLine(text);
+  } finally {
+    passes = null;
   }
-  return null;
+}
+
+/** deniedCommand of `text`, a line within the size limit. */
+function deniedLine(text) {
+  const outer = audited(readings(text));
+  if (outer.denied || !outer.wrapped) return outer.denied;
+  const bash = bashWords(text);
+  const inner = audited(wordReadings(bash));
+  if (inner.denied) return inner.denied;
+  const nested = inner.wrapped ? bashWords(bash) : bash;
+  const powershell = powershellWords(text);
+  return (nested === bash ? null : audited(wordReadings(nested)).denied)
+    ?? (powershell === bash || powershell === nested ? null : audited(wordReadings(powershell)).denied);
 }
 
 const origin = (url) => new URL(url).origin;
