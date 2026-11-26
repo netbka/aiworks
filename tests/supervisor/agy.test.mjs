@@ -653,11 +653,13 @@ test('the code-mode audit voids denied commands, writes, MCP calls, unknown tool
       'cmd /v:on /c "set g=git&& !g! push origin x"', 'cmd /c "set g=git& call %g% push origin x"', 'for %f in (git) do %f push origin x',
       '$(which git) push origin x', '& (Get-Command git) push origin x', '&("git") push origin x', '. (gcm git) push origin x',
       "& ([string]::Concat('g', 'it')) push origin x",
-      // A held name after a command that runs the next one (past its options), a condition, xargs' options, assignments or
-      // a glued cmd switch;
-      // gh's run and release with a verb that writes; a bracket's member; a blank variable beside one that comes to nothing;
-      // names glued together; such a position inside a wrapper's quoted command.
+      // A held name after a command that runs the next one (past its options, also more than the audit reads, and
+      // timeout's duration after an option's value), a condition, xargs' options, assignments or a glued cmd switch;
+      // gh's run and release with a verb that writes, also after options; a bracket's member; a blank variable beside one
+      // that comes to nothing; names glued together; such a position inside a wrapper's quoted command.
       'sudo -u root $g push origin x', 'env -i PATH=/usr/bin $g push origin x', 'timeout 60 $g push origin x', 'if $g push origin x; then :; fi', 'echo x | xargs -0 -n 1 $g push origin x', 'X=1 Y=2 $g push origin x',
+      'env -i A=1 B=2 C=3 D=4 E=5 F=6 G=7 H=8 I=9 J=10 K=11 $g push origin x', 'sudo -a -b -c -d -e -f -g -h -i -j -k -l $g push origin x',
+      'timeout -k 5 60 $g push origin x', 'timeout -s KILL 60 $g push origin x', '$x run --repo a/b rerun 1', '$x release --repo a/b delete v1',
       'cmd /d/c "%g% push origin x"', '& $x run rerun 1', '$x release delete v1', '. (Get-Command git).Source push origin x',
       'git${IFS}p$ZZZ"ush" origin x', '$g$(true) push origin x', "bash -c 'if $g push origin x; then :; fi'",
       // An interpreter's script that runs a command, after its options, or one that the text before it feeds.

@@ -393,6 +393,27 @@ function bashEnds(text, spans = null) {
   return open.some((region) => region === '(' || region === '{') ? null : ends;
 }
 
+// One call of deniedCommand makes the same pass over the same text more than once (a reading of a line is the base of
+// another, and the words a held name stands in are read for their substitutions too), and each pass reads all of it, so
+// within a call each such pass over a text is made once (kept). Outside a call a pass is made as asked.
+let passes = null;
+/** `read`, a pure function of one text, made once per text within a call of deniedCommand. */
+function kept(read) {
+  return (text) => {
+    if (!passes) return read(text);
+    let table = passes.get(read);
+    if (!table) passes.set(read, (table = new Map()));
+    let result = table.get(text);
+    if (result === undefined) table.set(text, (result = read(text)));
+    return result;
+  };
+}
+/** bashEnds of `text` and its substitutions' spans, which the caller must not change. */
+const bashRead = kept((text) => {
+  const spans = [];
+  return { ends: bashEnds(text, spans), spans };
+});
+
 // PowerShell takes the typographic quotes as quotes, and a # starts a comment at the start of a token: after one of
 // these, or after a quote or a bracket closes.
 const PS_SINGLE = '\'\u2018\u2019\u201a\u201b';
@@ -509,7 +530,7 @@ function cmdEnds(text) {
  */
 function separators(text) {
   const readings = [];
-  for (const read of [() => commandEnds(text, true), () => commandEnds(text, false), () => bashEnds(text), () => powershellEnds(text)]) {
+  for (const read of [() => commandEnds(text, true), () => commandEnds(text, false), () => bashRead(text).ends, () => powershellEnds(text)]) {
     const reading = read();
     if (!reading) {
       readings.length = 0;
@@ -535,14 +556,17 @@ function separators(text) {
  * separators table, built only when both are found.
  */
 function pastWindow(text, head, token, next) {
+  // The tokens are read only where a head is found.
+  head.lastIndex = 0;
+  const first = head.exec(text);
+  if (!first) return false;
   const tokens = [];
   token.lastIndex = 0;
   for (let found = token.exec(text); found; found = token.exec(text)) tokens.push(found.index);
   if (!tokens.length) return false;
   const last = tokens.at(-1);
   let ends = null;
-  head.lastIndex = 0;
-  for (let found = head.exec(text); found && found.index < last; found = head.exec(text)) {
+  for (let found = first; found && found.index < last; found = head.exec(text)) {
     const end = found.index + found[0].length;
     // The first token at or after the window's end, by binary search.
     let low = 0;
@@ -572,14 +596,13 @@ const resolved = (text) => text.replace(FULL_COMSPEC, 'cmd').replace(ESCAPES, (e
 // A caret only before a name character or a line feed, a backtick before a name character, and an empty quote pair (a
 // lookbehind, so a run of quotes is read once). Then, in a reading of its own (joined), a run of carets before a name
 // character and a quoted run of name characters next to a name character (also read once each), and in another
-// (joinedRuns) every quote of a word made of name characters and quoted runs of them (g'i'"t", QUOTED_RUN).
+// (joinedRuns) every quote of a word made of name characters and quoted runs of them (g'i'"t", unquotedRuns).
 const NAME_CARET = /\^(?:\r?\n|(?=[\w.-]))/g;
 const CARET_LINE = /\^\r?\n/g;
 const NAME_TICK = /\x60(?=[\w.-])/g;
 const EMPTY_QUOTES = /(?<=[\w.-])(?:""|'')+|(?<!["'])(?:""|'')+(?=[\w.-])/g;
 const CARETS = /(?<!\^)\^+(?=[\w.-])/g;
 const QUOTED_PIECE = /(?<=[\w.-])(["'])([\w.-]+)\1|(["'])([\w.-]+)\3(?=[\w.-])/g;
-const QUOTED_RUN = /(?:[\w.-]|"[\w.-]*"|'[\w.-]*')+/g;
 const ANSI_ESCAPE = /\\(x[0-9a-f]{1,2}|u[0-9a-f]{1,4}|U[0-9a-f]{1,8}|[0-7]{1,3}|c[\s\S]|[\s\S])/gi;
 const ANSI_CONTROL = { a: 7, b: 8, e: 27, E: 27, f: 12, n: 10, r: 13, t: 9, v: 11 };
 const ansiChar = (escape, code) => {
@@ -602,10 +625,10 @@ function ansiNames(text) {
   }
   return out + text.slice(at);
 }
-const named = (text) => text.replace(COMSPEC, 'cmd').replace(NAME_CARET, '').replace(NAME_TICK, '').replace(EMPTY_QUOTES, '');
+const named = kept((text) => text.replace(COMSPEC, 'cmd').replace(NAME_CARET, '').replace(NAME_TICK, '').replace(EMPTY_QUOTES, ''));
 // The parts of a name joined, in a reading of its own, so the readings before stay as they were: carets, quoted parts and
 // redirections, also one glued to a word (JOINED_REDIRECTION), taken out. joinedRuns, in a reading of its own as well,
-// takes out every quote of a word made of quoted runs (QUOTED_RUN) and a whole chain of redirections (REDIRECTION_RUN).
+// takes out every quote of a word made of quoted runs (unquotedRuns) and a whole chain of redirections (REDIRECTION_RUN).
 const joined = (text) => ansiNames(text.replace(CARETS, '')).replace(QUOTED_PIECE, (piece, quote, one, other, two) => one ?? two)
   .replace(JOINED_REDIRECTION, '');
 // A run glued to a quoted string that holds a blank keeps its quotes: 'git'" push" is one word, the text git push.
@@ -614,9 +637,43 @@ const beforeBlankQuote = (text, at) => {
   GLUED_BLANK.lastIndex = at;
   return GLUED_BLANK.test(text);
 };
-const joinedRuns = (text) => ansiNames(text.replace(CARETS, ''))
-  .replace(QUOTED_RUN, (run, at, all) => (/["']/.test(run) && !beforeBlankQuote(all, at + run.length) ? run.replace(/["']/g, '') : run))
-  .replace(REDIRECTION_RUN, '');
+// The name characters ([\w.-]) by their code.
+const NAME_CODES = new Uint8Array(128);
+for (const character of 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-') NAME_CODES[character.charCodeAt(0)] = 1;
+const nameCode = (code) => code < 128 && NAME_CODES[code] === 1;
+/**
+ * `text` with the quotes taken out of each run that holds one, unless a quoted string that holds a blank is glued to its
+ * end: a run is the longest one from where the one before ends of name characters and quoted runs of them ("..." or
+ * '...' with name characters only between), as /(?:[\w.-]|"[\w.-]*"|'[\w.-]*')+/g finds them, read in one scan.
+ */
+function unquotedRuns(text) {
+  let out = '';
+  let at = 0;
+  for (let i = 0; i < text.length;) {
+    const start = i;
+    let quotes = false;
+    while (i < text.length) {
+      const code = text.charCodeAt(i);
+      if (nameCode(code)) {
+        i++;
+        continue;
+      }
+      if (code !== 34 && code !== 39) break;
+      let end = i + 1;
+      while (end < text.length && nameCode(text.charCodeAt(end))) end++;
+      if (end >= text.length || text.charCodeAt(end) !== code) break;
+      i = end + 1;
+      quotes = true;
+    }
+    if (i === start) i++;
+    else if (quotes && !beforeBlankQuote(text, i)) {
+      out += text.slice(at, start) + text.slice(start, i).replace(/["']/g, '');
+      at = i;
+    }
+  }
+  return out + text.slice(at);
+}
+const joinedRuns = kept((text) => unquotedRuns(ansiNames(text.replace(CARETS, ''))).replace(REDIRECTION_RUN, ''));
 // A backslash before a name character, in a reading of its own: it is also the separator of a Windows path
 // (C:\Windows\System32\cmd.exe), which the readings before keep.
 const NAME_BACKSLASH = /\\(?=[\w.-])/g;
@@ -647,8 +704,7 @@ const COMMAS = /(?<!\S),+(?!\S)/g;
  */
 function vanished(text, redirections = true) {
   // The substitutions closed before a bracket that does not match count too (bash reads a lone { or } as a word).
-  const spans = [];
-  bashEnds(text, spans);
+  const { spans } = bashRead(text);
   let out = '';
   let at = 0;
   for (const [start, end] of spans) {
@@ -697,14 +753,20 @@ const caretsJoined = (text) => joinedRuns(named(text)).replace(CARETS, '');
 // $(which git) push, & (Get-Command git) push, . (gcm git).Source push), where a command name stands (commandAt): read as
 // each command that a rule names with a subcommand, so such a line fails closed where it also names a denied subcommand,
 // except gh's run and release, which count only with a verb that writes (GH_READ_ONLY: $DOCKER run and & $npm run check
-// pass, & $x run rerun does not). Each of them, wherever it stands, is also read as a blank, which bash's $IFS or a
-// substring of cmd's (%ProgramFiles:~10,1%) may hold (git${IFS}push); and those two alone as a blank with the other
-// variables emptied (BLANK_VARIABLE: git${IFS}p$ZZZ"ush"). The bracket may hold brackets one level deep (&
-// ([string]::Concat('g', 'it')) push); its lookbehind is checked after its ( is taken, so it reads back only over the
-// blanks before that (.
+// pass, & $x run rerun and $x run --repo a/b rerun do not). Each of them, wherever it stands, is also read as a blank,
+// which bash's $IFS or a substring of cmd's (%ProgramFiles:~10,1%) may hold (git${IFS}push); and those two alone as a
+// blank with the other variables emptied (BLANK_VARIABLE: git${IFS}p$ZZZ"ush"). The bracket may hold brackets one level
+// deep (& ([string]::Concat('g', 'it')) push); its lookbehind is checked after its ( is taken, so it reads back only
+// over the blanks before that (.
 const HELD = /\$(?:[A-Za-z_]\w*(?::[A-Za-z_]\w*)?|[0-9*@#?$!_-])|%[^%\s:]+(?::[^%\n]*)?%|![^!\s:]+(?::[^!\n]*)?!|%%?(?:~[a-z$:]*)?[a-z0-9*](?![\w%])|@(?:file|fname|ext|path|relpath)\b|\{\}|\((?<=[&.][ \t]*\()(?:[^()]|\([^()]*\))*\)(?:\.[A-Za-z_]\w*)*/gi;
 const HELD_NAMES = ['git', 'gh', 'npm', 'npx', ' '];
-const GH_READ_ONLY = /(\bgh["']?[ \t]+["']?)(run|release)(?=["']?(?:$|[\s;&|)]))(?!["']?\s+["']?(?:rerun|cancel|delete|create|edit|upload|delete-asset)(?![\w-]))/gi;
+// gh's verb may follow its options (gh run --repo a/b rerun): at most GH_OPTIONS of them, -R and --repo with a value; past
+// them run and release count as written.
+const GH_VALUES = '-R|--repo';
+const GH_OPTIONS = 8;
+const GH_READ_ONLY = new RegExp(String.raw`(\bgh["']?[ \t]+["']?)(run|release)(?=["']?(?:$|[\s;&|)]))`
+  + String.raw`(?!["']?${options(GH_VALUES, GH_OPTIONS)}\s+["']?(?:rerun|cancel|delete|create|edit|upload|delete-asset)(?![\w-])`
+  + String.raw`|["']?(?:\s+${option(GH_VALUES)}){${GH_OPTIONS + 1}})`, 'gi');
 const BLANK_VARIABLE = /\$(?:\{IFS\}|IFS\b)|%[^%\s:]+:~[^%\n]*%/gi;
 // Where a command name stands: at the start, or after a separator, a bracket or a backtick (COMMAND_STARTS), with blanks
 // between; after a word that starts a command (COMMAND_WORDS: cmd's call and do, bash's do, then, else, elif, if, while,
@@ -713,28 +775,33 @@ const BLANK_VARIABLE = /\$(?:\{IFS\}|IFS\b)|%[^%\s:]+:~[^%\n]*%/gi;
 // runs the command after it (RUNNER_END: sudo, doas, nohup, time, env, command, builtin, exec, nice, ionice, stdbuf,
 // setsid, timeout, cmd's start and xargs, also named by a path), with its options between (a word that starts with - or
 // /, or a quoted title: start "" %g%), each option with a value where one follows it, assignments (env -i PATH=x $g) and
-// timeout's duration; after a shell's command switch that opens a quoted string (bash -c "$g push"); and after
-// assignments that stand there themselves (X=1 $g push). An opening quote may come first. Right after xargs' -I it is
-// the replace string (xargs -I {} npm); right after another option it may be that option's value or the command, and
-// counts as the command (fail closed: sudo -E $g push). It reads back over at most 12 words, each found at once from where
-// the words of the line start (wordStarts) and tested on at most WORD_LIMIT of its characters, so the cost of each
-// position is bounded; a longer word that starts with name characters only counts as an assignment, and a longer one
-// that starts with - as a shell's command switch (fail closed).
+// timeout's duration, also after an option's value (timeout -k 5 60 $g); after a shell's command switch that opens a
+// quoted string (bash -c "$g push"); and after assignments that stand there themselves (X=1 $g push). An opening quote
+// may come first. Right after xargs' -I it is the replace string (xargs -I {} npm); right after another option it may be
+// that option's value or the command, and counts as the command (fail closed: sudo -E $g push). It reads back over at
+// most 12 words or pairs of an option and its value, each found at once from where the words of the line start
+// (wordStarts) and tested on at most WORD_LIMIT of its characters, so the cost of each position is bounded; past them it
+// counts as a command (fail closed). A longer word that starts with name characters only counts as an assignment, and a
+// longer one that starts with - as a shell's command switch (fail closed).
 const COMMAND_STARTS = ';&|\n\r({\x60';
-const WORD_ENDS = ' \t;&|\n\r';
+const WORD_END_CODES = new Uint8Array(128);
+for (const character of ' \t;&|\n\r') WORD_END_CODES[character.charCodeAt(0)] = 1;
 const COMMAND_WORDS = new Set(['call', 'do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '-exec', '-execdir', '-ok', '-okdir', '.']);
 const RUNNER_END = /(?:^|[\\/])(?:sudo|doas|nohup|time|env|command|builtin|exec|nice|ionice|stdbuf|setsid|timeout|start|xargs)(?:\.exe)?["']?$/i;
-const RUNNER_ARGUMENT = /(?:^|[\\/])timeout(?:\.exe)?["']?$/i;
+const TIMEOUT_NAME = /(?:^|[\\/])timeout(?:\.exe)?["']?$/i;
 const OPTION = /^(?:-|\/[a-z?]|"[^"]*"$)/i;
 const QUOTED_SWITCH = /^--?(?:[a-z]*c|co(?:m(?:m(?:a(?:nd?)?)?)?)?)$/i;
 const ASSIGNMENT = /^[A-Za-z_]\w*(?:=|$)/;
 const WORD_LIMIT = 256;
-/** Whether the word from `from` to `end` names a command that runs the command after it (see RUNNER_END). */
-function runnerWord(text, from, end) {
+/**
+ * The command that runs the command after it (see RUNNER_END) that the word from `from` to `end` names, as RUNNER_END
+ * matches its end, or null.
+ */
+function runnerName(text, from, end) {
   const tail = text.slice(Math.max(from, end - 20), end);
   const match = RUNNER_END.exec(tail);
   // A longer word names one only by a path (C:\Windows\System32\timeout.exe).
-  return match !== null && (end - from <= 20 || match[0][0] === '/' || match[0][0] === '\\');
+  return match !== null && (end - from <= 20 || match[0][0] === '/' || match[0][0] === '\\') ? match[0] : null;
 }
 /**
  * For each position of `text`: where the blanks before it start (blanks), and where the word that ends there starts
@@ -744,9 +811,9 @@ function wordStarts(text) {
   const blanks = new Int32Array(text.length + 1);
   const words = new Int32Array(text.length + 1);
   for (let i = 1; i <= text.length; i++) {
-    const c = text[i - 1];
-    blanks[i] = c === ' ' || c === '\t' ? blanks[i - 1] : i;
-    words[i] = WORD_ENDS.includes(c) ? i : words[i - 1];
+    const code = text.charCodeAt(i - 1);
+    blanks[i] = code === 32 || code === 9 ? blanks[i - 1] : i;
+    words[i] = code < 128 && WORD_END_CODES[code] === 1 ? i : words[i - 1];
   }
   return { blanks, words };
 }
@@ -764,15 +831,18 @@ function wordBefore(text, starts, at) {
 function commandAt(text, starts, start) {
   const opened = text[start - 1] === '"' || text[start - 1] === "'";
   let at = opened ? start - 1 : start;
-  // Whether the words read back so far hold a runner's option (only a runner may come before them).
+  // Whether the words read back so far hold a runner's option (only a runner may come before them), and whether one of
+  // them is read as timeout's duration (only timeout may come before it).
   let options = false;
+  let duration = false;
   for (let step = 0; step < 12; step++) {
     const before = wordBefore(text, starts, at);
     if (!before) return !options;
     const [from, end, word] = before;
     const switchEnd = end - from >= 2 && text[end - 2] === '/' && 'ck'.includes(text[end - 1].toLowerCase());
     if (end === at) return step === 0 && switchEnd;
-    if (runnerWord(text, from, end)) return true;
+    const runner = runnerName(text, from, end);
+    if (runner !== null) return !duration || TIMEOUT_NAME.test(runner);
     const whole = end - from <= WORD_LIMIT;
     if (!options && ((end - from <= 8 && COMMAND_WORDS.has(word.toLowerCase())) || switchEnd
       || (step === 0 && opened && (whole ? QUOTED_SWITCH.test(word) : word.startsWith('-'))))) return true;
@@ -787,14 +857,18 @@ function commandAt(text, starts, start) {
       at = from;
       continue;
     }
-    // A word that is no option is the value of the option before it or timeout's duration, or this is no command position.
+    // A word that is no option is the value of the option before it, or else timeout's duration (one word at most).
     const option = wordBefore(text, starts, from);
-    if (!option) return false;
-    if (RUNNER_ARGUMENT.test(option[2])) return true;
-    if (!OPTION.test(option[2])) return false;
-    at = option[0];
+    if (option && OPTION.test(option[2])) {
+      at = option[0];
+      continue;
+    }
+    if (duration) return false;
+    duration = true;
+    at = from;
   }
-  return false;
+  // Past the words it reads (options, their values and assignments), fail closed.
+  return true;
 }
 /**
  * The held names of `text`: [start, end, whether a command name stands there], by their start (see HELD). Names glued
@@ -802,9 +876,8 @@ function commandAt(text, starts, start) {
  * where the substitution itself is not.
  */
 function heldNames(text) {
-  const spans = [];
-  bashEnds(text, spans);
-  const found = [...spans, ...Array.from(text.matchAll(HELD), (match) => [match.index, match.index + match[0].length])];
+  const found = [...bashRead(text).spans.map(([start, end]) => [start, end]),
+    ...Array.from(text.matchAll(HELD), (match) => [match.index, match.index + match[0].length])];
   if (!found.length) return found;
   found.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
   const names = [];
@@ -835,16 +908,29 @@ function heldAs(text, names, name) {
   }
   return out + text.slice(at);
 }
-/** `text` (cmd named through ComSpec as cmd) with its held names read as each of HELD_NAMES, and its blank variables. */
+// The commands are read in one pass: a name character that the text does not hold (MARKS) stands where a command name
+// stands, caretsJoined reads it as it reads the letters of a name (they are of one kind for each of its patterns), and
+// then each command takes its place. Where the text holds every mark, or bash's $'...' may decode a name's first letter
+// (\n), each command is read on its own.
+const MARKS = '_QZJqzj';
+/**
+ * `text` (cmd named through ComSpec as cmd) with its held names read as each of HELD_NAMES, and its blank variables.
+ * Where no command name stands at a held name, its commands read as the line itself (read before).
+ */
 function* heldReadings(text) {
   const cmdNamed = text.replace(COMSPEC, 'cmd');
   const names = heldNames(cmdNamed);
-  if (names.length) {
+  if (names.some(([, , command]) => command)) {
+    const mark = [...MARKS].find((character) => !cmdNamed.includes(character));
+    const marked = mark === undefined ? null : named(heldAs(cmdNamed, names, mark));
+    const commands = marked === null || marked.includes("$'") ? null : joinedRuns(marked).replace(CARETS, '');
     for (const name of HELD_NAMES) {
-      const reading = caretsJoined(heldAs(cmdNamed, names, name));
+      if (name === ' ') continue;
+      const reading = commands === null ? caretsJoined(heldAs(cmdNamed, names, name)) : commands.replaceAll(mark, name);
       yield name === 'gh' ? reading.replace(GH_READ_ONLY, '$1x$2') : reading;
     }
   }
+  if (names.length) yield caretsJoined(heldAs(cmdNamed, names, ' '));
   if (cmdNamed.search(BLANK_VARIABLE) >= 0) yield caretsJoined(emptied(cmdNamed.replace(BLANK_VARIABLE, ' ')));
 }
 // A script read as commands (scriptOf): its text with quotes, backslashes, backticks, brackets, commas, + and $ read as
@@ -914,7 +1000,8 @@ function* readings(text) {
   yield text;
   const full = resolved(text);
   yield full;
-  for (const base of [text, vanished(text)]) {
+  const gone = vanished(text);
+  for (const base of [text, gone]) {
     yield base;
     const name = named(base);
     for (const reading of [name, joined(name), joinedRuns(name)]) {
@@ -931,7 +1018,7 @@ function* readings(text) {
   const caretLines = text.replace(CARET_LINE, '^');
   if (caretLines !== text) yield joinedRuns(named(caretLines));
   const plain = caretsJoined(emptied(text));
-  for (const base of [text, vanished(text)]) {
+  for (const base of [text, gone]) {
     for (const reading of [caretsJoined(base), base === text ? plain : caretsJoined(emptied(base))]) {
       yield reading;
       yield reading.replace(NAME_BACKSLASH, '');
@@ -1088,11 +1175,21 @@ function audited(lines) {
  * is audited; a denial in any of them denies the line. A line that a reading finds wrapped is also read as the words
  * bash and PowerShell pass on (bashWords, powershellWords), each as a command line of its own (wordReadings), and where
  * bash's words are wrapped as well, as bash's words of them: a quoted command string with escaped quotes in it. Words
- * the same as words already read are not read again (the audit is the same).
+ * the same as words already read are not read again (the audit is the same). The passes of one call are kept (kept).
  */
 export function deniedCommand(line) {
   const text = String(line);
   if (Buffer.byteLength(text, 'utf8') > COMMAND_LIMIT) return 'command line too long to audit';
+  passes = new Map();
+  try {
+    return deniedLine(text);
+  } finally {
+    passes = null;
+  }
+}
+
+/** deniedCommand of `text`, a line within the size limit. */
+function deniedLine(text) {
   const outer = audited(readings(text));
   if (outer.denied || !outer.wrapped) return outer.denied;
   const bash = bashWords(text);
